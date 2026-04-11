@@ -4,46 +4,57 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Decision {{ envelope.record.decision_id[:8] }} — Verifiable AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Besley:wght@800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace; background: #0d1117; color: #c9d1d9; padding: 2rem; }
-        h1 { color: #58a6ff; margin-bottom: 0.5rem; font-size: 1.3rem; }
-        .back { color: #58a6ff; text-decoration: none; font-size: 0.9rem; display: inline-block; margin-bottom: 1rem; }
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background: #FFFFFF; color: #23232D; padding: 2rem; }
+        h1 { font-family: 'Besley', serif; font-weight: 800; color: #5427C8; margin-bottom: 0.5rem; font-size: 1.3rem; }
+        .back { color: #5427C8; text-decoration: none; font-size: 0.9rem; display: inline-block; margin-bottom: 1rem; }
         .back:hover { text-decoration: underline; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1.5rem; }
-        .card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 1.5rem; }
+        .card { background: #F0F0F0; border: 1px solid #E0E0E4; border-radius: 6px; padding: 1.5rem; }
         .card-full { grid-column: 1 / -1; }
-        .card h2 { color: #58a6ff; margin-bottom: 1rem; font-size: 1rem; border-bottom: 1px solid #21262d; padding-bottom: 0.5rem; }
-        .card-danger { border-color: #f85149; }
-        .card-danger h2 { color: #f85149; }
+        .card h2 { font-family: 'Besley', serif; font-weight: 800; color: #5427C8; margin-bottom: 1rem; font-size: 1rem; border-bottom: 1px solid #E0E0E4; padding-bottom: 0.5rem; }
+        .card-danger { border-color: #da3633; }
+        .card-danger h2 { color: #da3633; }
         dl { display: grid; grid-template-columns: auto 1fr; gap: 0.4rem 1rem; }
-        dt { color: #8b949e; font-size: 0.8rem; text-transform: uppercase; padding-top: 0.2rem; }
+        dt { color: #6B6B7B; font-size: 0.8rem; text-transform: uppercase; padding-top: 0.2rem; }
         dd { font-size: 0.85rem; word-break: break-all; }
-        .mono { font-family: monospace; color: #79c0ff; }
+        .mono { font-family: monospace; color: #5427C8; }
         .badge { padding: 0.2rem 0.5rem; border-radius: 12px; font-size: 0.75rem; font-weight: 500; display: inline-block; }
         .badge-green { background: #238636; color: #fff; }
         .badge-red { background: #da3633; color: #fff; }
         .badge-yellow { background: #9e6a03; color: #fff; }
-        .badge-gray { background: #30363d; color: #8b949e; }
-        .btn { padding: 0.5rem 1rem; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: 500; text-decoration: none; display: inline-block; }
-        .btn-primary { background: #238636; color: #fff; }
+        .badge-gray { background: #E0E0E4; color: #6B6B7B; }
+        .badge-primary { background: #DFD6F7; color: #5427C8; font-weight: 600; }
+        .btn { padding: 0.5rem 1rem; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: 500; text-decoration: none; display: inline-block; font-family: 'Plus Jakarta Sans', sans-serif; }
+        .btn-primary { background: #5427C8; color: #fff; }
+        .btn-primary:hover { background: #6B3FE4; }
         .btn-danger { background: #da3633; color: #fff; }
-        .btn-blue { background: #1f6feb; color: #fff; }
+        .btn-danger:hover { background: #f85149; }
+        .btn-blue { background: #5427C8; color: #fff; }
+        .btn-blue:hover { background: #6B3FE4; }
         .actions { display: flex; gap: 0.75rem; margin-top: 1.5rem; }
-        a { color: #58a6ff; }
+        a { color: #5427C8; }
         .verification-result { margin-top: 1rem; padding: 1rem; border-radius: 6px; }
-        .result-pass { background: #0d2818; border: 1px solid #238636; }
-        .result-fail { background: #2d1117; border: 1px solid #f85149; }
+        .result-pass { background: #E8F5E9; border: 1px solid #238636; }
+        .result-fail { background: #FFEBEE; border: 1px solid #da3633; }
         .result-item { display: flex; justify-content: space-between; padding: 0.3rem 0; font-size: 0.85rem; }
-        .check { color: #3fb950; }
-        .cross { color: #f85149; }
-        .tamper-warning { background: #2d1117; border: 1px solid #f85149; border-radius: 6px; padding: 1rem; margin-top: 1rem; color: #f85149; }
+        .check { color: #238636; }
+        .cross { color: #da3633; }
+        .tamper-warning { background: #FFEBEE; border: 1px solid #da3633; border-radius: 6px; padding: 1rem; margin-top: 1rem; color: #da3633; }
+        .prob-bar { display: flex; align-items: center; gap: 0.5rem; margin: 0.15rem 0; font-size: 0.8rem; }
+        .prob-bar-fill { height: 8px; border-radius: 4px; background: #5427C8; }
+        .prob-bar-track { flex: 1; height: 8px; border-radius: 4px; background: #E0E0E4; overflow: hidden; }
+        .prob-label { width: 80px; text-align: right; color: #6B6B7B; }
+        .prob-value { width: 50px; font-family: monospace; color: #5427C8; font-size: 0.75rem; }
     </style>
 </head>
 <body>
     <a href="/" class="back">&larr; Back to Dashboard</a>
     <h1>Decision Record</h1>
-    <p style="color: #8b949e; font-size: 0.85rem;">{{ envelope.record.decision_id }}</p>
+    <p style="color: #6B6B7B; font-size: 0.85rem;">{{ envelope.record.decision_id }}</p>
 
     {% if envelope.get('tampered') %}
     <div class="tamper-warning">
@@ -69,6 +80,31 @@
                 <dt>Human Override</dt>
                 <dd>{{ envelope.record.human_override }}</dd>
             </dl>
+        </div>
+
+        <!-- Prediction -->
+        <div class="card">
+            <h2>Prediction</h2>
+            <dl>
+                <dt>Predicted Class</dt>
+                <dd><span class="badge badge-primary">{{ envelope.record.prediction['class'] }}</span></dd>
+                <dt>Class Index</dt>
+                <dd>{{ envelope.record.prediction.class_index }}</dd>
+                <dt>Features Used</dt>
+                <dd>{{ envelope.record.prediction.features_used | join(', ') }}</dd>
+            </dl>
+            <div style="margin-top: 1rem;">
+                <dt style="color: #6B6B7B; font-size: 0.8rem; text-transform: uppercase; margin-bottom: 0.5rem;">Probabilities</dt>
+                {% for cls, prob in envelope.record.prediction.probabilities.items() %}
+                <div class="prob-bar">
+                    <span class="prob-label">{{ cls }}</span>
+                    <div class="prob-bar-track">
+                        <div class="prob-bar-fill" style="width: {{ (prob * 100) }}%"></div>
+                    </div>
+                    <span class="prob-value">{{ "%.4f"|format(prob) }}</span>
+                </div>
+                {% endfor %}
+            </div>
         </div>
 
         <!-- MLflow Metadata -->
@@ -127,13 +163,13 @@
                 <dd><span class="badge badge-green">Anchored</span></dd>
             </dl>
             {% else %}
-            <p style="color: #8b949e;">Not anchored — no Arweave wallet configured or upload not performed.</p>
+            <p style="color: #6B6B7B;">Not anchored — no Arweave wallet configured or upload not performed.</p>
             {% endif %}
         </div>
 
-        <!-- AR.IO Verification -->
+        <!-- ar.io Verification -->
         <div class="card">
-            <h2>AR.IO Verification</h2>
+            <h2>ar.io Verification</h2>
             {% if envelope.ario_verify_id %}
             <dl>
                 <dt>Verification ID</dt>
@@ -158,7 +194,7 @@
                 {% endif %}
             </dl>
             {% else %}
-            <p style="color: #8b949e;">AR.IO Verify not available or not yet verified.</p>
+            <p style="color: #6B6B7B;">ar.io Verify not available or not yet verified.</p>
             {% endif %}
         </div>
 
@@ -179,7 +215,7 @@
                         {{ 'PASS' if verification.signature_valid else 'FAIL' }}
                     </span>
                 </div>
-                <div class="result-item" style="border-top: 1px solid #30363d; margin-top: 0.5rem; padding-top: 0.5rem;">
+                <div class="result-item" style="border-top: 1px solid #E0E0E4; margin-top: 0.5rem; padding-top: 0.5rem;">
                     <strong>Overall</strong>
                     <strong class="{{ 'check' if verification.overall else 'cross' }}">
                         {{ 'VALID' if verification.overall else 'INVALID' }}
@@ -193,9 +229,55 @@
                 {% endif %}
             </div>
             {% if envelope.arweave_tx_id and not verification.overall %}
-            <div style="margin-top: 1rem; padding: 0.75rem; background: #0d2818; border: 1px solid #238636; border-radius: 6px; font-size: 0.85rem;">
+            <div style="margin-top: 1rem; padding: 0.75rem; background: #E8F5E9; border: 1px solid #238636; border-radius: 6px; font-size: 0.85rem;">
                 The original, untampered record is permanently stored on Arweave:
                 <a href="{{ envelope.arweave_url }}" target="_blank">{{ envelope.arweave_tx_id }}</a>
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        <!-- External Verification -->
+        {% if external_verification %}
+        <div class="card card-full">
+            <h2>External Verification (Arweave)</h2>
+            {% if external_verification.arweave_data_found %}
+            <div class="verification-result {{ 'result-pass' if external_verification.arweave_matches_original else 'result-fail' }}">
+                <div class="result-item">
+                    <span>Arweave Data Found</span>
+                    <span class="check">YES</span>
+                </div>
+                <div class="result-item">
+                    <span>Arweave Record Hash</span>
+                    <span class="mono" style="font-size: 0.75rem;">{{ external_verification.arweave_record_hash[:32] }}...</span>
+                </div>
+                <div class="result-item">
+                    <span>Arweave Self-Consistent</span>
+                    <span class="{{ 'check' if external_verification.arweave_matches_original else 'cross' }}">
+                        {{ 'PASS' if external_verification.arweave_matches_original else 'FAIL' }}
+                    </span>
+                </div>
+                <div class="result-item" style="border-top: 1px solid #E0E0E4; margin-top: 0.5rem; padding-top: 0.5rem;">
+                    <strong>Local Record Tampered</strong>
+                    <strong class="{{ 'cross' if external_verification.local_tampered else 'check' }}">
+                        {{ 'YES' if external_verification.local_tampered else 'NO' }}
+                    </strong>
+                </div>
+            </div>
+            {% if external_verification.local_tampered and external_verification.arweave_matches_original %}
+            <div style="margin-top: 1rem; padding: 0.75rem; background: #FFEBEE; border: 1px solid #da3633; border-radius: 6px; font-size: 0.85rem; color: #da3633;">
+                Local record has been modified, but the Arweave-anchored original is intact and verifiable.
+            </div>
+            {% endif %}
+            {% else %}
+            <div class="verification-result result-fail">
+                <div class="result-item">
+                    <span>Arweave Data Found</span>
+                    <span class="cross">NO</span>
+                </div>
+                <p style="margin-top: 0.5rem; font-size: 0.85rem; color: #6B6B7B;">
+                    Could not retrieve the record from Arweave. The transaction may still be propagating.
+                </p>
             </div>
             {% endif %}
         </div>

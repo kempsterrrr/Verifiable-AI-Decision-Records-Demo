@@ -21,8 +21,8 @@ class Settings:
     mlflow_model_name: str = "iris-classifier"
 
     # AR.IO
-    ario_gateway_host: str = "arweave.net"
-    ario_verify_url: str = "http://localhost:4001"
+    ario_gateway_host: str = "turbo-gateway.com"
+    ario_verify_url: str = "https://vilenarios.com/local/verify"
 
     @property
     def arweave_enabled(self) -> bool:

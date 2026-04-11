@@ -2,6 +2,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from app.decision_record import canonical_json, hash_data
+
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 
@@ -34,11 +36,27 @@ def decision_detail(request: Request, decision_id: str):
     # Run local verification
     verification = app.state.proof_engine.verify_local(envelope)
 
+    # Run external verification if Arweave-anchored
+    external_verification = None
+    if envelope.get("arweave_tx_id"):
+        arweave_data = app.state.anchor.fetch_proof(envelope["arweave_tx_id"])
+        if arweave_data:
+            arweave_hash = hash_data(canonical_json(arweave_data.get("record", {})))
+            external_verification = {
+                "arweave_data_found": True,
+                "arweave_record_hash": arweave_hash,
+                "arweave_matches_original": arweave_hash == arweave_data.get("record_hash"),
+                "local_tampered": not verification["overall"],
+            }
+        else:
+            external_verification = {"arweave_data_found": False}
+
     return templates.TemplateResponse(
         request,
         "decision_detail.html",
         {
             "envelope": envelope,
             "verification": verification,
+            "external_verification": external_verification,
         },
     )

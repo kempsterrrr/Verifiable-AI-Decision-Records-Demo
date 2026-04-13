@@ -203,32 +203,9 @@
         <!-- ar.io Verification -->
         <div class="card">
             <h2>ar.io Verification</h2>
-            {% if envelope.ario_verify_id %}
-            <dl>
-                <dt>Verification ID</dt>
-                <dd class="mono">{{ envelope.ario_verify_id }}</dd>
-                <dt>Status</dt>
-                <dd>{{ envelope.ario_verify_status }}</dd>
-                <dt>Level</dt>
-                <dd>
-                    {% if envelope.ario_verify_level == 3 %}
-                        <span class="badge badge-green">Level 3 — Verified</span>
-                    {% elif envelope.ario_verify_level == 2 %}
-                        <span class="badge badge-yellow">Level 2 — Partially Verified</span>
-                    {% elif envelope.ario_verify_level == 1 %}
-                        <span class="badge badge-yellow">Level 1 — Pending</span>
-                    {% else %}
-                        <span class="badge badge-gray">Unknown</span>
-                    {% endif %}
-                </dd>
-                {% if envelope.ario_verify_attestation_url %}
-                <dt>Attestation</dt>
-                <dd><a href="{{ envelope.ario_verify_attestation_url }}" target="_blank">View Attestation</a></dd>
-                {% endif %}
-            </dl>
-            {% else %}
-            <p style="color: #6B6B7B;">ar.io Verify not available or not yet verified.</p>
-            {% endif %}
+            <p style="color: #6B6B7B; font-size: 0.85rem; margin-bottom: 0.75rem;">
+                Click <strong>Re-Verify</strong> below to request an independent attestation from ar.io Verify.
+            </p>
         </div>
 
         <!-- Local Verification -->

@@ -111,7 +111,7 @@
                     <th>Prediction</th>
                     <th>Record Hash</th>
                     <th>Arweave TX</th>
-                    <th>Verify Level</th>
+                    <th>Status</th>
                     <th>Actions</th>
                 </tr>
             </thead>
@@ -132,12 +132,8 @@
                     <td>
                         {% if env.get('tampered') %}
                             <span class="badge badge-red">Tampered</span>
-                        {% elif env.ario_verify_level == 3 %}
-                            <span class="badge badge-green">Level 3</span>
-                        {% elif env.ario_verify_level == 2 %}
-                            <span class="badge badge-yellow">Level 2</span>
-                        {% elif env.ario_verify_level == 1 %}
-                            <span class="badge badge-yellow">Pending</span>
+                        {% elif env.arweave_tx_id %}
+                            <span class="badge badge-green">Anchored</span>
                         {% else %}
                             <span class="badge badge-gray">Local Only</span>
                         {% endif %}

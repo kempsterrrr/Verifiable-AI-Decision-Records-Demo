@@ -1,5 +1,4 @@
 import logging
-import time
 
 import requests
 
@@ -55,25 +54,6 @@ class ArioVerifyClient:
         except Exception as e:
             logger.error(f"AR.IO Verify check failed: {e}")
             return None
-
-    def verify_transaction(self, tx_id: str) -> dict | None:
-        """Submit verification and poll for result."""
-        result = self.submit_verification(tx_id)
-        if not result:
-            return None
-
-        verification_id = result.get("verificationId")
-        if not verification_id:
-            return self._normalize_result(result)
-
-        # Poll for completion
-        for _ in range(10):
-            time.sleep(3)
-            check = self.check_verification(verification_id)
-            if check and check.get("level", 0) >= 2:
-                return self._normalize_result(check)
-
-        return self._normalize_result(result)
 
     @staticmethod
     def _normalize_result(data: dict) -> dict:

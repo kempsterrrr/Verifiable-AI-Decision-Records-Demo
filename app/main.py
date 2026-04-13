@@ -65,7 +65,7 @@ app.include_router(ui_router)
 
 
 def _run_prediction(app_state, features: list[float]) -> dict:
-    """Core prediction flow: inference -> record -> proof -> anchor -> verify -> store."""
+    """Core prediction flow: inference -> record -> proof -> anchor -> store."""
     settings = app_state.settings
     model_info = app_state.model_info
 
@@ -97,37 +97,24 @@ def _run_prediction(app_state, features: list[float]) -> dict:
         last = app_state.store.get_last()
         previous_hash = last["record_hash"] if last else "GENESIS"
 
-        # Create proof (clean, anchoring-ready)
+        # Create proof
         proof = app_state.proof_engine.create_proof(record, previous_hash)
 
-        # Upload clean proof to Arweave
+        # Upload proof to Arweave
         anchor_result = app_state.anchor.upload_proof(proof)
 
-        # Build local envelope: proof + operational metadata
+        # Build local envelope: proof + anchoring metadata
         envelope = {
             **proof,
             "arweave_tx_id": None,
             "arweave_url": None,
             "turbo_receipt": None,
-            "ario_verify_id": None,
-            "ario_verify_status": None,
-            "ario_verify_level": None,
-            "ario_verify_attestation_url": None,
         }
 
         if anchor_result:
             envelope["arweave_tx_id"] = anchor_result["tx_id"]
             envelope["arweave_url"] = anchor_result["url"]
             envelope["turbo_receipt"] = anchor_result["receipt"]
-
-            # ar.io Verify
-            if app_state.ario_verify.enabled:
-                verify_result = app_state.ario_verify.verify_transaction(anchor_result["tx_id"])
-                if verify_result:
-                    envelope["ario_verify_id"] = verify_result.get("verification_id")
-                    envelope["ario_verify_status"] = verify_result.get("status")
-                    envelope["ario_verify_level"] = verify_result.get("level")
-                    envelope["ario_verify_attestation_url"] = verify_result.get("attestation_url")
 
         # Store
         app_state.store.append(envelope)
@@ -200,10 +187,18 @@ def verify_decision(request: Request, decision_id: str):
         else:
             external_result = {"arweave_data_found": False}
 
+    # ar.io Verify — on-demand attestation
+    ario_result = None
+    if envelope.get("arweave_tx_id") and request.app.state.ario_verify.enabled:
+        ario_result = request.app.state.ario_verify.submit_verification(envelope["arweave_tx_id"])
+        if ario_result:
+            ario_result = request.app.state.ario_verify._normalize_result(ario_result)
+
     result = {
         "decision_id": decision_id,
         "local_verification": local_result,
         "external_verification": external_result,
+        "ario_verification": ario_result,
     }
 
     # If called from browser form, redirect to detail page

@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -34,38 +36,46 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
         return HTMLResponse("<h1>Decision not found</h1>", status_code=404)
 
     # Local verification (always — instant, no network)
-    verification = app.state.proof_engine.verify_local(envelope)
+    local = app.state.proof_engine.verify_local(envelope)
 
     # Full verification (on-demand — user-triggered via ?verify=true)
-    arweave_verification = None
-    ario_verification = None
     if verify and envelope.get("arweave_tx_id"):
+        result = {
+            "verified_at": datetime.now(timezone.utc).isoformat(),
+            "hash_valid": local["hash_valid"],
+            "signature_valid": local["signature_valid"],
+            "permanent_copy_found": False,
+            "hash_match": False,
+            "attestation_level": None,
+            "attestation_url": None,
+            "pdf_url": None,
+        }
+
         # Fetch from ar.io gateway and compare
         arweave_data = app.state.anchor.fetch_proof(envelope["arweave_tx_id"])
         if arweave_data:
             arweave_hash = hash_data(canonical_json(arweave_data.get("record", {})))
-            arweave_verification = {
-                "data_found": True,
-                "record_hash": arweave_hash,
-                "hash_match": arweave_hash == arweave_data.get("record_hash"),
-            }
-        else:
-            arweave_verification = {"data_found": False}
+            result["permanent_copy_found"] = True
+            result["hash_match"] = arweave_hash == arweave_data.get("record_hash")
 
         # ar.io Verify attestation
         if app.state.ario_verify.enabled:
             ario_result = app.state.ario_verify.submit_verification(envelope["arweave_tx_id"])
             if ario_result:
-                ario_verification = app.state.ario_verify._normalize_result(ario_result)
+                normalized = app.state.ario_verify._normalize_result(ario_result)
+                result["attestation_level"] = normalized.get("level")
+                result["attestation_url"] = normalized.get("attestation_url")
+                result["pdf_url"] = normalized.get("pdf_url")
+
+        # Persist results on the envelope
+        envelope["last_verification"] = result
+        app.state.store.update(decision_id, envelope)
 
     return templates.TemplateResponse(
         request,
         "decision_detail.html",
         {
             "envelope": envelope,
-            "verification": verification,
-            "arweave_verification": arweave_verification,
-            "ario_verification": ario_verification,
-            "verify_requested": verify,
+            "local_verification": local,
         },
     )

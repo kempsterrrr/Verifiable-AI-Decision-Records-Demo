@@ -15,7 +15,9 @@ class ArweaveAnchor:
     def __init__(self, wallet_path: str, gateway_host: str = "arweave.net"):
         self.gateway_host = gateway_host
         self.enabled = False
-        self._turbo = None
+        self._signer = None
+        self._upload_url = None
+        self._token = None
 
         if not os.path.exists(wallet_path):
             logger.warning(f"Arweave wallet not found at {wallet_path}. Anchoring disabled.")
@@ -26,26 +28,33 @@ class ArweaveAnchor:
 
             with open(wallet_path) as f:
                 jwk = json.load(f)
-            signer = ArweaveSigner(jwk)
-            self._turbo = Turbo(signer)
+            self._signer = ArweaveSigner(jwk)
+            # Get upload URL and token from a Turbo instance
+            turbo = Turbo(self._signer)
+            self._upload_url = turbo.upload_url
+            self._token = turbo.token
             self.enabled = True
             logger.info("Arweave anchoring enabled.")
         except Exception as e:
             logger.warning(f"Failed to initialize Arweave anchor: {e}")
 
-    def upload_proof(self, envelope: dict) -> tuple[str, str] | None:
-        """Upload proof envelope to Arweave. Returns (tx_id, url) or None."""
-        if not self.enabled or not self._turbo:
+    def upload_proof(self, proof: dict) -> dict | None:
+        """Upload proof to Arweave. Returns dict with tx_id, url, and full receipt."""
+        if not self.enabled or not self._signer:
             return None
 
         try:
-            data_bytes = canonical_json(envelope)
-            decision_id = envelope.get("record", {}).get("decision_id", "unknown")
-            record_hash = envelope.get("record_hash", "unknown")
+            from turbo_sdk.bundle import create_data, sign
 
-            result = self._turbo.upload(
-                data=data_bytes,
-                tags=[
+            data_bytes = canonical_json(proof)
+            decision_id = proof.get("record", {}).get("decision_id", "unknown")
+            record_hash = proof.get("record_hash", "unknown")
+
+            # Create and sign data item using the SDK
+            data_item = create_data(
+                bytearray(data_bytes),
+                self._signer,
+                [
                     {"name": "Content-Type", "value": "application/json"},
                     {"name": "App-Name", "value": "Verifiable-AI-Demo"},
                     {"name": "Record-Type", "value": "DecisionProof"},
@@ -53,11 +62,32 @@ class ArweaveAnchor:
                     {"name": "Record-Hash", "value": record_hash},
                 ],
             )
+            sign(data_item, self._signer)
 
-            tx_id = result.id
-            url = f"https://{self.gateway_host}/{tx_id}"
+            # Upload directly via HTTP to capture the full receipt
+            url = f"{self._upload_url}/tx/{self._token}"
+            raw_data = data_item.get_raw()
+            headers = {
+                "Content-Type": "application/octet-stream",
+                "Content-Length": str(len(raw_data)),
+            }
+
+            response = requests.post(url, data=raw_data, headers=headers)
+
+            if response.status_code != 200:
+                raise Exception(f"Upload failed: {response.status_code} - {response.text}")
+
+            # Capture the full receipt (all fields, not just the SDK's subset)
+            receipt = response.json()
+            tx_id = receipt["id"]
+            gateway_url = f"https://{self.gateway_host}/{tx_id}"
+
             logger.info(f"Uploaded to Arweave: tx_id={tx_id}")
-            return tx_id, url
+            return {
+                "tx_id": tx_id,
+                "url": gateway_url,
+                "receipt": receipt,
+            }
 
         except Exception as e:
             logger.error(f"Arweave upload failed: {e}")

@@ -167,6 +167,39 @@
             {% endif %}
         </div>
 
+        <!-- Turbo Upload Receipt -->
+        <div class="card">
+            <h2>Turbo Upload Receipt</h2>
+            {% if envelope.turbo_receipt %}
+            <dl>
+                {% if envelope.turbo_receipt.timestamp %}
+                <dt>Upload Timestamp</dt>
+                <dd class="mono">{{ envelope.turbo_receipt.timestamp }} ms</dd>
+                {% endif %}
+                <dt>Owner (Wallet)</dt>
+                <dd class="mono">{{ envelope.turbo_receipt.owner }}</dd>
+                {% if envelope.turbo_receipt.version %}
+                <dt>Receipt Version</dt>
+                <dd>{{ envelope.turbo_receipt.version }}</dd>
+                {% endif %}
+                {% if envelope.turbo_receipt.deadlineHeight %}
+                <dt>Deadline Height</dt>
+                <dd class="mono">{{ envelope.turbo_receipt.deadlineHeight }}</dd>
+                {% endif %}
+                {% if envelope.turbo_receipt.public %}
+                <dt>Signer Public Key</dt>
+                <dd class="mono" style="font-size:0.7rem;">{{ envelope.turbo_receipt.public[:64] }}...</dd>
+                {% endif %}
+                {% if envelope.turbo_receipt.signature %}
+                <dt>Receipt Signature</dt>
+                <dd class="mono" style="font-size:0.7rem;">{{ envelope.turbo_receipt.signature[:64] }}...</dd>
+                {% endif %}
+            </dl>
+            {% else %}
+            <p style="color: #6B6B7B;">No Turbo receipt available for this record.</p>
+            {% endif %}
+        </div>
+
         <!-- ar.io Verification -->
         <div class="card">
             <h2>ar.io Verification</h2>

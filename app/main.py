@@ -97,19 +97,32 @@ def _run_prediction(app_state, features: list[float]) -> dict:
         last = app_state.store.get_last()
         previous_hash = last["record_hash"] if last else "GENESIS"
 
-        # Create proof envelope
-        envelope = app_state.proof_engine.create_proof(record, previous_hash)
+        # Create proof (clean, anchoring-ready)
+        proof = app_state.proof_engine.create_proof(record, previous_hash)
 
-        # Upload to Arweave
-        anchor_result = app_state.anchor.upload_proof(envelope)
+        # Upload clean proof to Arweave
+        anchor_result = app_state.anchor.upload_proof(proof)
+
+        # Build local envelope: proof + operational metadata
+        envelope = {
+            **proof,
+            "arweave_tx_id": None,
+            "arweave_url": None,
+            "turbo_receipt": None,
+            "ario_verify_id": None,
+            "ario_verify_status": None,
+            "ario_verify_level": None,
+            "ario_verify_attestation_url": None,
+        }
+
         if anchor_result:
-            tx_id, url = anchor_result
-            envelope["arweave_tx_id"] = tx_id
-            envelope["arweave_url"] = url
+            envelope["arweave_tx_id"] = anchor_result["tx_id"]
+            envelope["arweave_url"] = anchor_result["url"]
+            envelope["turbo_receipt"] = anchor_result["receipt"]
 
-            # AR.IO Verify
+            # ar.io Verify
             if app_state.ario_verify.enabled:
-                verify_result = app_state.ario_verify.verify_transaction(tx_id)
+                verify_result = app_state.ario_verify.verify_transaction(anchor_result["tx_id"])
                 if verify_result:
                     envelope["ario_verify_id"] = verify_result.get("verification_id")
                     envelope["ario_verify_status"] = verify_result.get("status")

@@ -14,7 +14,6 @@
         .back:hover { text-decoration: underline; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1.5rem; }
         .card { background: #F0F0F0; border: 1px solid #E0E0E4; border-radius: 6px; padding: 1.5rem; }
-        .card-full { grid-column: 1 / -1; }
         .card h2 { font-family: 'Besley', serif; font-weight: 800; color: #5427C8; margin-bottom: 1rem; font-size: 1rem; border-bottom: 1px solid #E0E0E4; padding-bottom: 0.5rem; }
         .card-danger { border-color: #da3633; }
         .card-danger h2 { color: #da3633; }
@@ -37,18 +36,19 @@
         .btn-blue:hover { background: #6B3FE4; }
         .actions { display: flex; gap: 0.75rem; margin-top: 1.5rem; }
         a { color: #5427C8; }
-        .verification-result { margin-top: 1rem; padding: 1rem; border-radius: 6px; }
-        .result-pass { background: #E8F5E9; border: 1px solid #238636; }
-        .result-fail { background: #FFEBEE; border: 1px solid #da3633; }
-        .result-item { display: flex; justify-content: space-between; padding: 0.3rem 0; font-size: 0.85rem; }
-        .check { color: #238636; }
-        .cross { color: #da3633; }
+        .verify-row { display: flex; justify-content: space-between; align-items: center; padding: 0.4rem 0; font-size: 0.85rem; }
+        .verify-row + .verify-row { border-top: 1px solid #E0E0E4; }
+        .verify-divider { border-top: 2px solid #E0E0E4; margin-top: 0.25rem; padding-top: 0.5rem; }
+        .check { color: #238636; font-weight: 600; }
+        .cross { color: #da3633; font-weight: 600; }
+        .unchecked { color: #B0B0B8; }
         .tamper-warning { background: #FFEBEE; border: 1px solid #da3633; border-radius: 6px; padding: 1rem; margin-top: 1rem; color: #da3633; }
         .prob-bar { display: flex; align-items: center; gap: 0.5rem; margin: 0.15rem 0; font-size: 0.8rem; }
         .prob-bar-fill { height: 8px; border-radius: 4px; background: #5427C8; }
         .prob-bar-track { flex: 1; height: 8px; border-radius: 4px; background: #E0E0E4; overflow: hidden; }
         .prob-label { width: 80px; text-align: right; color: #6B6B7B; }
         .prob-value { width: 50px; font-family: monospace; color: #5427C8; font-size: 0.75rem; }
+        .last-checked { font-size: 0.75rem; color: #6B6B7B; margin-top: 0.75rem; }
     </style>
 </head>
 <body>
@@ -58,9 +58,11 @@
 
     {% if envelope.get('tampered') %}
     <div class="tamper-warning">
-        This record has been tampered with locally. The Arweave-anchored version is unaffected.
+        This record has been tampered with locally. The permanent copy on ar.io is unaffected.
     </div>
     {% endif %}
+
+    {% set v = envelope.get('last_verification') %}
 
     <div class="grid">
         <!-- Decision Info -->
@@ -150,9 +152,9 @@
             </dl>
         </div>
 
-        <!-- Arweave Anchoring -->
+        <!-- ar.io Anchoring -->
         <div class="card">
-            <h2>Arweave Anchoring</h2>
+            <h2>ar.io Anchoring</h2>
             {% if envelope.arweave_tx_id %}
             <dl>
                 <dt>Transaction ID</dt>
@@ -167,127 +169,140 @@
             {% endif %}
         </div>
 
-        <!-- ar.io Verification -->
+        <!-- Upload Receipt -->
         <div class="card">
-            <h2>ar.io Verification</h2>
-            {% if envelope.ario_verify_id %}
+            <h2>Upload Receipt</h2>
+            {% if envelope.turbo_receipt %}
             <dl>
-                <dt>Verification ID</dt>
-                <dd class="mono">{{ envelope.ario_verify_id }}</dd>
-                <dt>Status</dt>
-                <dd>{{ envelope.ario_verify_status }}</dd>
-                <dt>Level</dt>
-                <dd>
-                    {% if envelope.ario_verify_level == 3 %}
-                        <span class="badge badge-green">Level 3 — Verified</span>
-                    {% elif envelope.ario_verify_level == 2 %}
-                        <span class="badge badge-yellow">Level 2 — Partially Verified</span>
-                    {% elif envelope.ario_verify_level == 1 %}
-                        <span class="badge badge-yellow">Level 1 — Pending</span>
-                    {% else %}
-                        <span class="badge badge-gray">Unknown</span>
-                    {% endif %}
-                </dd>
-                {% if envelope.ario_verify_attestation_url %}
-                <dt>Attestation</dt>
-                <dd><a href="{{ envelope.ario_verify_attestation_url }}" target="_blank">View Attestation</a></dd>
+                {% if envelope.turbo_receipt.timestamp %}
+                <dt>Upload Timestamp</dt>
+                <dd class="mono">{{ envelope.turbo_receipt.timestamp }} ms</dd>
+                {% endif %}
+                <dt>Owner (Wallet)</dt>
+                <dd class="mono">{{ envelope.turbo_receipt.owner }}</dd>
+                {% if envelope.turbo_receipt.version %}
+                <dt>Receipt Version</dt>
+                <dd>{{ envelope.turbo_receipt.version }}</dd>
+                {% endif %}
+                {% if envelope.turbo_receipt.deadlineHeight %}
+                <dt>Deadline Height</dt>
+                <dd class="mono">{{ envelope.turbo_receipt.deadlineHeight }}</dd>
+                {% endif %}
+                {% if envelope.turbo_receipt.public %}
+                <dt>Signer Public Key</dt>
+                <dd class="mono" style="font-size:0.7rem;">{{ envelope.turbo_receipt.public[:64] }}...</dd>
+                {% endif %}
+                {% if envelope.turbo_receipt.signature %}
+                <dt>Receipt Signature</dt>
+                <dd class="mono" style="font-size:0.7rem;">{{ envelope.turbo_receipt.signature[:64] }}...</dd>
                 {% endif %}
             </dl>
             {% else %}
-            <p style="color: #6B6B7B;">ar.io Verify not available or not yet verified.</p>
+            <p style="color: #6B6B7B;">No upload receipt available for this record.</p>
             {% endif %}
         </div>
 
-        <!-- Local Verification -->
-        {% if verification %}
-        <div class="card card-full">
-            <h2>Local Verification Result</h2>
-            <div class="verification-result {{ 'result-pass' if verification.overall else 'result-fail' }}">
-                <div class="result-item">
-                    <span>Record Hash Match</span>
-                    <span class="{{ 'check' if verification.hash_valid else 'cross' }}">
-                        {{ 'PASS' if verification.hash_valid else 'FAIL' }}
-                    </span>
-                </div>
-                <div class="result-item">
-                    <span>Signature Valid</span>
-                    <span class="{{ 'check' if verification.signature_valid else 'cross' }}">
-                        {{ 'PASS' if verification.signature_valid else 'FAIL' }}
-                    </span>
-                </div>
-                <div class="result-item" style="border-top: 1px solid #E0E0E4; margin-top: 0.5rem; padding-top: 0.5rem;">
-                    <strong>Overall</strong>
-                    <strong class="{{ 'check' if verification.overall else 'cross' }}">
-                        {{ 'VALID' if verification.overall else 'INVALID' }}
-                    </strong>
-                </div>
-                {% if not verification.hash_valid %}
-                <div style="margin-top: 0.75rem; font-size: 0.8rem;">
-                    <div>Stored hash: <span class="mono">{{ verification.stored_hash }}</span></div>
-                    <div>Computed hash: <span class="mono">{{ verification.computed_hash }}</span></div>
-                </div>
+        <!-- ar.io Verification -->
+        <div class="card">
+            <h2>ar.io Verification</h2>
+
+            <div class="verify-row">
+                <span>Hash Integrity</span>
+                {% if v %}
+                    <span class="{{ 'check' if v.hash_valid else 'cross' }}">{{ 'PASS' if v.hash_valid else 'FAIL' }}</span>
+                {% else %}
+                    <span class="{{ 'check' if local_verification.hash_valid else 'cross' }}">{{ 'PASS' if local_verification.hash_valid else 'FAIL' }}</span>
                 {% endif %}
             </div>
-            {% if envelope.arweave_tx_id and not verification.overall %}
-            <div style="margin-top: 1rem; padding: 0.75rem; background: #E8F5E9; border: 1px solid #238636; border-radius: 6px; font-size: 0.85rem;">
-                The original, untampered record is permanently stored on Arweave:
-                <a href="{{ envelope.arweave_url }}" target="_blank">{{ envelope.arweave_tx_id }}</a>
+            <div class="verify-row">
+                <span>Signature</span>
+                {% if v %}
+                    <span class="{{ 'check' if v.signature_valid else 'cross' }}">{{ 'PASS' if v.signature_valid else 'FAIL' }}</span>
+                {% else %}
+                    <span class="{{ 'check' if local_verification.signature_valid else 'cross' }}">{{ 'PASS' if local_verification.signature_valid else 'FAIL' }}</span>
+                {% endif %}
             </div>
-            {% endif %}
-        </div>
-        {% endif %}
-
-        <!-- External Verification -->
-        {% if external_verification %}
-        <div class="card card-full">
-            <h2>External Verification (Arweave)</h2>
-            {% if external_verification.arweave_data_found %}
-            <div class="verification-result {{ 'result-pass' if external_verification.arweave_matches_original else 'result-fail' }}">
-                <div class="result-item">
-                    <span>Arweave Data Found</span>
-                    <span class="check">YES</span>
-                </div>
-                <div class="result-item">
-                    <span>Arweave Record Hash</span>
-                    <span class="mono" style="font-size: 0.75rem;">{{ external_verification.arweave_record_hash[:32] }}...</span>
-                </div>
-                <div class="result-item">
-                    <span>Arweave Self-Consistent</span>
-                    <span class="{{ 'check' if external_verification.arweave_matches_original else 'cross' }}">
-                        {{ 'PASS' if external_verification.arweave_matches_original else 'FAIL' }}
+            <div class="verify-row">
+                <span>Permanent Copy</span>
+                {% if v %}
+                    <span class="{{ 'check' if v.permanent_copy_found else 'cross' }}">{{ 'Found' if v.permanent_copy_found else 'Not Found' }}</span>
+                {% else %}
+                    <span class="unchecked">Not checked</span>
+                {% endif %}
+            </div>
+            <div class="verify-row">
+                <span>Hash Match</span>
+                {% if v %}
+                    <span class="{{ 'check' if v.hash_match else 'cross' }}">{{ 'PASS' if v.hash_match else 'FAIL' }}</span>
+                {% else %}
+                    <span class="unchecked">Not checked</span>
+                {% endif %}
+            </div>
+            <div class="verify-row">
+                <span>Attestation</span>
+                {% if v and v.attestation_level %}
+                    <span>
+                        {% if v.attestation_level == 3 %}
+                            <span class="badge badge-green">Level 3</span>
+                        {% elif v.attestation_level == 2 %}
+                            <span class="badge badge-yellow">Level 2</span>
+                        {% elif v.attestation_level == 1 %}
+                            <span class="badge badge-yellow">Level 1</span>
+                        {% endif %}
                     </span>
-                </div>
-                <div class="result-item" style="border-top: 1px solid #E0E0E4; margin-top: 0.5rem; padding-top: 0.5rem;">
-                    <strong>Local Record Tampered</strong>
-                    <strong class="{{ 'cross' if external_verification.local_tampered else 'check' }}">
-                        {{ 'YES' if external_verification.local_tampered else 'NO' }}
-                    </strong>
-                </div>
+                {% else %}
+                    <span class="unchecked">Not checked</span>
+                {% endif %}
             </div>
-            {% if external_verification.local_tampered and external_verification.arweave_matches_original %}
-            <div style="margin-top: 1rem; padding: 0.75rem; background: #FFEBEE; border: 1px solid #da3633; border-radius: 6px; font-size: 0.85rem; color: #da3633;">
-                Local record has been modified, but the Arweave-anchored original is intact and verifiable.
+
+            <div class="verify-row verify-divider">
+                <strong>Overall</strong>
+                {% if v %}
+                    {% if not v.hash_valid and v.permanent_copy_found and v.hash_match %}
+                        <strong class="cross">TAMPERED</strong>
+                    {% elif v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
+                        <strong class="check">VERIFIED</strong>
+                    {% else %}
+                        <strong class="cross">FAILED</strong>
+                    {% endif %}
+                {% else %}
+                    <span class="unchecked">Not verified</span>
+                {% endif %}
+            </div>
+
+            {% if v %}
+            <div style="margin-top: 0.75rem; display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center;">
+                {% if v.report_url %}
+                <a href="{{ v.report_url }}" target="_blank" class="btn btn-blue" style="font-size: 0.75rem; padding: 0.3rem 0.6rem;">View Report</a>
+                {% endif %}
+                {% if v.pdf_url %}
+                <a href="{{ v.pdf_url }}" target="_blank" class="btn btn-blue" style="font-size: 0.75rem; padding: 0.3rem 0.6rem;">Download PDF</a>
+                {% endif %}
+            </div>
+            <div class="last-checked">
+                {% if v.attested_by %}Attested by <strong>{{ v.attested_by }}</strong>{% endif %}{% if v.attested_at %} at {{ v.attested_at[:19] }}Z{% endif %}{% if not v.attested_by %} Last verified: {{ v.verified_at[:19] }}Z{% endif %}
             </div>
             {% endif %}
-            {% else %}
-            <div class="verification-result result-fail">
-                <div class="result-item">
-                    <span>Arweave Data Found</span>
-                    <span class="cross">NO</span>
-                </div>
-                <p style="margin-top: 0.5rem; font-size: 0.85rem; color: #6B6B7B;">
-                    Could not retrieve the record from Arweave. The transaction may still be propagating.
-                </p>
+
+            {% if not v and envelope.arweave_tx_id %}
+            <div class="last-checked">
+                Hash and signature checked locally. Click <strong>Verify with ar.io</strong> for full verification.
+            </div>
+            {% endif %}
+
+            {% if v and not v.hash_valid and v.permanent_copy_found and v.hash_match %}
+            <div style="margin-top: 0.75rem; padding: 0.5rem 0.75rem; background: #E8F5E9; border: 1px solid #238636; border-radius: 4px; font-size: 0.8rem;">
+                Permanent record intact on ar.io:
+                <a href="{{ envelope.arweave_url }}" target="_blank">{{ envelope.arweave_tx_id[:20] }}...</a>
             </div>
             {% endif %}
         </div>
-        {% endif %}
     </div>
 
     <div class="actions">
-        <form action="/verify/{{ envelope.record.decision_id }}" method="POST" style="display:inline;">
-            <button type="submit" class="btn btn-primary">Re-Verify</button>
-        </form>
+        {% if envelope.arweave_tx_id %}
+        <a href="/ui/decisions/{{ envelope.record.decision_id }}?verify=true" class="btn btn-primary">Verify with ar.io</a>
+        {% endif %}
         {% if not envelope.get('tampered') %}
         <form action="/tamper/{{ envelope.record.decision_id }}" method="POST" style="display:inline;">
             <button type="submit" class="btn btn-danger">Tamper With Record</button>

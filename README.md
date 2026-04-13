@@ -10,7 +10,8 @@ Every AI prediction creates a **decision record** that is:
 2. **Linked to model lineage** — MLflow records which model version produced the output
 3. **Hashed & signed** — SHA-256 hash chain + Ed25519 digital signature
 4. **Anchored to Arweave** — Immutable permanent storage via ArDrive Turbo SDK
-5. **Independently verifiable** — AR.IO Gateway + AR.IO Verify produces attestations
+5. **Receipted** — Turbo upload receipt with millisecond timestamp and signed attestation
+6. **Independently verifiable** — ar.io Verify produces on-demand attestations
 
 If someone tampers with the local record, the **Arweave-anchored copy** remains intact and verifiable.
 
@@ -31,13 +32,53 @@ Decision Record (canonical JSON)
   |---> Ed25519 signature
   |
   v
-Proof Envelope
-  |---> Turbo SDK upload to Arweave
-  |---> AR.IO Verify attestation
+Proof
+  |---> Turbo SDK upload to Arweave (returns signed receipt with ms timestamp)
   |
   v
-Append-only local storage + Arweave permanent record
+Local storage: proof + anchoring metadata (Arweave TX, Turbo receipt)
+Arweave: proof only (record, hash, chain link, signature, public key)
+
+  ... later, on demand ...
+
+/verify endpoint
+  |---> Local verification (re-hash, check signature)
+  |---> External verification (fetch from Arweave, compare)
+  |---> ar.io Verify attestation (independent third-party check)
 ```
+
+### Recording vs Verification
+
+Recording and verification are separate concerns:
+
+**Recording** happens at prediction time — the system creates a proof, anchors it to Arweave, and stores the Turbo receipt. This is fast (~7s) and produces an immutable audit trail.
+
+**Verification** happens later, on demand — when an auditor, operator, or regulator needs to confirm records are still intact. The `/verify/{id}` endpoint re-hashes the record, checks the Ed25519 signature, fetches the proof from Arweave for comparison, and requests an ar.io Verify attestation.
+
+### What Gets Anchored
+
+The Arweave anchor contains only what's needed for independent verification:
+
+```json
+{
+  "record": { "decision_id": "...", "prediction": {...}, ... },
+  "record_hash": "SHA-256 of canonical JSON",
+  "previous_hash": "prior record's hash (or GENESIS)",
+  "signature": "Ed25519 signature",
+  "public_key": "Ed25519 public key"
+}
+```
+
+An auditor can verify any proof with standard cryptographic tools — no dependency on ar.io, MLflow, or any external service.
+
+### The Evidence Chain
+
+Each prediction creates multiple layers of evidence from independent parties:
+
+1. **Proof** (Ed25519 signature) — the AI system attests to the decision
+2. **Turbo receipt** (Turbo's signature + ms timestamp) — independent service attests when the proof was submitted
+3. **Arweave block** — network consensus confirms permanent storage
+4. **ar.io Verify** (on-demand, gateway operator's signature) — independent verification of the anchored data
 
 ## Quick Start
 
@@ -82,23 +123,23 @@ Submit the form with iris flower measurements. Default values are pre-filled.
 ### 2. View the Decision Record
 
 Click a decision ID to see the full record:
-- Model metadata (MLflow run ID, version)
-- Trace context (OpenTelemetry trace/span IDs)
-- Proof layer (record hash, chain link, signature)
-- Arweave anchoring (transaction ID, gateway URL)
-- AR.IO verification (level, attestation)
+- **Prediction** — class, probabilities with visual bars, features used
+- **Model metadata** — MLflow run ID, version, artifact URI
+- **Trace context** — OpenTelemetry trace/span IDs
+- **Proof layer** — record hash, chain link, Ed25519 signature
+- **Arweave anchoring** — transaction ID, gateway URL
+- **Turbo upload receipt** — millisecond timestamp, wallet owner, signed receipt
 
-### 3. Tamper with a Record
+### 3. Verify a Record
 
-Click **Tamper** to modify the local record's output hash.
+Click **Re-Verify** to run on-demand verification:
+- **Local verification** — re-hashes the record and checks the Ed25519 signature
+- **External verification** — fetches the proof from Arweave and compares
+- **ar.io Verify** — requests an independent attestation from the ar.io gateway
 
-### 4. Verify After Tampering
+### 4. Tamper with a Record
 
-Click **Verify** — local verification now **FAILS** because:
-- The record hash no longer matches the canonical JSON
-- The Ed25519 signature is invalid for the modified content
-
-If the record was anchored to Arweave, the external copy is **STILL VALID**.
+Click **Tamper** to modify the local record's output hash, then **Re-Verify** — local verification FAILS but the Arweave copy is still intact, proving the local record was modified after anchoring.
 
 ## API Reference
 
@@ -108,7 +149,7 @@ If the record was anchored to Arweave, the external copy is **STILL VALID**.
 | `/predict-form` | POST | Same, from HTML form (redirects to detail) |
 | `/decisions` | GET | List all decision records |
 | `/decisions/{id}` | GET | Get a single decision record |
-| `/verify/{id}` | POST | Verify a decision (local + external) |
+| `/verify/{id}` | POST | Verify a decision (local + Arweave + ar.io Verify) |
 | `/tamper/{id}` | POST | Tamper with a record (demo only) |
 
 ### Example: Make a Prediction
@@ -125,14 +166,16 @@ curl -X POST http://localhost:8000/predict \
 curl -X POST http://localhost:8000/verify/<decision_id>
 ```
 
-### Example: Tamper and Re-Verify
+## CLI Verification
+
+Verify records independently from the command line:
 
 ```bash
-# Tamper
-curl -X POST http://localhost:8000/tamper/<decision_id>
+# Verify all records
+python scripts/verify.py --all
 
-# Verify (will show hash_valid=false, signature_valid=false)
-curl -X POST http://localhost:8000/verify/<decision_id>
+# Verify a specific record
+python scripts/verify.py <decision_id>
 ```
 
 ## Configuration
@@ -144,8 +187,8 @@ Environment variables (prefix: `VAIDR_`):
 | `VAIDR_ARWEAVE_WALLET_PATH` | `keys/arweave_wallet.json` | Arweave JWK wallet |
 | `VAIDR_MLFLOW_TRACKING_URI` | `mlruns` | MLflow tracking directory |
 | `VAIDR_MLFLOW_MODEL_NAME` | `iris-classifier` | Registered model name |
-| `VAIDR_ARIO_GATEWAY_HOST` | `arweave.net` | AR.IO gateway hostname |
-| `VAIDR_ARIO_VERIFY_URL` | `http://localhost:4001` | AR.IO Verify service URL |
+| `VAIDR_ARIO_GATEWAY_HOST` | `turbo-gateway.com` | ar.io gateway hostname |
+| `VAIDR_ARIO_VERIFY_URL` | `https://vilenarios.com/local/verify` | ar.io Verify service URL |
 | `VAIDR_RECORDS_FILE` | `data/records.json` | Local record storage path |
 
 ## How It Works
@@ -157,13 +200,24 @@ Every prediction is tied to a specific model version. MLflow captures the run ID
 Each prediction creates a distributed trace. The trace ID and span ID are embedded in the decision record, allowing correlation with infrastructure monitoring.
 
 ### Proof Layer — Integrity
-Decision records are serialized to deterministic canonical JSON, then:
+Decision records are serialized to deterministic canonical JSON (sorted keys, compact separators, floats normalized to 6 decimal places), then:
 - **SHA-256 hashed** — any change to the record changes the hash
 - **Hash-chained** — each record links to the previous record's hash
 - **Ed25519 signed** — cryptographic proof of record origin
 
 ### ArDrive Turbo SDK — Anchoring
-The complete proof envelope is uploaded to Arweave permanent storage. Once confirmed, the data is immutable and publicly accessible.
+The proof is uploaded to Arweave permanent storage via the Turbo SDK. The upload returns a signed receipt with a millisecond-precision timestamp — an independent attestation of when the proof was submitted. Once confirmed on Arweave, the data is immutable and publicly accessible.
 
-### AR.IO Verify — Independent Validation
-AR.IO Verify independently fetches the Arweave data, recomputes hashes, verifies signatures, and produces a signed attestation — proving the record exists and is authentic without trusting the original system.
+### ar.io Verify — Independent Attestation
+When verification is requested, ar.io Verify independently fetches the Arweave data, recomputes hashes, checks signatures where available, and produces a signed attestation. Verification levels:
+- **Level 1** — Data found on the network, verification in progress
+- **Level 2** — Data hash confirmed, signature not yet available
+- **Level 3** — Digital signature verified, full authenticity confirmed
+
+### Auditor Verification
+An auditor can independently verify any proof with standard cryptographic tools:
+1. Fetch the proof from Arweave using the TX ID
+2. Recompute `SHA-256(canonical_json(record))` and compare to `record_hash`
+3. Verify the Ed25519 signature against the `public_key`
+4. Check hash chain links across records
+5. No dependency on ar.io, MLflow, or any external service required

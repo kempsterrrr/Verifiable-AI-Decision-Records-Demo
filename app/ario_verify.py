@@ -1,5 +1,4 @@
 import logging
-import time
 
 import requests
 
@@ -56,33 +55,26 @@ class ArioVerifyClient:
             logger.error(f"AR.IO Verify check failed: {e}")
             return None
 
-    def verify_transaction(self, tx_id: str) -> dict | None:
-        """Submit verification and poll for result."""
-        result = self.submit_verification(tx_id)
-        if not result:
-            return None
-
-        verification_id = result.get("verificationId")
-        if not verification_id:
-            return self._normalize_result(result)
-
-        # Poll for completion
-        for _ in range(10):
-            time.sleep(3)
-            check = self.check_verification(verification_id)
-            if check and check.get("level", 0) >= 2:
-                return self._normalize_result(check)
-
-        return self._normalize_result(result)
-
-    @staticmethod
-    def _normalize_result(data: dict) -> dict:
+    def _normalize_result(self, data: dict) -> dict:
         """Extract key fields from AR.IO Verify response."""
         links = data.get("links", {})
+        attestation = data.get("attestation", {})
+
+        # Links from the verify service are relative — resolve against base URL
+        def resolve(path):
+            if not path:
+                return None
+            if path.startswith("http"):
+                return path
+            return f"{self.base_url}{path}"
+
         return {
             "verification_id": data.get("verificationId"),
             "status": data.get("existence", {}).get("status", "unknown"),
             "level": data.get("level"),
-            "attestation_url": links.get("dashboard"),
-            "pdf_url": links.get("pdf"),
+            "report_url": resolve(links.get("dashboard")),
+            "pdf_url": resolve(links.get("pdf")),
+            "raw_data_url": links.get("rawData"),
+            "attested_by": attestation.get("gateway"),
+            "attested_at": attestation.get("attestedAt"),
         }

@@ -64,12 +64,6 @@ class ProofEngine:
             "previous_hash": previous_hash,
             "signature": signature,
             "public_key": public_key,
-            "arweave_tx_id": None,
-            "arweave_url": None,
-            "ario_verify_id": None,
-            "ario_verify_status": None,
-            "ario_verify_level": None,
-            "ario_verify_attestation_url": None,
         }
 
     def verify_local(self, envelope: dict) -> dict:

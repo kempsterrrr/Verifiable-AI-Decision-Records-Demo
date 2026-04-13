@@ -201,10 +201,10 @@ def verify_decision(request: Request, decision_id: str):
         "ario_verification": ario_result,
     }
 
-    # If called from browser form, redirect to detail page
+    # If called from browser, redirect to detail page with verification results
     accept = request.headers.get("accept", "")
     if "text/html" in accept:
-        return RedirectResponse(f"/ui/decisions/{decision_id}", status_code=303)
+        return RedirectResponse(f"/ui/decisions/{decision_id}?verify=true", status_code=303)
 
     return result
 

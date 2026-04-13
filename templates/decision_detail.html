@@ -41,6 +41,7 @@
         .result-pass { background: #E8F5E9; border: 1px solid #238636; }
         .result-fail { background: #FFEBEE; border: 1px solid #da3633; }
         .result-item { display: flex; justify-content: space-between; padding: 0.3rem 0; font-size: 0.85rem; }
+        .result-divider { border-top: 1px solid #E0E0E4; margin-top: 0.5rem; padding-top: 0.5rem; }
         .check { color: #238636; }
         .cross { color: #da3633; }
         .tamper-warning { background: #FFEBEE; border: 1px solid #da3633; border-radius: 6px; padding: 1rem; margin-top: 1rem; color: #da3633; }
@@ -58,7 +59,7 @@
 
     {% if envelope.get('tampered') %}
     <div class="tamper-warning">
-        This record has been tampered with locally. The Arweave-anchored version is unaffected.
+        This record has been tampered with locally. The permanent copy on ar.io is unaffected.
     </div>
     {% endif %}
 
@@ -150,9 +151,9 @@
             </dl>
         </div>
 
-        <!-- Arweave Anchoring -->
+        <!-- ar.io Anchoring -->
         <div class="card">
-            <h2>Arweave Anchoring</h2>
+            <h2>ar.io Anchoring</h2>
             {% if envelope.arweave_tx_id %}
             <dl>
                 <dt>Transaction ID</dt>
@@ -169,7 +170,7 @@
 
         <!-- Turbo Upload Receipt -->
         <div class="card">
-            <h2>Turbo Upload Receipt</h2>
+            <h2>Upload Receipt</h2>
             {% if envelope.turbo_receipt %}
             <dl>
                 {% if envelope.turbo_receipt.timestamp %}
@@ -196,108 +197,140 @@
                 {% endif %}
             </dl>
             {% else %}
-            <p style="color: #6B6B7B;">No Turbo receipt available for this record.</p>
+            <p style="color: #6B6B7B;">No upload receipt available for this record.</p>
             {% endif %}
         </div>
 
-        <!-- ar.io Verification -->
-        <div class="card">
-            <h2>ar.io Verification</h2>
-            <p style="color: #6B6B7B; font-size: 0.85rem; margin-bottom: 0.75rem;">
-                Click <strong>Re-Verify</strong> below to request an independent attestation from ar.io Verify.
-            </p>
-        </div>
-
-        <!-- Local Verification -->
-        {% if verification %}
+        <!-- Verification -->
         <div class="card card-full">
-            <h2>Local Verification Result</h2>
-            <div class="verification-result {{ 'result-pass' if verification.overall else 'result-fail' }}">
+            <h2>Verification</h2>
+
+            {% if verify_requested %}
+            {# Full verification results (user clicked "Verify with ar.io") #}
+            {% set local_ok = verification.overall %}
+            {% set remote_ok = arweave_verification and arweave_verification.data_found and arweave_verification.hash_match %}
+            {% set all_ok = local_ok and (remote_ok or not arweave_verification) %}
+
+            <div class="verification-result {{ 'result-pass' if all_ok else 'result-fail' }}">
                 <div class="result-item">
-                    <span>Record Hash Match</span>
+                    <span>Hash Integrity</span>
                     <span class="{{ 'check' if verification.hash_valid else 'cross' }}">
                         {{ 'PASS' if verification.hash_valid else 'FAIL' }}
                     </span>
                 </div>
                 <div class="result-item">
-                    <span>Signature Valid</span>
+                    <span>Signature</span>
                     <span class="{{ 'check' if verification.signature_valid else 'cross' }}">
                         {{ 'PASS' if verification.signature_valid else 'FAIL' }}
                     </span>
                 </div>
-                <div class="result-item" style="border-top: 1px solid #E0E0E4; margin-top: 0.5rem; padding-top: 0.5rem;">
+
+                {% if arweave_verification %}
+                <div class="result-item">
+                    <span>ar.io Permanent Copy</span>
+                    <span class="{{ 'check' if arweave_verification.data_found else 'cross' }}">
+                        {{ 'Found' if arweave_verification.data_found else 'Not Found' }}
+                    </span>
+                </div>
+                {% if arweave_verification.data_found %}
+                <div class="result-item">
+                    <span>ar.io Hash Match</span>
+                    <span class="{{ 'check' if arweave_verification.hash_match else 'cross' }}">
+                        {{ 'PASS' if arweave_verification.hash_match else 'FAIL' }}
+                    </span>
+                </div>
+                {% endif %}
+                {% endif %}
+
+                {% if ario_verification %}
+                <div class="result-item">
+                    <span>ar.io Attestation</span>
+                    <span>
+                        {% if ario_verification.level == 3 %}
+                            <span class="badge badge-green">Level 3 — Verified</span>
+                        {% elif ario_verification.level == 2 %}
+                            <span class="badge badge-yellow">Level 2 — Hash Verified</span>
+                        {% elif ario_verification.level == 1 %}
+                            <span class="badge badge-yellow">Level 1 — Pending</span>
+                        {% else %}
+                            <span class="badge badge-gray">Unavailable</span>
+                        {% endif %}
+                        {% if ario_verification.pdf_url %}
+                            <a href="{{ ario_verification.pdf_url }}" target="_blank" style="margin-left: 0.5rem; font-size: 0.8rem;">View PDF</a>
+                        {% endif %}
+                    </span>
+                </div>
+                {% endif %}
+
+                <div class="result-item result-divider">
                     <strong>Overall</strong>
+                    {% if not verification.overall and remote_ok %}
+                    <strong class="cross">LOCAL TAMPERED — PERMANENT RECORD INTACT</strong>
+                    {% elif all_ok %}
+                    <strong class="check">VERIFIED</strong>
+                    {% else %}
+                    <strong class="cross">FAILED</strong>
+                    {% endif %}
+                </div>
+            </div>
+
+            {% if not verification.hash_valid %}
+            <div style="margin-top: 0.75rem; font-size: 0.8rem;">
+                <div>Stored hash: <span class="mono">{{ verification.stored_hash }}</span></div>
+                <div>Computed hash: <span class="mono">{{ verification.computed_hash }}</span></div>
+            </div>
+            {% endif %}
+
+            {% if not verification.overall and remote_ok %}
+            <div style="margin-top: 1rem; padding: 0.75rem; background: #E8F5E9; border: 1px solid #238636; border-radius: 6px; font-size: 0.85rem;">
+                The local record has been modified, but the original is permanently stored and intact on ar.io:
+                <a href="{{ envelope.arweave_url }}" target="_blank">{{ envelope.arweave_tx_id }}</a>
+            </div>
+            {% endif %}
+
+            {% else %}
+            {# Default: local verification only #}
+            <div class="verification-result {{ 'result-pass' if verification.overall else 'result-fail' }}">
+                <div class="result-item">
+                    <span>Hash Integrity</span>
+                    <span class="{{ 'check' if verification.hash_valid else 'cross' }}">
+                        {{ 'PASS' if verification.hash_valid else 'FAIL' }}
+                    </span>
+                </div>
+                <div class="result-item">
+                    <span>Signature</span>
+                    <span class="{{ 'check' if verification.signature_valid else 'cross' }}">
+                        {{ 'PASS' if verification.signature_valid else 'FAIL' }}
+                    </span>
+                </div>
+                <div class="result-item result-divider">
+                    <strong>Local Integrity</strong>
                     <strong class="{{ 'check' if verification.overall else 'cross' }}">
                         {{ 'VALID' if verification.overall else 'INVALID' }}
                     </strong>
                 </div>
-                {% if not verification.hash_valid %}
-                <div style="margin-top: 0.75rem; font-size: 0.8rem;">
-                    <div>Stored hash: <span class="mono">{{ verification.stored_hash }}</span></div>
-                    <div>Computed hash: <span class="mono">{{ verification.computed_hash }}</span></div>
-                </div>
-                {% endif %}
             </div>
-            {% if envelope.arweave_tx_id and not verification.overall %}
-            <div style="margin-top: 1rem; padding: 0.75rem; background: #E8F5E9; border: 1px solid #238636; border-radius: 6px; font-size: 0.85rem;">
-                The original, untampered record is permanently stored on Arweave:
-                <a href="{{ envelope.arweave_url }}" target="_blank">{{ envelope.arweave_tx_id }}</a>
-            </div>
-            {% endif %}
-        </div>
-        {% endif %}
 
-        <!-- External Verification -->
-        {% if external_verification %}
-        <div class="card card-full">
-            <h2>External Verification (Arweave)</h2>
-            {% if external_verification.arweave_data_found %}
-            <div class="verification-result {{ 'result-pass' if external_verification.arweave_matches_original else 'result-fail' }}">
-                <div class="result-item">
-                    <span>Arweave Data Found</span>
-                    <span class="check">YES</span>
-                </div>
-                <div class="result-item">
-                    <span>Arweave Record Hash</span>
-                    <span class="mono" style="font-size: 0.75rem;">{{ external_verification.arweave_record_hash[:32] }}...</span>
-                </div>
-                <div class="result-item">
-                    <span>Arweave Self-Consistent</span>
-                    <span class="{{ 'check' if external_verification.arweave_matches_original else 'cross' }}">
-                        {{ 'PASS' if external_verification.arweave_matches_original else 'FAIL' }}
-                    </span>
-                </div>
-                <div class="result-item" style="border-top: 1px solid #E0E0E4; margin-top: 0.5rem; padding-top: 0.5rem;">
-                    <strong>Local Record Tampered</strong>
-                    <strong class="{{ 'cross' if external_verification.local_tampered else 'check' }}">
-                        {{ 'YES' if external_verification.local_tampered else 'NO' }}
-                    </strong>
-                </div>
-            </div>
-            {% if external_verification.local_tampered and external_verification.arweave_matches_original %}
-            <div style="margin-top: 1rem; padding: 0.75rem; background: #FFEBEE; border: 1px solid #da3633; border-radius: 6px; font-size: 0.85rem; color: #da3633;">
-                Local record has been modified, but the Arweave-anchored original is intact and verifiable.
+            {% if not verification.hash_valid %}
+            <div style="margin-top: 0.75rem; font-size: 0.8rem;">
+                <div>Stored hash: <span class="mono">{{ verification.stored_hash }}</span></div>
+                <div>Computed hash: <span class="mono">{{ verification.computed_hash }}</span></div>
             </div>
             {% endif %}
-            {% else %}
-            <div class="verification-result result-fail">
-                <div class="result-item">
-                    <span>Arweave Data Found</span>
-                    <span class="cross">NO</span>
-                </div>
-                <p style="margin-top: 0.5rem; font-size: 0.85rem; color: #6B6B7B;">
-                    Could not retrieve the record from Arweave. The transaction may still be propagating.
-                </p>
-            </div>
+
+            {% if envelope.arweave_tx_id %}
+            <p style="margin-top: 1rem; font-size: 0.85rem; color: #6B6B7B;">
+                Click <strong>Verify with ar.io</strong> to check the permanent copy and get an independent attestation.
+            </p>
+            {% endif %}
             {% endif %}
         </div>
-        {% endif %}
     </div>
 
     <div class="actions">
-        <form action="/verify/{{ envelope.record.decision_id }}" method="POST" style="display:inline;">
-            <button type="submit" class="btn btn-primary">Re-Verify</button>
-        </form>
+        {% if envelope.arweave_tx_id %}
+        <a href="/ui/decisions/{{ envelope.record.decision_id }}?verify=true" class="btn btn-primary">Verify with ar.io</a>
+        {% endif %}
         {% if not envelope.get('tampered') %}
         <form action="/tamper/{{ envelope.record.decision_id }}" method="POST" style="display:inline;">
             <button type="submit" class="btn btn-danger">Tamper With Record</button>

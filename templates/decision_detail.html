@@ -249,9 +249,6 @@
                         {% elif v.attestation_level == 1 %}
                             <span class="badge badge-yellow">Level 1</span>
                         {% endif %}
-                        {% if v.pdf_url %}
-                            <a href="{{ v.pdf_url }}" target="_blank" style="margin-left: 0.5rem; font-size: 0.8rem;">PDF</a>
-                        {% endif %}
                     </span>
                 {% else %}
                     <span class="unchecked">Not checked</span>
@@ -274,8 +271,16 @@
             </div>
 
             {% if v %}
+            <div style="margin-top: 0.75rem; display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center;">
+                {% if v.report_url %}
+                <a href="{{ v.report_url }}" target="_blank" class="btn btn-blue" style="font-size: 0.75rem; padding: 0.3rem 0.6rem;">View Report</a>
+                {% endif %}
+                {% if v.pdf_url %}
+                <a href="{{ v.pdf_url }}" target="_blank" class="btn btn-blue" style="font-size: 0.75rem; padding: 0.3rem 0.6rem;">Download PDF</a>
+                {% endif %}
+            </div>
             <div class="last-checked">
-                Last verified: {{ v.verified_at[:19] }}Z
+                {% if v.attested_by %}Attested by <strong>{{ v.attested_by }}</strong>{% endif %}{% if v.attested_at %} at {{ v.attested_at[:19] }}Z{% endif %}{% if not v.attested_by %} Last verified: {{ v.verified_at[:19] }}Z{% endif %}
             </div>
             {% endif %}
 

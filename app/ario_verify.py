@@ -55,14 +55,26 @@ class ArioVerifyClient:
             logger.error(f"AR.IO Verify check failed: {e}")
             return None
 
-    @staticmethod
-    def _normalize_result(data: dict) -> dict:
+    def _normalize_result(self, data: dict) -> dict:
         """Extract key fields from AR.IO Verify response."""
         links = data.get("links", {})
+        attestation = data.get("attestation", {})
+
+        # Links from the verify service are relative — resolve against base URL
+        def resolve(path):
+            if not path:
+                return None
+            if path.startswith("http"):
+                return path
+            return f"{self.base_url}{path}"
+
         return {
             "verification_id": data.get("verificationId"),
             "status": data.get("existence", {}).get("status", "unknown"),
             "level": data.get("level"),
-            "attestation_url": links.get("dashboard"),
-            "pdf_url": links.get("pdf"),
+            "report_url": resolve(links.get("dashboard")),
+            "pdf_url": resolve(links.get("pdf")),
+            "raw_data_url": links.get("rawData"),
+            "attested_by": attestation.get("gateway"),
+            "attested_at": attestation.get("attestedAt"),
         }

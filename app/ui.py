@@ -47,8 +47,10 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
             "permanent_copy_found": False,
             "hash_match": False,
             "attestation_level": None,
-            "attestation_url": None,
+            "report_url": None,
             "pdf_url": None,
+            "attested_by": None,
+            "attested_at": None,
         }
 
         # Fetch from ar.io gateway and compare
@@ -64,8 +66,10 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
             if ario_result:
                 normalized = app.state.ario_verify._normalize_result(ario_result)
                 result["attestation_level"] = normalized.get("level")
-                result["attestation_url"] = normalized.get("attestation_url")
+                result["report_url"] = normalized.get("report_url")
                 result["pdf_url"] = normalized.get("pdf_url")
+                result["attested_by"] = normalized.get("attested_by")
+                result["attested_at"] = normalized.get("attested_at")
 
         # Persist results on the envelope
         envelope["last_verification"] = result

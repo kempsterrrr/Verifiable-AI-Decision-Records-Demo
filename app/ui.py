@@ -75,11 +75,17 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
         envelope["last_verification"] = result
         app.state.store.update(decision_id, envelope)
 
+    # Check Turbo status for anchored records (fast, single HTTP call)
+    turbo_status = None
+    if envelope.get("arweave_tx_id"):
+        turbo_status = app.state.anchor.check_status(envelope["arweave_tx_id"])
+
     return templates.TemplateResponse(
         request,
         "decision_detail.html",
         {
             "envelope": envelope,
             "local_verification": local,
+            "turbo_status": turbo_status,
         },
     )

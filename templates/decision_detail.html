@@ -162,7 +162,19 @@
                 <dt>Gateway URL</dt>
                 <dd><a href="{{ envelope.arweave_url }}" target="_blank">{{ envelope.arweave_url }}</a></dd>
                 <dt>Status</dt>
-                <dd><span class="badge badge-green">Anchored</span></dd>
+                <dd>
+                    {% if turbo_status and turbo_status.status == 'FINALIZED' %}
+                        <span class="badge badge-green">Permanent</span>
+                    {% elif turbo_status and turbo_status.status == 'CONFIRMED' and turbo_status.info == 'pending' %}
+                        <span class="badge badge-yellow">Bundled — finalizing on Arweave</span>
+                    {% elif turbo_status and turbo_status.status == 'CONFIRMED' %}
+                        <span class="badge badge-yellow">Confirmed — awaiting bundle</span>
+                    {% elif turbo_status and turbo_status.status == 'NOT_FOUND' %}
+                        <span class="badge badge-yellow">Uploading — indexing in progress</span>
+                    {% else %}
+                        <span class="badge badge-yellow">Anchored</span>
+                    {% endif %}
+                </dd>
             </dl>
             {% else %}
             <p style="color: #6B6B7B;">Not anchored — no Arweave wallet configured or upload not performed.</p>
@@ -262,6 +274,8 @@
                         <strong class="cross">TAMPERED</strong>
                     {% elif v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
                         <strong class="check">VERIFIED</strong>
+                    {% elif v.hash_valid and v.signature_valid and not v.permanent_copy_found %}
+                        <span class="badge badge-yellow" style="font-size: 0.85rem;">Pending</span>
                     {% else %}
                         <strong class="cross">FAILED</strong>
                     {% endif %}
@@ -270,7 +284,19 @@
                 {% endif %}
             </div>
 
-            {% if v %}
+            {% if v and not v.permanent_copy_found and v.hash_valid %}
+            <div style="margin-top: 0.75rem; padding: 0.5rem 0.75rem; background: #FFF8E1; border: 1px solid #9e6a03; border-radius: 4px; font-size: 0.8rem; color: #6B6B7B;">
+                {% if turbo_status and turbo_status.status == 'FINALIZED' %}
+                    Data is permanent on Arweave but couldn't be fetched from the gateway. This may be a temporary issue — try again.
+                {% elif turbo_status and turbo_status.status == 'CONFIRMED' %}
+                    Proof is confirmed on Turbo but hasn't finalized on Arweave yet. Verification will be available once the data is permanent. Try again later.
+                {% else %}
+                    Proof was uploaded but isn't available for verification yet. Try again in a few minutes.
+                {% endif %}
+            </div>
+            {% endif %}
+
+            {% if v and v.permanent_copy_found %}
             <div style="margin-top: 0.75rem; display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center;">
                 {% if v.report_url %}
                 <a href="{{ v.report_url }}" target="_blank" class="btn btn-blue" style="font-size: 0.75rem; padding: 0.3rem 0.6rem;">View Report</a>

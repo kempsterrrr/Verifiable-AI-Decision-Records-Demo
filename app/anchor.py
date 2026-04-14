@@ -103,3 +103,22 @@ class ArweaveAnchor:
         except Exception as e:
             logger.error(f"Failed to fetch from Arweave: {e}")
             return None
+
+    def check_status(self, tx_id: str) -> dict:
+        """Check upload status via Turbo status endpoint."""
+        try:
+            resp = requests.get(
+                f"https://turbo.ardrive.io/tx/{tx_id}/status",
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return {
+                    "status": data.get("status", "UNKNOWN"),
+                    "info": data.get("info"),
+                    "bundle_id": data.get("bundleId"),
+                }
+            return {"status": "NOT_FOUND"}
+        except Exception as e:
+            logger.error(f"Failed to check Turbo status: {e}")
+            return {"status": "UNKNOWN"}

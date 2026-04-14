@@ -5,336 +5,662 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Decision {{ envelope.record.decision_id[:8] }} — Verifiable AI</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Besley:wght@800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Besley:wght@400;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --primary: #5427C8;
+            --primary-hover: #6B3FE4;
+            --lavender: #DFD6F7;
+            --black: #23232D;
+            --white: #FFFFFF;
+            --surface: #F7F7F8;
+            --border: #E4E4E8;
+            --muted: #8A8A99;
+            --green: #1A7F37;
+            --green-bg: #DAFBE1;
+            --yellow: #9A6700;
+            --yellow-bg: #FFF8C5;
+            --red: #CF222E;
+            --red-bg: #FFEBE9;
+            --gray-bg: #F0F0F4;
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Plus Jakarta Sans', sans-serif; background: #FFFFFF; color: #23232D; padding: 2rem; }
-        h1 { font-family: 'Besley', serif; font-weight: 800; color: #5427C8; margin-bottom: 0.5rem; font-size: 1.3rem; }
-        .back { color: #5427C8; text-decoration: none; font-size: 0.9rem; display: inline-block; margin-bottom: 1rem; }
-        .back:hover { text-decoration: underline; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1.5rem; }
-        .card { background: #F0F0F0; border: 1px solid #E0E0E4; border-radius: 6px; padding: 1.5rem; }
-        .card h2 { font-family: 'Besley', serif; font-weight: 800; color: #5427C8; margin-bottom: 1rem; font-size: 1rem; border-bottom: 1px solid #E0E0E4; padding-bottom: 0.5rem; }
-        .card-danger { border-color: #da3633; }
-        .card-danger h2 { color: #da3633; }
-        dl { display: grid; grid-template-columns: auto 1fr; gap: 0.4rem 1rem; }
-        dt { color: #6B6B7B; font-size: 0.8rem; text-transform: uppercase; padding-top: 0.2rem; }
-        dd { font-size: 0.85rem; word-break: break-all; }
-        .mono { font-family: monospace; color: #5427C8; }
-        .badge { padding: 0.2rem 0.5rem; border-radius: 12px; font-size: 0.75rem; font-weight: 500; display: inline-block; }
-        .badge-green { background: #238636; color: #fff; }
-        .badge-red { background: #da3633; color: #fff; }
-        .badge-yellow { background: #9e6a03; color: #fff; }
-        .badge-gray { background: #E0E0E4; color: #6B6B7B; }
-        .badge-primary { background: #DFD6F7; color: #5427C8; font-weight: 600; }
-        .btn { padding: 0.5rem 1rem; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: 500; text-decoration: none; display: inline-block; font-family: 'Plus Jakarta Sans', sans-serif; }
-        .btn-primary { background: #5427C8; color: #fff; }
-        .btn-primary:hover { background: #6B3FE4; }
-        .btn-danger { background: #da3633; color: #fff; }
-        .btn-danger:hover { background: #f85149; }
-        .btn-blue { background: #5427C8; color: #fff; }
-        .btn-blue:hover { background: #6B3FE4; }
-        .actions { display: flex; gap: 0.75rem; margin-top: 1.5rem; }
-        a { color: #5427C8; }
-        .verify-row { display: flex; justify-content: space-between; align-items: center; padding: 0.4rem 0; font-size: 0.85rem; }
-        .verify-row + .verify-row { border-top: 1px solid #E0E0E4; }
-        .verify-divider { border-top: 2px solid #E0E0E4; margin-top: 0.25rem; padding-top: 0.5rem; }
-        .check { color: #238636; font-weight: 600; }
-        .cross { color: #da3633; font-weight: 600; }
-        .unchecked { color: #B0B0B8; }
-        .tamper-warning { background: #FFEBEE; border: 1px solid #da3633; border-radius: 6px; padding: 1rem; margin-top: 1rem; color: #da3633; }
-        .prob-bar { display: flex; align-items: center; gap: 0.5rem; margin: 0.15rem 0; font-size: 0.8rem; }
-        .prob-bar-fill { height: 8px; border-radius: 4px; background: #5427C8; }
-        .prob-bar-track { flex: 1; height: 8px; border-radius: 4px; background: #E0E0E4; overflow: hidden; }
-        .prob-label { width: 80px; text-align: right; color: #6B6B7B; }
-        .prob-value { width: 50px; font-family: monospace; color: #5427C8; font-size: 0.75rem; }
-        .last-checked { font-size: 0.75rem; color: #6B6B7B; margin-top: 0.75rem; }
+
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background: var(--white);
+            color: var(--black);
+            min-height: 100vh;
+        }
+
+        /* ── Top bar ── */
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 2rem;
+            border-bottom: 1px solid var(--border);
+            background: var(--white);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        .topbar-left {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        .topbar-left img { height: 22px; opacity: 0.9; }
+        .topbar-left a { color: var(--black); text-decoration: none; }
+        .topbar-title {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 1rem;
+            color: var(--black);
+        }
+        .topbar-right {
+            display: flex;
+            gap: 0.75rem;
+            align-items: center;
+        }
+
+        /* ── Main ── */
+        .main { padding: 2rem; max-width: 1400px; margin: 0 auto; }
+
+        /* ── Page header ── */
+        .page-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            margin-bottom: 2rem;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .page-header-left {}
+        .page-header h1 {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 1.5rem;
+            color: var(--black);
+            letter-spacing: -0.02em;
+            line-height: 1.2;
+        }
+        .page-id {
+            font-family: 'JetBrains Mono', 'SF Mono', monospace;
+            font-size: 0.8rem;
+            color: var(--muted);
+            margin-top: 0.25rem;
+        }
+        .page-actions {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        /* ── Alert banner ── */
+        .alert {
+            padding: 0.75rem 1rem;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            margin-bottom: 2rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .alert-danger {
+            background: var(--red-bg);
+            border: 1px solid var(--red);
+            color: var(--red);
+        }
+        .alert-success {
+            background: var(--green-bg);
+            border: 1px solid var(--green);
+            color: var(--green);
+        }
+
+        /* ── Grid ── */
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+        .grid-full { grid-column: 1 / -1; }
+
+        /* ── Section cards ── */
+        .section {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .section-header {
+            padding: 0.75rem 1rem;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .section-body {
+            padding: 1rem;
+        }
+        .section-danger { border-color: var(--red); }
+        .section-danger .section-header { background: var(--red-bg); color: var(--red); }
+
+        /* ── Key-value rows ── */
+        .kv { display: flex; flex-direction: column; gap: 0; }
+        .kv-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            padding: 0.5rem 0;
+            gap: 1rem;
+        }
+        .kv-row + .kv-row { border-top: 1px solid var(--border); }
+        .kv-key {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            min-width: 100px;
+            padding-top: 0.1rem;
+        }
+        .kv-value {
+            font-size: 0.85rem;
+            text-align: right;
+            word-break: break-all;
+            flex: 1;
+        }
+        .mono {
+            font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+            color: var(--primary);
+            font-size: 0.8rem;
+        }
+        .mono-sm { font-size: 0.7rem; }
+
+        /* ── Badges ── */
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            padding: 0.2rem 0.55rem;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .badge-green { background: var(--green-bg); color: var(--green); }
+        .badge-yellow { background: var(--yellow-bg); color: var(--yellow); }
+        .badge-red { background: var(--red-bg); color: var(--red); }
+        .badge-gray { background: var(--gray-bg); color: var(--muted); }
+        .badge-primary { background: var(--lavender); color: var(--primary); }
+        .badge-dot {
+            width: 5px; height: 5px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .badge-green .badge-dot { background: var(--green); }
+        .badge-yellow .badge-dot { background: var(--yellow); }
+        .badge-red .badge-dot { background: var(--red); }
+
+        /* ── Probability bars ── */
+        .prob-row {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.2rem 0;
+        }
+        .prob-label {
+            width: 80px;
+            text-align: right;
+            font-size: 0.75rem;
+            color: var(--muted);
+        }
+        .prob-track {
+            flex: 1;
+            height: 6px;
+            border-radius: 3px;
+            background: var(--border);
+            overflow: hidden;
+        }
+        .prob-fill {
+            height: 100%;
+            border-radius: 3px;
+            background: var(--primary);
+        }
+        .prob-value {
+            width: 45px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.7rem;
+            color: var(--primary);
+        }
+
+        /* ── Verification card ── */
+        .verify-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 0;
+            font-size: 0.85rem;
+        }
+        .verify-row + .verify-row { border-top: 1px solid var(--border); }
+        .verify-divider { border-top: 2px solid var(--border); margin-top: 0.25rem; padding-top: 0.5rem; }
+        .check { color: var(--green); font-weight: 600; }
+        .cross { color: var(--red); font-weight: 600; }
+        .unchecked { color: var(--border); }
+        .verify-actions {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 0.75rem;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .verify-meta {
+            font-size: 0.75rem;
+            color: var(--muted);
+            margin-top: 0.5rem;
+        }
+        .verify-note {
+            margin-top: 0.75rem;
+            padding: 0.6rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.8rem;
+        }
+        .verify-note-warn { background: var(--yellow-bg); color: var(--yellow); border: 1px solid var(--yellow); }
+        .verify-note-ok { background: var(--green-bg); color: var(--green); border: 1px solid var(--green); }
+
+        /* ── Buttons ── */
+        .btn {
+            padding: 0.5rem 1rem;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            font-weight: 600;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            transition: all 0.15s;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+        .btn-primary { background: var(--primary); color: var(--white); }
+        .btn-primary:hover { background: var(--primary-hover); }
+        .btn-outline { background: transparent; color: var(--primary); border: 1px solid var(--lavender); }
+        .btn-outline:hover { background: var(--lavender); }
+        .btn-danger-outline { background: transparent; color: var(--red); border: 1px solid var(--red-bg); }
+        .btn-danger-outline:hover { background: var(--red-bg); }
+        .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.75rem; border-radius: 4px; }
+        a { color: var(--primary); text-decoration: none; }
+        a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
-    <a href="/" class="back">&larr; Back to Dashboard</a>
-    <h1>Decision Record</h1>
-    <p style="color: #6B6B7B; font-size: 0.85rem;">{{ envelope.record.decision_id }}</p>
-
-    {% if envelope.get('tampered') %}
-    <div class="tamper-warning">
-        This record has been tampered with locally. The permanent copy on ar.io is unaffected.
+    <div class="topbar">
+        <div class="topbar-left">
+            <a href="/"><img src="https://ar.io/brand/ario-full-black.svg" alt="ar.io"></a>
+            <a href="/" class="topbar-title">Verifiable AI</a>
+        </div>
+        <div class="topbar-right">
+            <a href="/" class="btn btn-outline btn-sm">&larr; Dashboard</a>
+        </div>
     </div>
-    {% endif %}
 
-    {% set v = envelope.get('last_verification') %}
+    <div class="main">
+        {% set v = envelope.get('last_verification') %}
 
-    <div class="grid">
-        <!-- Decision Info -->
-        <div class="card">
-            <h2>Decision Record</h2>
-            <dl>
-                <dt>Decision ID</dt>
-                <dd class="mono">{{ envelope.record.decision_id }}</dd>
-                <dt>Timestamp</dt>
-                <dd>{{ envelope.record.timestamp }}</dd>
-                <dt>Input Hash</dt>
-                <dd class="mono">{{ envelope.record.input_hash }}</dd>
-                <dt>Output Hash</dt>
-                <dd class="mono">{{ envelope.record.output_hash }}</dd>
-                <dt>Latency</dt>
-                <dd>{{ envelope.record.latency_ms }} ms</dd>
-                <dt>Human Override</dt>
-                <dd>{{ envelope.record.human_override }}</dd>
-            </dl>
+        <div class="page-header">
+            <div class="page-header-left">
+                <h1>Decision Record</h1>
+                <div class="page-id">{{ envelope.record.decision_id }}</div>
+            </div>
+            <div class="page-actions">
+                {% if envelope.arweave_tx_id %}
+                <a href="/ui/decisions/{{ envelope.record.decision_id }}?verify=true" class="btn btn-primary btn-sm">Verify with ar.io</a>
+                {% endif %}
+                {% if not envelope.get('tampered') %}
+                <form action="/tamper/{{ envelope.record.decision_id }}" method="POST" style="display:inline;">
+                    <button type="submit" class="btn btn-danger-outline btn-sm">Tamper</button>
+                </form>
+                {% endif %}
+            </div>
         </div>
 
-        <!-- Prediction -->
-        <div class="card">
-            <h2>Prediction</h2>
-            <dl>
-                <dt>Predicted Class</dt>
-                <dd><span class="badge badge-primary">{{ envelope.record.prediction['class'] }}</span></dd>
-                <dt>Class Index</dt>
-                <dd>{{ envelope.record.prediction.class_index }}</dd>
-                <dt>Features Used</dt>
-                <dd>{{ envelope.record.prediction.features_used | join(', ') }}</dd>
-            </dl>
-            <div style="margin-top: 1rem;">
-                <dt style="color: #6B6B7B; font-size: 0.8rem; text-transform: uppercase; margin-bottom: 0.5rem;">Probabilities</dt>
-                {% for cls, prob in envelope.record.prediction.probabilities.items() %}
-                <div class="prob-bar">
-                    <span class="prob-label">{{ cls }}</span>
-                    <div class="prob-bar-track">
-                        <div class="prob-bar-fill" style="width: {{ (prob * 100) }}%"></div>
+        {% if envelope.get('tampered') %}
+        <div class="alert alert-danger">
+            This record has been tampered with locally. The permanent copy on ar.io is unaffected.
+        </div>
+        {% endif %}
+
+        <div class="grid">
+            <!-- Prediction -->
+            <div class="section">
+                <div class="section-header">Prediction</div>
+                <div class="section-body">
+                    <div class="kv">
+                        <div class="kv-row">
+                            <span class="kv-key">Class</span>
+                            <span class="kv-value"><span class="badge badge-primary">{{ envelope.record.prediction['class'] }}</span></span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Index</span>
+                            <span class="kv-value">{{ envelope.record.prediction.class_index }}</span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Features</span>
+                            <span class="kv-value">{{ envelope.record.prediction.features_used | join(', ') }}</span>
+                        </div>
                     </div>
-                    <span class="prob-value">{{ "%.4f"|format(prob) }}</span>
+                    <div style="margin-top: 0.75rem;">
+                        {% for cls, prob in envelope.record.prediction.probabilities.items() %}
+                        <div class="prob-row">
+                            <span class="prob-label">{{ cls }}</span>
+                            <div class="prob-track">
+                                <div class="prob-fill" style="width: {{ (prob * 100) }}%"></div>
+                            </div>
+                            <span class="prob-value">{{ "%.4f"|format(prob) }}</span>
+                        </div>
+                        {% endfor %}
+                    </div>
                 </div>
-                {% endfor %}
             </div>
-        </div>
 
-        <!-- MLflow Metadata -->
-        <div class="card">
-            <h2>MLflow Metadata</h2>
-            <dl>
-                <dt>Model Name</dt>
-                <dd>{{ envelope.record.model_name }}</dd>
-                <dt>Model Version</dt>
-                <dd>{{ envelope.record.model_version }}</dd>
-                <dt>Run ID</dt>
-                <dd class="mono">{{ envelope.record.mlflow_run_id }}</dd>
-                <dt>Artifact URI</dt>
-                <dd class="mono">{{ envelope.record.artifact_uri }}</dd>
-            </dl>
-        </div>
-
-        <!-- OpenTelemetry Trace -->
-        <div class="card">
-            <h2>OpenTelemetry Trace</h2>
-            <dl>
-                <dt>Service</dt>
-                <dd>{{ envelope.record.service_name }}</dd>
-                <dt>Trace ID</dt>
-                <dd class="mono">{{ envelope.record.trace_id }}</dd>
-                <dt>Span ID</dt>
-                <dd class="mono">{{ envelope.record.span_id }}</dd>
-            </dl>
-        </div>
-
-        <!-- Proof Layer -->
-        <div class="card {% if envelope.get('tampered') %}card-danger{% endif %}">
-            <h2>Proof Layer</h2>
-            <dl>
-                <dt>Record Hash</dt>
-                <dd class="mono">{{ envelope.record_hash }}</dd>
-                <dt>Previous Hash</dt>
-                <dd class="mono">{{ envelope.previous_hash }}</dd>
-                <dt>Signature</dt>
-                <dd class="mono" style="font-size:0.7rem;">{{ envelope.signature }}</dd>
-                <dt>Public Key</dt>
-                <dd class="mono" style="font-size:0.7rem;">{{ envelope.public_key }}</dd>
-            </dl>
-        </div>
-
-        <!-- ar.io Anchoring -->
-        <div class="card">
-            <h2>ar.io Anchoring</h2>
-            {% if envelope.arweave_tx_id %}
-            <dl>
-                <dt>Transaction ID</dt>
-                <dd class="mono"><a href="{{ envelope.arweave_url }}" target="_blank">{{ envelope.arweave_tx_id }}</a></dd>
-                <dt>Gateway URL</dt>
-                <dd><a href="{{ envelope.arweave_url }}" target="_blank">{{ envelope.arweave_url }}</a></dd>
-                <dt>Status</dt>
-                <dd>
-                    {% if turbo_status and turbo_status.status == 'FINALIZED' %}
-                        <span class="badge badge-green">Permanent</span>
-                    {% elif turbo_status and turbo_status.status == 'CONFIRMED' and turbo_status.info == 'pending' %}
-                        <span class="badge badge-yellow">Bundled — finalizing on Arweave</span>
-                    {% elif turbo_status and turbo_status.status == 'CONFIRMED' %}
-                        <span class="badge badge-yellow">Confirmed — awaiting bundle</span>
-                    {% elif turbo_status and turbo_status.status == 'NOT_FOUND' %}
-                        <span class="badge badge-yellow">Uploading — indexing in progress</span>
-                    {% else %}
-                        <span class="badge badge-yellow">Anchored</span>
-                    {% endif %}
-                </dd>
-            </dl>
-            {% else %}
-            <p style="color: #6B6B7B;">Not anchored — no Arweave wallet configured or upload not performed.</p>
-            {% endif %}
-        </div>
-
-        <!-- Upload Receipt -->
-        <div class="card">
-            <h2>Upload Receipt</h2>
-            {% if envelope.turbo_receipt %}
-            <dl>
-                {% if envelope.turbo_receipt.timestamp %}
-                <dt>Upload Timestamp</dt>
-                <dd class="mono">{{ envelope.turbo_receipt.timestamp }} ms</dd>
-                {% endif %}
-                <dt>Owner (Wallet)</dt>
-                <dd class="mono">{{ envelope.turbo_receipt.owner }}</dd>
-                {% if envelope.turbo_receipt.version %}
-                <dt>Receipt Version</dt>
-                <dd>{{ envelope.turbo_receipt.version }}</dd>
-                {% endif %}
-                {% if envelope.turbo_receipt.deadlineHeight %}
-                <dt>Deadline Height</dt>
-                <dd class="mono">{{ envelope.turbo_receipt.deadlineHeight }}</dd>
-                {% endif %}
-                {% if envelope.turbo_receipt.public %}
-                <dt>Signer Public Key</dt>
-                <dd class="mono" style="font-size:0.7rem;">{{ envelope.turbo_receipt.public[:64] }}...</dd>
-                {% endif %}
-                {% if envelope.turbo_receipt.signature %}
-                <dt>Receipt Signature</dt>
-                <dd class="mono" style="font-size:0.7rem;">{{ envelope.turbo_receipt.signature[:64] }}...</dd>
-                {% endif %}
-            </dl>
-            {% else %}
-            <p style="color: #6B6B7B;">No upload receipt available for this record.</p>
-            {% endif %}
-        </div>
-
-        <!-- ar.io Verification -->
-        <div class="card">
-            <h2>ar.io Verification</h2>
-
-            <div class="verify-row">
-                <span>Hash Integrity</span>
-                {% if v %}
-                    <span class="{{ 'check' if v.hash_valid else 'cross' }}">{{ 'PASS' if v.hash_valid else 'FAIL' }}</span>
-                {% else %}
-                    <span class="{{ 'check' if local_verification.hash_valid else 'cross' }}">{{ 'PASS' if local_verification.hash_valid else 'FAIL' }}</span>
-                {% endif %}
-            </div>
-            <div class="verify-row">
-                <span>Signature</span>
-                {% if v %}
-                    <span class="{{ 'check' if v.signature_valid else 'cross' }}">{{ 'PASS' if v.signature_valid else 'FAIL' }}</span>
-                {% else %}
-                    <span class="{{ 'check' if local_verification.signature_valid else 'cross' }}">{{ 'PASS' if local_verification.signature_valid else 'FAIL' }}</span>
-                {% endif %}
-            </div>
-            <div class="verify-row">
-                <span>Permanent Copy</span>
-                {% if v %}
-                    <span class="{{ 'check' if v.permanent_copy_found else 'cross' }}">{{ 'Found' if v.permanent_copy_found else 'Not Found' }}</span>
-                {% else %}
-                    <span class="unchecked">Not checked</span>
-                {% endif %}
-            </div>
-            <div class="verify-row">
-                <span>Hash Match</span>
-                {% if v %}
-                    <span class="{{ 'check' if v.hash_match else 'cross' }}">{{ 'PASS' if v.hash_match else 'FAIL' }}</span>
-                {% else %}
-                    <span class="unchecked">Not checked</span>
-                {% endif %}
-            </div>
-            <div class="verify-row">
-                <span>Attestation</span>
-                {% if v and v.attestation_level %}
-                    <span>
-                        {% if v.attestation_level == 3 %}
-                            <span class="badge badge-green">Level 3</span>
-                        {% elif v.attestation_level == 2 %}
-                            <span class="badge badge-yellow">Level 2</span>
-                        {% elif v.attestation_level == 1 %}
-                            <span class="badge badge-yellow">Level 1</span>
+            <!-- ar.io Verification -->
+            <div class="section">
+                <div class="section-header">ar.io Verification</div>
+                <div class="section-body">
+                    <div class="verify-row">
+                        <span>Hash Integrity</span>
+                        {% if v %}
+                            <span class="{{ 'check' if v.hash_valid else 'cross' }}">{{ 'PASS' if v.hash_valid else 'FAIL' }}</span>
+                        {% else %}
+                            <span class="{{ 'check' if local_verification.hash_valid else 'cross' }}">{{ 'PASS' if local_verification.hash_valid else 'FAIL' }}</span>
                         {% endif %}
-                    </span>
-                {% else %}
-                    <span class="unchecked">Not checked</span>
-                {% endif %}
-            </div>
+                    </div>
+                    <div class="verify-row">
+                        <span>Signature</span>
+                        {% if v %}
+                            <span class="{{ 'check' if v.signature_valid else 'cross' }}">{{ 'PASS' if v.signature_valid else 'FAIL' }}</span>
+                        {% else %}
+                            <span class="{{ 'check' if local_verification.signature_valid else 'cross' }}">{{ 'PASS' if local_verification.signature_valid else 'FAIL' }}</span>
+                        {% endif %}
+                    </div>
+                    <div class="verify-row">
+                        <span>Permanent Copy</span>
+                        {% if v %}
+                            {% if v.permanent_copy_found %}
+                                <span class="check">Found</span>
+                            {% else %}
+                                <span class="badge badge-yellow">Pending</span>
+                            {% endif %}
+                        {% else %}
+                            <span class="unchecked">Not checked</span>
+                        {% endif %}
+                    </div>
+                    <div class="verify-row">
+                        <span>Hash Match</span>
+                        {% if v %}
+                            {% if v.permanent_copy_found %}
+                                <span class="{{ 'check' if v.hash_match else 'cross' }}">{{ 'PASS' if v.hash_match else 'FAIL' }}</span>
+                            {% else %}
+                                <span class="badge badge-yellow">Pending</span>
+                            {% endif %}
+                        {% else %}
+                            <span class="unchecked">Not checked</span>
+                        {% endif %}
+                    </div>
+                    <div class="verify-row">
+                        <span>Attestation</span>
+                        {% if v and v.attestation_level %}
+                            <span>
+                                {% if v.attestation_level == 3 %}
+                                    <span class="badge badge-green"><span class="badge-dot"></span> Level 3</span>
+                                {% elif v.attestation_level == 2 %}
+                                    <span class="badge badge-yellow"><span class="badge-dot"></span> Level 2</span>
+                                {% elif v.attestation_level == 1 %}
+                                    <span class="badge badge-yellow"><span class="badge-dot"></span> Level 1</span>
+                                {% endif %}
+                            </span>
+                        {% elif v %}
+                            <span class="badge badge-yellow">Pending</span>
+                        {% else %}
+                            <span class="unchecked">Not checked</span>
+                        {% endif %}
+                    </div>
 
-            <div class="verify-row verify-divider">
-                <strong>Overall</strong>
-                {% if v %}
-                    {% if not v.hash_valid and v.permanent_copy_found and v.hash_match %}
-                        <strong class="cross">TAMPERED</strong>
-                    {% elif v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
-                        <strong class="check">VERIFIED</strong>
-                    {% elif v.hash_valid and v.signature_valid and not v.permanent_copy_found %}
-                        <span class="badge badge-yellow" style="font-size: 0.85rem;">Pending</span>
-                    {% else %}
-                        <strong class="cross">FAILED</strong>
+                    <div class="verify-row verify-divider">
+                        <strong>Overall</strong>
+                        {% if v %}
+                            {% if not v.hash_valid and v.permanent_copy_found and v.hash_match %}
+                                <strong class="cross">TAMPERED</strong>
+                            {% elif v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
+                                <strong class="check">VERIFIED</strong>
+                            {% elif v.hash_valid and v.signature_valid and not v.permanent_copy_found %}
+                                <span class="badge badge-yellow">Pending</span>
+                            {% else %}
+                                <strong class="cross">FAILED</strong>
+                            {% endif %}
+                        {% else %}
+                            <span class="unchecked">Not verified</span>
+                        {% endif %}
+                    </div>
+
+                    {% if v and not v.permanent_copy_found and v.hash_valid %}
+                    <div class="verify-note verify-note-warn">
+                        {% if turbo_status and turbo_status.status == 'FINALIZED' %}
+                            Data is permanent on Arweave but couldn't be fetched. This may be a temporary gateway issue — try again.
+                        {% elif turbo_status and turbo_status.status == 'CONFIRMED' %}
+                            Proof is confirmed but hasn't finalized on Arweave yet. Try again later.
+                        {% else %}
+                            Proof was uploaded but isn't available for verification yet. Try again in a few minutes.
+                        {% endif %}
+                    </div>
                     {% endif %}
-                {% else %}
-                    <span class="unchecked">Not verified</span>
-                {% endif %}
+
+                    {% if v and v.permanent_copy_found %}
+                    <div class="verify-actions">
+                        {% if v.report_url %}
+                        <a href="{{ v.report_url }}" target="_blank" class="btn btn-outline btn-sm">View Report</a>
+                        {% endif %}
+                        {% if v.pdf_url %}
+                        <a href="{{ v.pdf_url }}" target="_blank" class="btn btn-outline btn-sm">Download PDF</a>
+                        {% endif %}
+                    </div>
+                    <div class="verify-meta">
+                        {% if v.attested_by %}Attested by <strong>{{ v.attested_by }}</strong>{% endif %}{% if v.attested_at %} at {{ v.attested_at[:19] }}Z{% endif %}{% if not v.attested_by %}Last verified: {{ v.verified_at[:19] }}Z{% endif %}
+                    </div>
+                    {% endif %}
+
+                    {% if not v and envelope.arweave_tx_id %}
+                    <div class="verify-meta">
+                        Hash and signature checked locally. Click <strong>Verify with ar.io</strong> for full verification.
+                    </div>
+                    {% endif %}
+
+                    {% if v and not v.hash_valid and v.permanent_copy_found and v.hash_match %}
+                    <div class="verify-note verify-note-ok">
+                        Permanent record intact on ar.io:
+                        <a href="{{ envelope.arweave_url }}" target="_blank">{{ envelope.arweave_tx_id[:24] }}...</a>
+                    </div>
+                    {% endif %}
+                </div>
             </div>
 
-            {% if v and not v.permanent_copy_found and v.hash_valid %}
-            <div style="margin-top: 0.75rem; padding: 0.5rem 0.75rem; background: #FFF8E1; border: 1px solid #9e6a03; border-radius: 4px; font-size: 0.8rem; color: #6B6B7B;">
-                {% if turbo_status and turbo_status.status == 'FINALIZED' %}
-                    Data is permanent on Arweave but couldn't be fetched from the gateway. This may be a temporary issue — try again.
-                {% elif turbo_status and turbo_status.status == 'CONFIRMED' %}
-                    Proof is confirmed on Turbo but hasn't finalized on Arweave yet. Verification will be available once the data is permanent. Try again later.
-                {% else %}
-                    Proof was uploaded but isn't available for verification yet. Try again in a few minutes.
-                {% endif %}
+            <!-- Decision Record -->
+            <div class="section">
+                <div class="section-header">Decision Record</div>
+                <div class="section-body">
+                    <div class="kv">
+                        <div class="kv-row">
+                            <span class="kv-key">Decision ID</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.record.decision_id }}</span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Timestamp</span>
+                            <span class="kv-value">{{ envelope.record.timestamp }}</span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Input Hash</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.record.input_hash }}</span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Output Hash</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.record.output_hash }}</span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Latency</span>
+                            <span class="kv-value">{{ envelope.record.latency_ms }} ms</span>
+                        </div>
+                    </div>
+                </div>
             </div>
-            {% endif %}
 
-            {% if v and v.permanent_copy_found %}
-            <div style="margin-top: 0.75rem; display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center;">
-                {% if v.report_url %}
-                <a href="{{ v.report_url }}" target="_blank" class="btn btn-blue" style="font-size: 0.75rem; padding: 0.3rem 0.6rem;">View Report</a>
-                {% endif %}
-                {% if v.pdf_url %}
-                <a href="{{ v.pdf_url }}" target="_blank" class="btn btn-blue" style="font-size: 0.75rem; padding: 0.3rem 0.6rem;">Download PDF</a>
-                {% endif %}
+            <!-- ar.io Anchoring -->
+            <div class="section">
+                <div class="section-header">ar.io Anchoring</div>
+                <div class="section-body">
+                    {% if envelope.arweave_tx_id %}
+                    <div class="kv">
+                        <div class="kv-row">
+                            <span class="kv-key">Transaction</span>
+                            <span class="kv-value"><a href="{{ envelope.arweave_url }}" target="_blank"><span class="mono mono-sm">{{ envelope.arweave_tx_id }}</span></a></span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Status</span>
+                            <span class="kv-value">
+                                {% if turbo_status and turbo_status.status == 'FINALIZED' %}
+                                    <span class="badge badge-green"><span class="badge-dot"></span> Permanent</span>
+                                {% elif turbo_status and turbo_status.status == 'CONFIRMED' and turbo_status.info == 'pending' %}
+                                    <span class="badge badge-yellow"><span class="badge-dot"></span> Bundled</span>
+                                {% elif turbo_status and turbo_status.status == 'CONFIRMED' %}
+                                    <span class="badge badge-yellow"><span class="badge-dot"></span> Confirmed</span>
+                                {% elif turbo_status and turbo_status.status == 'NOT_FOUND' %}
+                                    <span class="badge badge-yellow"><span class="badge-dot"></span> Uploading</span>
+                                {% else %}
+                                    <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
+                                {% endif %}
+                            </span>
+                        </div>
+                    </div>
+                    {% else %}
+                    <div style="color: var(--muted); font-size: 0.85rem;">Not anchored — no wallet configured.</div>
+                    {% endif %}
+                </div>
             </div>
-            <div class="last-checked">
-                {% if v.attested_by %}Attested by <strong>{{ v.attested_by }}</strong>{% endif %}{% if v.attested_at %} at {{ v.attested_at[:19] }}Z{% endif %}{% if not v.attested_by %} Last verified: {{ v.verified_at[:19] }}Z{% endif %}
-            </div>
-            {% endif %}
 
-            {% if not v and envelope.arweave_tx_id %}
-            <div class="last-checked">
-                Hash and signature checked locally. Click <strong>Verify with ar.io</strong> for full verification.
+            <!-- Proof Layer -->
+            <div class="section {% if envelope.get('tampered') %}section-danger{% endif %}">
+                <div class="section-header">Proof Layer</div>
+                <div class="section-body">
+                    <div class="kv">
+                        <div class="kv-row">
+                            <span class="kv-key">Record Hash</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.record_hash }}</span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Previous Hash</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.previous_hash }}</span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Signature</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.signature }}</span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Public Key</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.public_key }}</span>
+                        </div>
+                    </div>
+                </div>
             </div>
-            {% endif %}
 
-            {% if v and not v.hash_valid and v.permanent_copy_found and v.hash_match %}
-            <div style="margin-top: 0.75rem; padding: 0.5rem 0.75rem; background: #E8F5E9; border: 1px solid #238636; border-radius: 4px; font-size: 0.8rem;">
-                Permanent record intact on ar.io:
-                <a href="{{ envelope.arweave_url }}" target="_blank">{{ envelope.arweave_tx_id[:20] }}...</a>
+            <!-- Model Lineage -->
+            <div class="section">
+                <div class="section-header">Model Lineage</div>
+                <div class="section-body">
+                    <div class="kv">
+                        <div class="kv-row">
+                            <span class="kv-key">Model</span>
+                            <span class="kv-value">{{ envelope.record.model_name }} / v{{ envelope.record.model_version }}</span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Run ID</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.record.mlflow_run_id }}</span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Artifact</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.record.artifact_uri }}</span>
+                        </div>
+                    </div>
+                </div>
             </div>
-            {% endif %}
+
+            <!-- Upload Receipt -->
+            <div class="section">
+                <div class="section-header">Upload Receipt</div>
+                <div class="section-body">
+                    {% if envelope.turbo_receipt %}
+                    <div class="kv">
+                        {% if envelope.turbo_receipt.timestamp %}
+                        <div class="kv-row">
+                            <span class="kv-key">Timestamp</span>
+                            <span class="kv-value mono">{{ envelope.turbo_receipt.timestamp }} ms</span>
+                        </div>
+                        {% endif %}
+                        <div class="kv-row">
+                            <span class="kv-key">Owner</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.turbo_receipt.owner }}</span>
+                        </div>
+                        {% if envelope.turbo_receipt.version %}
+                        <div class="kv-row">
+                            <span class="kv-key">Version</span>
+                            <span class="kv-value">{{ envelope.turbo_receipt.version }}</span>
+                        </div>
+                        {% endif %}
+                        {% if envelope.turbo_receipt.deadlineHeight %}
+                        <div class="kv-row">
+                            <span class="kv-key">Deadline</span>
+                            <span class="kv-value mono">{{ envelope.turbo_receipt.deadlineHeight }}</span>
+                        </div>
+                        {% endif %}
+                        {% if envelope.turbo_receipt.signature %}
+                        <div class="kv-row">
+                            <span class="kv-key">Signature</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.turbo_receipt.signature[:64] }}...</span>
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% else %}
+                    <div style="color: var(--muted); font-size: 0.85rem;">No receipt available.</div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Trace Context -->
+            <div class="section">
+                <div class="section-header">Trace Context</div>
+                <div class="section-body">
+                    <div class="kv">
+                        <div class="kv-row">
+                            <span class="kv-key">Service</span>
+                            <span class="kv-value">{{ envelope.record.service_name }}</span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Trace ID</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.record.trace_id }}</span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Span ID</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.record.span_id }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
-    </div>
-
-    <div class="actions">
-        {% if envelope.arweave_tx_id %}
-        <a href="/ui/decisions/{{ envelope.record.decision_id }}?verify=true" class="btn btn-primary">Verify with ar.io</a>
-        {% endif %}
-        {% if not envelope.get('tampered') %}
-        <form action="/tamper/{{ envelope.record.decision_id }}" method="POST" style="display:inline;">
-            <button type="submit" class="btn btn-danger">Tamper With Record</button>
-        </form>
-        {% endif %}
-        <a href="/" class="btn btn-blue">Back to Dashboard</a>
     </div>
 </body>
 </html>

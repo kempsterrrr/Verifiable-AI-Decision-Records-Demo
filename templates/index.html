@@ -5,150 +5,454 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Verifiable AI Decision Records</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Besley:wght@800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Besley:wght@400;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --primary: #5427C8;
+            --primary-hover: #6B3FE4;
+            --lavender: #DFD6F7;
+            --black: #23232D;
+            --white: #FFFFFF;
+            --surface: #F7F7F8;
+            --border: #E4E4E8;
+            --muted: #8A8A99;
+            --green: #1A7F37;
+            --green-bg: #DAFBE1;
+            --yellow: #9A6700;
+            --yellow-bg: #FFF8C5;
+            --red: #CF222E;
+            --red-bg: #FFEBE9;
+            --gray-bg: #F0F0F4;
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Plus Jakarta Sans', sans-serif; background: #FFFFFF; color: #23232D; padding: 2rem; }
-        h1 { font-family: 'Besley', serif; font-weight: 800; color: #5427C8; margin-bottom: 0.5rem; }
-        .header { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
-        .header img { height: 32px; }
-        .subtitle { color: #6B6B7B; margin-bottom: 2rem; font-size: 0.9rem; }
-        .status-bar { display: flex; gap: 1.5rem; margin-bottom: 2rem; padding: 1rem; background: #F0F0F0; border: 1px solid #E0E0E4; border-radius: 6px; }
-        .status-item { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; }
-        .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-        .dot-green { background: #3fb950; }
-        .dot-yellow { background: #d29922; }
-        .dot-red { background: #f85149; }
-        .dot-gray { background: #B0B0B8; }
-        .card { background: #F0F0F0; border: 1px solid #E0E0E4; border-radius: 6px; padding: 1.5rem; margin-bottom: 2rem; }
-        .card h2 { font-family: 'Besley', serif; font-weight: 800; color: #5427C8; margin-bottom: 1rem; font-size: 1.1rem; }
-        .form-row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end; }
-        .form-group { display: flex; flex-direction: column; gap: 0.3rem; }
-        .form-group label { font-size: 0.8rem; color: #6B6B7B; }
-        .form-group input { background: #FFFFFF; border: 1px solid #E0E0E4; color: #23232D; padding: 0.5rem; border-radius: 4px; width: 120px; font-family: 'Plus Jakarta Sans', sans-serif; }
-        .form-group input:focus { outline: 2px solid #5427C8; border-color: #5427C8; }
-        .btn { padding: 0.5rem 1rem; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: 500; font-family: 'Plus Jakarta Sans', sans-serif; }
-        .btn-primary { background: #5427C8; color: #fff; }
-        .btn-primary:hover { background: #6B3FE4; }
-        .btn-blue { background: #5427C8; color: #fff; }
-        .btn-blue:hover { background: #6B3FE4; }
-        .btn-danger { background: #da3633; color: #fff; }
-        .btn-danger:hover { background: #f85149; }
-        .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.75rem; }
+
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background: var(--white);
+            color: var(--black);
+            min-height: 100vh;
+        }
+
+        /* ── Top bar ── */
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 2rem;
+            border-bottom: 1px solid var(--border);
+            background: var(--white);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        .topbar-left {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        .topbar-left img { height: 22px; opacity: 0.9; }
+        .topbar-title {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 1rem;
+            color: var(--black);
+            letter-spacing: -0.01em;
+        }
+        .topbar-right {
+            display: flex;
+            gap: 1.25rem;
+            align-items: center;
+        }
+        .sys-status {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            font-size: 0.75rem;
+            color: var(--muted);
+        }
+        .sys-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .sys-dot-on { background: var(--green); }
+        .sys-dot-off { background: var(--border); }
+
+        /* ── Main content ── */
+        .main { padding: 2rem; max-width: 1400px; margin: 0 auto; }
+
+        /* ── Page header ── */
+        .page-header {
+            margin-bottom: 2rem;
+        }
+        .page-header h1 {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 1.75rem;
+            color: var(--black);
+            letter-spacing: -0.02em;
+            line-height: 1.2;
+        }
+        .page-header p {
+            color: var(--muted);
+            font-size: 0.9rem;
+            margin-top: 0.25rem;
+        }
+
+        /* ── Stats row ── */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+        .stat-card {
+            padding: 1.25rem;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            cursor: pointer;
+            transition: all 0.15s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            border-radius: 3px 0 0 3px;
+        }
+        .stat-card:hover { border-color: var(--primary); }
+        .stat-card.active { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
+        .stat-number {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 2rem;
+            line-height: 1;
+            margin-bottom: 0.25rem;
+        }
+        .stat-label {
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .stat-verified { background: var(--green-bg); }
+        .stat-verified::before { background: var(--green); }
+        .stat-verified .stat-number { color: var(--green); }
+        .stat-verified .stat-label { color: var(--green); }
+        .stat-anchored { background: var(--yellow-bg); }
+        .stat-anchored::before { background: var(--yellow); }
+        .stat-anchored .stat-number { color: var(--yellow); }
+        .stat-anchored .stat-label { color: var(--yellow); }
+        .stat-failed { background: var(--red-bg); }
+        .stat-failed::before { background: var(--red); }
+        .stat-failed .stat-number { color: var(--red); }
+        .stat-failed .stat-label { color: var(--red); }
+        .stat-local { background: var(--gray-bg); }
+        .stat-local::before { background: var(--muted); }
+        .stat-local .stat-number { color: var(--muted); }
+        .stat-local .stat-label { color: var(--muted); }
+
+        /* ── Toolbar ── */
+        .toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1rem;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .toolbar-left {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        .toolbar h2 {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 1.1rem;
+            color: var(--black);
+        }
+        .record-count {
+            font-size: 0.8rem;
+            color: var(--muted);
+            background: var(--surface);
+            padding: 0.2rem 0.6rem;
+            border-radius: 10px;
+        }
+        .toolbar-right {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .date-input {
+            background: var(--white);
+            border: 1px solid var(--border);
+            color: var(--black);
+            padding: 0.4rem 0.5rem;
+            border-radius: 6px;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-size: 0.8rem;
+            transition: border-color 0.15s;
+        }
+        .date-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px var(--lavender); }
+        .date-sep { color: var(--muted); font-size: 0.8rem; }
+        .btn-ghost {
+            font-size: 0.8rem;
+            color: var(--muted);
+            cursor: pointer;
+            padding: 0.4rem 0.65rem;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--white);
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            transition: all 0.15s;
+        }
+        .btn-ghost:hover { color: var(--primary); border-color: var(--primary); }
+
+        /* ── Prediction form ── */
+        .predict-form {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            align-items: flex-end;
+            padding: 1.25rem;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 2rem;
+        }
+        .predict-form .form-group { display: flex; flex-direction: column; gap: 0.25rem; }
+        .predict-form label {
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .predict-form input {
+            background: var(--white);
+            border: 1px solid var(--border);
+            color: var(--black);
+            padding: 0.5rem 0.6rem;
+            border-radius: 6px;
+            width: 110px;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-size: 0.85rem;
+            transition: border-color 0.15s;
+        }
+        .predict-form input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px var(--lavender); }
+        .btn {
+            padding: 0.5rem 1rem;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            font-weight: 600;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            transition: all 0.15s;
+        }
+        .btn-primary { background: var(--primary); color: var(--white); }
+        .btn-primary:hover { background: var(--primary-hover); }
+        .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.75rem; border-radius: 4px; }
+        .btn-outline {
+            background: transparent;
+            color: var(--primary);
+            border: 1px solid var(--lavender);
+        }
+        .btn-outline:hover { background: var(--lavender); }
+        .btn-danger-outline {
+            background: transparent;
+            color: var(--red);
+            border: 1px solid var(--red-bg);
+        }
+        .btn-danger-outline:hover { background: var(--red-bg); }
+
+        /* ── Records table ── */
+        .table-wrap {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
         table { width: 100%; border-collapse: collapse; }
-        th { text-align: left; padding: 0.75rem; border-bottom: 1px solid #E0E0E4; color: #6B6B7B; font-size: 0.8rem; text-transform: uppercase; }
-        td { padding: 0.75rem; border-bottom: 1px solid #F0F0F0; font-size: 0.85rem; }
-        tr:hover { background: #E8E8F0; }
+        thead { background: var(--surface); }
+        th {
+            text-align: left;
+            padding: 0.65rem 1rem;
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-bottom: 1px solid var(--border);
+        }
+        td {
+            padding: 0.7rem 1rem;
+            font-size: 0.85rem;
+            border-bottom: 1px solid var(--border);
+            vertical-align: middle;
+        }
+        tbody tr { transition: background 0.1s; }
+        tbody tr:hover { background: var(--surface); }
+        tbody tr:last-child td { border-bottom: none; }
         tr.hidden { display: none; }
-        .hash { font-family: monospace; color: #5427C8; font-size: 0.8rem; }
-        .badge { padding: 0.2rem 0.5rem; border-radius: 12px; font-size: 0.75rem; font-weight: 500; }
-        .badge-green { background: #238636; color: #fff; }
-        .badge-red { background: #da3633; color: #fff; }
-        .badge-yellow { background: #9e6a03; color: #fff; }
-        .badge-gray { background: #E0E0E4; color: #6B6B7B; }
-        a { color: #5427C8; text-decoration: none; }
+        .mono {
+            font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+            color: var(--primary);
+            font-size: 0.8rem;
+        }
+        a { color: var(--primary); text-decoration: none; }
         a:hover { text-decoration: underline; }
-        .actions { display: flex; gap: 0.5rem; }
-        .empty { text-align: center; padding: 3rem; color: #B0B0B8; }
-        .summary { display: flex; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap; }
-        .summary-item { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; border-radius: 6px; border: 2px solid transparent; cursor: pointer; font-size: 0.85rem; font-weight: 500; transition: border-color 0.15s; }
-        .summary-item:hover { border-color: #5427C8; }
-        .summary-item.active { border-color: #5427C8; }
-        .summary-count { font-size: 1.2rem; font-weight: 700; font-family: 'Besley', serif; }
-        .summary-verified { background: #E8F5E9; }
-        .summary-verified .summary-count { color: #238636; }
-        .summary-anchored { background: #FFF8E1; }
-        .summary-anchored .summary-count { color: #9e6a03; }
-        .summary-failed { background: #FFEBEE; }
-        .summary-failed .summary-count { color: #da3633; }
-        .summary-local { background: #F0F0F0; }
-        .summary-local .summary-count { color: #6B6B7B; }
+
+        /* ── Badges ── */
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            padding: 0.2rem 0.55rem;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .badge-green { background: var(--green-bg); color: var(--green); }
+        .badge-yellow { background: var(--yellow-bg); color: var(--yellow); }
+        .badge-red { background: var(--red-bg); color: var(--red); }
+        .badge-gray { background: var(--gray-bg); color: var(--muted); }
+        .badge-dot {
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .badge-green .badge-dot { background: var(--green); }
+        .badge-yellow .badge-dot { background: var(--yellow); }
+        .badge-red .badge-dot { background: var(--red); }
+        .badge-gray .badge-dot { background: var(--muted); }
+
+        /* ── Actions ── */
+        .actions { display: flex; gap: 0.35rem; align-items: center; }
+
+        /* ── Empty state ── */
+        .empty {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: var(--muted);
+        }
+        .empty p { font-size: 0.9rem; }
     </style>
 </head>
 <body>
-    <div class="header">
-        <img src="https://ar.io/brand/ario-full-black.svg" alt="ar.io">
-        <h1>Verifiable AI Decision Records</h1>
-    </div>
-    <p class="subtitle">Tamper-evident AI audit trail anchored to Arweave</p>
-
-    <div class="status-bar">
-        <div class="status-item">
-            <span class="dot dot-green"></span> MLflow Model: {{ model_info.model_name }}/v{{ model_info.model_version }}
+    <!-- Top bar — system status lives here, out of the way -->
+    <div class="topbar">
+        <div class="topbar-left">
+            <img src="https://ar.io/brand/ario-full-black.svg" alt="ar.io">
+            <span class="topbar-title">Verifiable AI</span>
         </div>
-        <div class="status-item">
-            <span class="dot dot-green"></span> OpenTelemetry: Active
-        </div>
-        <div class="status-item">
-            <span class="dot {{ 'dot-green' if arweave_enabled else 'dot-gray' }}"></span>
-            Arweave: {{ 'Connected' if arweave_enabled else 'No Wallet' }}
-        </div>
-        <div class="status-item">
-            <span class="dot {{ 'dot-green' if ario_verify_enabled else 'dot-gray' }}"></span>
-            ar.io Verify: {{ 'Connected' if ario_verify_enabled else 'Unavailable' }}
-        </div>
-    </div>
-
-    {% if records %}
-    {# Compute status counts #}
-    {% set ns = namespace(verified=0, anchored=0, failed=0, local=0) %}
-    {% for env in records %}
-        {% set v = env.get('last_verification') %}
-        {% if v and v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
-            {% set ns.verified = ns.verified + 1 %}
-        {% elif v and not (v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match) %}
-            {% set ns.failed = ns.failed + 1 %}
-        {% elif env.arweave_tx_id %}
-            {% set ns.anchored = ns.anchored + 1 %}
-        {% else %}
-            {% set ns.local = ns.local + 1 %}
-        {% endif %}
-    {% endfor %}
-
-    <div class="summary">
-        <div class="summary-item summary-verified" onclick="filterStatus('verified')" id="filter-verified">
-            <span class="summary-count">{{ ns.verified }}</span> Verified
-        </div>
-        <div class="summary-item summary-anchored" onclick="filterStatus('anchored')" id="filter-anchored">
-            <span class="summary-count">{{ ns.anchored }}</span> Anchored
-        </div>
-        <div class="summary-item summary-failed" onclick="filterStatus('failed')" id="filter-failed">
-            <span class="summary-count">{{ ns.failed }}</span> Failed
-        </div>
-        <div class="summary-item summary-local" onclick="filterStatus('local')" id="filter-local">
-            <span class="summary-count">{{ ns.local }}</span> Local Only
-        </div>
-    </div>
-    {% endif %}
-
-    <div class="card">
-        <h2>Submit Prediction</h2>
-        <form action="/predict-form" method="POST">
-            <div class="form-row">
-                <div class="form-group">
-                    <label>Sepal Length</label>
-                    <input type="number" name="sepal_length" value="5.1" step="0.1" required>
-                </div>
-                <div class="form-group">
-                    <label>Sepal Width</label>
-                    <input type="number" name="sepal_width" value="3.5" step="0.1" required>
-                </div>
-                <div class="form-group">
-                    <label>Petal Length</label>
-                    <input type="number" name="petal_length" value="1.4" step="0.1" required>
-                </div>
-                <div class="form-group">
-                    <label>Petal Width</label>
-                    <input type="number" name="petal_width" value="0.2" step="0.1" required>
-                </div>
-                <button type="submit" class="btn btn-primary">Predict & Record</button>
+        <div class="topbar-right">
+            <div class="sys-status">
+                <span class="sys-dot sys-dot-on"></span> MLflow {{ model_info.model_name }}/v{{ model_info.model_version }}
             </div>
-        </form>
+            <div class="sys-status">
+                <span class="sys-dot sys-dot-on"></span> OpenTelemetry
+            </div>
+            <div class="sys-status">
+                <span class="sys-dot {{ 'sys-dot-on' if arweave_enabled else 'sys-dot-off' }}"></span>
+                Arweave
+            </div>
+            <div class="sys-status">
+                <span class="sys-dot {{ 'sys-dot-on' if ario_verify_enabled else 'sys-dot-off' }}"></span>
+                ar.io Verify
+            </div>
+        </div>
     </div>
 
-    <div class="card">
-        <h2>Decision Records ({{ records|length }})</h2>
+    <div class="main">
+        <div class="page-header">
+            <h1>Decision Records</h1>
+            <p>Tamper-evident AI audit trail anchored to Arweave</p>
+        </div>
+
         {% if records %}
+        {# Compute status counts #}
+        {% set ns = namespace(verified=0, anchored=0, failed=0, local=0) %}
+        {% for env in records %}
+            {% set v = env.get('last_verification') %}
+            {% if v and v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
+                {% set ns.verified = ns.verified + 1 %}
+            {% elif v and not (v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match) %}
+                {% set ns.failed = ns.failed + 1 %}
+            {% elif env.arweave_tx_id %}
+                {% set ns.anchored = ns.anchored + 1 %}
+            {% else %}
+                {% set ns.local = ns.local + 1 %}
+            {% endif %}
+        {% endfor %}
+
+        <!-- Stats -->
+        <div class="stats">
+            <div class="stat-card stat-verified" onclick="filterStatus('verified')" id="filter-verified">
+                <div class="stat-number">{{ ns.verified }}</div>
+                <div class="stat-label">Verified</div>
+            </div>
+            <div class="stat-card stat-anchored" onclick="filterStatus('anchored')" id="filter-anchored">
+                <div class="stat-number">{{ ns.anchored }}</div>
+                <div class="stat-label">Anchored</div>
+            </div>
+            <div class="stat-card stat-failed" onclick="filterStatus('failed')" id="filter-failed">
+                <div class="stat-number">{{ ns.failed }}</div>
+                <div class="stat-label">Failed</div>
+            </div>
+            <div class="stat-card stat-local" onclick="filterStatus('local')" id="filter-local">
+                <div class="stat-number">{{ ns.local }}</div>
+                <div class="stat-label">Local Only</div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Prediction form -->
+        <form action="/predict-form" method="POST" class="predict-form">
+            <div class="form-group">
+                <label>Sepal Length</label>
+                <input type="number" name="sepal_length" value="5.1" step="0.1" required>
+            </div>
+            <div class="form-group">
+                <label>Sepal Width</label>
+                <input type="number" name="sepal_width" value="3.5" step="0.1" required>
+            </div>
+            <div class="form-group">
+                <label>Petal Length</label>
+                <input type="number" name="petal_length" value="1.4" step="0.1" required>
+            </div>
+            <div class="form-group">
+                <label>Petal Width</label>
+                <input type="number" name="petal_width" value="0.2" step="0.1" required>
+            </div>
+            <button type="submit" class="btn btn-primary">Predict &amp; Record</button>
+        </form>
+
+        <!-- Records table -->
+        <div class="toolbar">
+            <div class="toolbar-left">
+                <h2>Records</h2>
+                <span class="record-count">{{ records|length }}</span>
+            </div>
+            <div class="toolbar-right">
+                <input type="date" id="date-from" class="date-input" onchange="applyFilters()">
+                <span class="date-sep">to</span>
+                <input type="date" id="date-to" class="date-input" onchange="applyFilters()">
+                <button class="btn-ghost" onclick="clearAll()">Clear filters</button>
+            </div>
+        </div>
+
+        {% if records %}
+        <div class="table-wrap">
         <table id="records-table">
             <thead>
                 <tr>
@@ -173,37 +477,37 @@
                 {% else %}
                     {% set row_status = 'local' %}
                 {% endif %}
-                <tr data-status="{{ row_status }}">
-                    <td><a href="/ui/decisions/{{ env.record.decision_id }}">{{ env.record.decision_id[:8] }}...</a></td>
+                <tr data-status="{{ row_status }}" data-date="{{ env.record.timestamp[:10] }}">
+                    <td><a href="/ui/decisions/{{ env.record.decision_id }}"><span class="mono">{{ env.record.decision_id[:8] }}</span></a></td>
                     <td>{{ env.record.timestamp[:19] }}</td>
                     <td>{{ env.record.prediction['class'] if env.record.prediction is defined else 'N/A' }}</td>
-                    <td><span class="hash">{{ env.record_hash[:16] }}...</span></td>
+                    <td><span class="mono">{{ env.record_hash[:16] }}</span></td>
                     <td>
                         {% if env.arweave_tx_id %}
-                            <a href="{{ env.arweave_url }}" target="_blank">{{ env.arweave_tx_id[:12] }}...</a>
+                            <a href="{{ env.arweave_url }}" target="_blank"><span class="mono">{{ env.arweave_tx_id[:12] }}</span></a>
                         {% else %}
                             <span class="badge badge-gray">None</span>
                         {% endif %}
                     </td>
                     <td>
                         {% if row_status == 'verified' %}
-                            <span class="badge badge-green">Verified</span>
+                            <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
                         {% elif row_status == 'failed' %}
-                            <span class="badge badge-red">Failed</span>
+                            <span class="badge badge-red"><span class="badge-dot"></span> Failed</span>
                         {% elif row_status == 'anchored' %}
-                            <span class="badge badge-yellow">Anchored</span>
+                            <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
                         {% else %}
-                            <span class="badge badge-gray">Local Only</span>
+                            <span class="badge badge-gray"><span class="badge-dot"></span> Local Only</span>
                         {% endif %}
                     </td>
                     <td>
                         <div class="actions">
-                            <a href="/ui/decisions/{{ env.record.decision_id }}" class="btn btn-blue btn-sm">Detail</a>
+                            <a href="/ui/decisions/{{ env.record.decision_id }}" class="btn btn-outline btn-sm">Detail</a>
                             {% if env.arweave_tx_id %}
                             <a href="/ui/decisions/{{ env.record.decision_id }}?verify=true" class="btn btn-primary btn-sm">Verify</a>
                             {% endif %}
                             <form action="/tamper/{{ env.record.decision_id }}" method="POST" style="display:inline;">
-                                <button type="submit" class="btn btn-danger btn-sm">Tamper</button>
+                                <button type="submit" class="btn btn-danger-outline btn-sm">Tamper</button>
                             </form>
                         </div>
                     </td>
@@ -211,6 +515,7 @@
                 {% endfor %}
             </tbody>
         </table>
+        </div>
         {% else %}
         <div class="empty">
             <p>No decisions yet. Submit a prediction to get started.</p>
@@ -219,27 +524,37 @@
     </div>
 
     <script>
-    let activeFilter = null;
+    let activeStatus = null;
 
     function filterStatus(status) {
-        const items = document.querySelectorAll('.summary-item');
+        activeStatus = (activeStatus === status) ? null : status;
+        document.querySelectorAll('.stat-card').forEach(el => {
+            el.classList.toggle('active', activeStatus && el.id === 'filter-' + activeStatus);
+        });
+        applyFilters();
+    }
+
+    function clearAll() {
+        activeStatus = null;
+        document.getElementById('date-from').value = '';
+        document.getElementById('date-to').value = '';
+        document.querySelectorAll('.stat-card').forEach(el => el.classList.remove('active'));
+        document.querySelectorAll('#records-table tbody tr').forEach(row => row.classList.remove('hidden'));
+    }
+
+    function applyFilters() {
+        const dateFrom = document.getElementById('date-from').value;
+        const dateTo = document.getElementById('date-to').value;
         const rows = document.querySelectorAll('#records-table tbody tr');
 
-        if (activeFilter === status) {
-            // Clear filter
-            activeFilter = null;
-            items.forEach(el => el.classList.remove('active'));
-            rows.forEach(row => row.classList.remove('hidden'));
-        } else {
-            // Apply filter
-            activeFilter = status;
-            items.forEach(el => {
-                el.classList.toggle('active', el.id === 'filter-' + status);
-            });
-            rows.forEach(row => {
-                row.classList.toggle('hidden', row.dataset.status !== status);
-            });
-        }
+        rows.forEach(row => {
+            let show = true;
+            if (activeStatus && row.dataset.status !== activeStatus) show = false;
+            const rowDate = row.dataset.date;
+            if (show && dateFrom && rowDate < dateFrom) show = false;
+            if (show && dateTo && rowDate > dateTo) show = false;
+            row.classList.toggle('hidden', !show);
+        });
     }
     </script>
 </body>

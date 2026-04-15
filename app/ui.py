@@ -1,7 +1,9 @@
+import os
 from datetime import datetime, timezone
 
+import mlflow
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.decision_record import canonical_json, hash_data
@@ -10,19 +12,143 @@ router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 
 
+def _verify_envelope(app, envelope):
+    """Run three-level verification on any proof envelope. Returns result dict."""
+    local = app.state.proof_engine.verify_local(envelope)
+    result = {
+        "hash_valid": local["hash_valid"],
+        "signature_valid": local["signature_valid"],
+        "permanent_copy_found": False,
+        "hash_match": False,
+        "attestation_level": None,
+        "report_url": None,
+        "attested_by": None,
+        "attested_at": None,
+    }
+
+    if envelope.get("arweave_tx_id"):
+        arweave_data = app.state.anchor.fetch_proof(envelope["arweave_tx_id"])
+        if arweave_data:
+            arweave_hash = hash_data(canonical_json(arweave_data.get("record", {})))
+            result["permanent_copy_found"] = True
+            result["hash_match"] = arweave_hash == arweave_data.get("record_hash")
+
+        if app.state.ario_verify.enabled:
+            ario_result = app.state.ario_verify.submit_verification(envelope["arweave_tx_id"])
+            if ario_result:
+                normalized = app.state.ario_verify._normalize_result(ario_result)
+                result["attestation_level"] = normalized.get("level")
+                result["report_url"] = normalized.get("report_url")
+                result["attested_by"] = normalized.get("attested_by")
+                result["attested_at"] = normalized.get("attested_at")
+
+    return result, local
+
+
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request):
     app = request.app
     records = app.state.store.list_all()
+    model_info = app.state.model_info
+
+    # Lifecycle status for provenance card
+    training_env = app.state.lifecycle_store.get_by_run_id(model_info["run_id"])
+    registration_env = app.state.lifecycle_store.get_by_model_version(
+        model_info["model_name"], model_info["model_version"]
+    )
+
+    training_status = "none"
+    if training_env:
+        tv = training_env.get("last_verification")
+        if tv and tv.get("hash_valid") and tv.get("permanent_copy_found") and tv.get("hash_match"):
+            training_status = "verified"
+        elif training_env.get("arweave_tx_id"):
+            training_status = "anchored"
+        else:
+            training_status = "local"
+
+    registration_status = "none"
+    if registration_env:
+        rv = registration_env.get("last_verification")
+        if rv and rv.get("hash_valid") and rv.get("permanent_copy_found") and rv.get("hash_match"):
+            registration_status = "verified"
+        elif registration_env.get("arweave_tx_id"):
+            registration_status = "anchored"
+        else:
+            registration_status = "local"
 
     return templates.TemplateResponse(
         request,
         "index.html",
         {
             "records": records,
-            "model_info": app.state.model_info,
+            "model_info": model_info,
             "arweave_enabled": app.state.anchor.enabled if app.state.anchor else False,
             "ario_verify_enabled": app.state.ario_verify.enabled if app.state.ario_verify else False,
+            "training_status": training_status,
+            "registration_status": registration_status,
+        },
+    )
+
+
+@router.get("/ui/registry", response_class=HTMLResponse)
+def model_registry(request: Request):
+    app = request.app
+    settings = app.state.settings
+    model_name = settings.mlflow_model_name
+    active_version = app.state.model_info["model_version"]
+
+    mlflow.set_tracking_uri(os.path.abspath(settings.mlflow_tracking_uri))
+    client = mlflow.tracking.MlflowClient()
+
+    versions = client.search_model_versions(f"name='{model_name}'")
+    version_data = []
+
+    for mv in sorted(versions, key=lambda v: int(v.version), reverse=True):
+        # Get run metrics
+        accuracy = None
+        created = None
+        if mv.run_id:
+            try:
+                run = client.get_run(mv.run_id)
+                accuracy = run.data.metrics.get("accuracy")
+                created = run.info.start_time
+            except Exception:
+                pass
+
+        # Check lifecycle anchoring status
+        training_env = app.state.lifecycle_store.get_by_run_id(mv.run_id) if mv.run_id else None
+        reg_env = app.state.lifecycle_store.get_by_model_version(model_name, str(mv.version))
+
+        def _status(env):
+            if not env:
+                return "none"
+            v = env.get("last_verification")
+            if v and v.get("hash_valid") and v.get("permanent_copy_found") and v.get("hash_match"):
+                return "verified"
+            if env.get("arweave_tx_id"):
+                return "anchored"
+            return "local"
+
+        version_data.append({
+            "version": str(mv.version),
+            "run_id": mv.run_id or "",
+            "accuracy": accuracy,
+            "stage": mv.current_stage if hasattr(mv, "current_stage") else "None",
+            "training_status": _status(training_env),
+            "registration_status": _status(reg_env),
+            "is_active": str(mv.version) == str(active_version),
+            "created": datetime.fromtimestamp(created / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M") if created else "",
+        })
+
+    return templates.TemplateResponse(
+        request,
+        "model_registry.html",
+        {
+            "model_name": model_name,
+            "versions": version_data,
+            "active_version": active_version,
+            "arweave_enabled": app.state.anchor.enabled if app.state.anchor else False,
         },
     )
 
@@ -87,5 +213,113 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
             "envelope": envelope,
             "local_verification": local,
             "turbo_status": turbo_status,
+            "arweave_enabled": app.state.anchor.enabled if app.state.anchor else False,
+        },
+    )
+
+
+@router.get("/ui/runs/{run_id}", response_class=HTMLResponse)
+def run_detail(request: Request, run_id: str, verify: bool = False):
+    app = request.app
+
+    envelope = app.state.lifecycle_store.get_by_run_id(run_id)
+    if not envelope:
+        return HTMLResponse("<h1>Training run not found</h1>", status_code=404)
+
+    local = app.state.proof_engine.verify_local(envelope)
+
+    if verify and envelope.get("arweave_tx_id"):
+        result, _ = _verify_envelope(app, envelope)
+        result["verified_at"] = datetime.now(timezone.utc).isoformat()
+        envelope["last_verification"] = result
+        app.state.lifecycle_store.update(envelope["record"]["event_id"], envelope)
+
+    turbo_status = None
+    if envelope.get("arweave_tx_id"):
+        turbo_status = app.state.anchor.check_status(envelope["arweave_tx_id"])
+
+    return templates.TemplateResponse(
+        request,
+        "run_detail.html",
+        {
+            "envelope": envelope,
+            "local_verification": local,
+            "turbo_status": turbo_status,
+            "arweave_enabled": app.state.anchor.enabled if app.state.anchor else False,
+        },
+    )
+
+
+@router.get("/ui/models/{model_name}/{version}", response_class=HTMLResponse)
+def model_chain(request: Request, model_name: str, version: str, verify: bool = False):
+    app = request.app
+
+    # Get lifecycle records
+    lifecycle_records = app.state.lifecycle_store.list_all()
+    training_env = None
+    registration_env = None
+
+    for rec in lifecycle_records:
+        r = rec.get("record", {})
+        if r.get("event_type") == "training_complete" and r.get("model_name") == model_name and str(r.get("model_version")) == str(version):
+            training_env = rec
+        elif r.get("event_type") == "model_registered" and r.get("model_name") == model_name and str(r.get("model_version")) == str(version):
+            registration_env = rec
+
+    # Local verification for each
+    training_local = app.state.proof_engine.verify_local(training_env) if training_env else None
+    registration_local = app.state.proof_engine.verify_local(registration_env) if registration_env else None
+
+    # Full verification (on-demand)
+    training_verify = None
+    registration_verify = None
+    if verify:
+        if training_env:
+            training_verify, _ = _verify_envelope(app, training_env)
+            training_env["last_verification"] = training_verify
+            app.state.lifecycle_store.update(training_env["record"]["event_id"], training_env)
+        if registration_env:
+            registration_verify, _ = _verify_envelope(app, registration_env)
+            registration_env["last_verification"] = registration_verify
+            app.state.lifecycle_store.update(registration_env["record"]["event_id"], registration_env)
+
+    # Prediction summary
+    predictions = app.state.store.list_all()
+    model_predictions = [
+        p for p in predictions
+        if p.get("record", {}).get("model_name") == model_name
+        and str(p.get("record", {}).get("model_version")) == str(version)
+    ]
+    anchored_count = sum(1 for p in model_predictions if p.get("arweave_tx_id"))
+    verified_count = sum(
+        1 for p in model_predictions
+        if p.get("last_verification", {}).get("hash_valid")
+        and p.get("last_verification", {}).get("permanent_copy_found")
+    )
+
+    # Turbo status for each
+    training_turbo = None
+    registration_turbo = None
+    if training_env and training_env.get("arweave_tx_id"):
+        training_turbo = app.state.anchor.check_status(training_env["arweave_tx_id"])
+    if registration_env and registration_env.get("arweave_tx_id"):
+        registration_turbo = app.state.anchor.check_status(registration_env["arweave_tx_id"])
+
+    return templates.TemplateResponse(
+        request,
+        "model_chain.html",
+        {
+            "model_name": model_name,
+            "version": version,
+            "training": training_env,
+            "training_local": training_local,
+            "training_turbo": training_turbo,
+            "registration": registration_env,
+            "registration_local": registration_local,
+            "registration_turbo": registration_turbo,
+            "prediction_count": len(model_predictions),
+            "anchored_count": anchored_count,
+            "verified_count": verified_count,
+            "arweave_enabled": app.state.anchor.enabled if app.state.anchor else False,
         },
     )

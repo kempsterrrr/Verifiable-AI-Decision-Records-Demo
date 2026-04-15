@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Verifiable AI Decision Records</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Besley:wght@400;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Besley:wght@400;800&family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
             --primary: #5427C8;
@@ -13,7 +13,7 @@
             --lavender: #DFD6F7;
             --black: #23232D;
             --white: #FFFFFF;
-            --surface: #F7F7F8;
+            --surface: #F0F0F0;
             --border: #E4E4E8;
             --muted: #8A8A99;
             --green: #1A7F37;
@@ -79,6 +79,21 @@
         }
         .sys-dot-on { background: var(--green); }
         .sys-dot-off { background: var(--border); }
+        .topbar-nav {
+            display: flex;
+            gap: 1.25rem;
+            align-items: center;
+            margin-left: 1.5rem;
+        }
+        .topbar-nav a {
+            color: var(--muted);
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: color 0.15s;
+        }
+        .topbar-nav a:hover { color: var(--black); text-decoration: none; }
+        .topbar-nav a.active { color: var(--black); font-weight: 600; }
 
         /* ── Main content ── */
         .main { padding: 2rem; max-width: 1400px; margin: 0 auto; }
@@ -335,6 +350,8 @@
         .badge-yellow .badge-dot { background: var(--yellow); }
         .badge-red .badge-dot { background: var(--red); }
         .badge-gray .badge-dot { background: var(--muted); }
+        @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+        .badge-dot-pulse { animation: pulse-dot 1.5s ease-in-out infinite; }
 
         /* ── Actions ── */
         .actions { display: flex; gap: 0.35rem; align-items: center; }
@@ -346,14 +363,64 @@
             color: var(--muted);
         }
         .empty p { font-size: 0.9rem; }
+
+        /* ── Model Provenance ── */
+        .provenance-card {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.85rem 1.25rem;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 1.5rem;
+            font-size: 0.85rem;
+        }
+        .provenance-inner {
+            display: flex;
+            align-items: center;
+            gap: 1.25rem;
+        }
+        .provenance-model { font-weight: 600; }
+        .provenance-label {
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            color: var(--muted);
+        }
+        .provenance-label .badge { font-size: 0.6rem; padding: 0.1rem 0.4rem; }
+        .provenance-link { font-size: 0.8rem; font-weight: 500; }
+
+        /* ── Page transition ── */
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+        .main { animation: fadeIn 0.25s ease-out; }
+
+        /* ── Responsive ── */
+        @media (max-width: 768px) {
+            .topbar { flex-wrap: wrap; padding: 0.75rem 1rem; }
+            .topbar-nav { margin-left: 0; margin-top: 0.5rem; width: 100%; }
+            .topbar-right { display: none; }
+            .main { padding: 1rem; }
+            .stats { grid-template-columns: repeat(2, 1fr); }
+            .predict-form { flex-direction: column; }
+            .predict-form .form-group { width: 100%; }
+            .predict-form input { width: 100%; }
+            .table-wrap { overflow-x: auto; }
+            .provenance-card { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+            .provenance-inner { flex-wrap: wrap; }
+        }
     </style>
 </head>
 <body>
-    <!-- Top bar — system status lives here, out of the way -->
     <div class="topbar">
         <div class="topbar-left">
             <img src="https://ar.io/brand/ario-full-black.svg" alt="ar.io">
             <span class="topbar-title">Verifiable AI</span>
+            <div class="topbar-nav">
+                <a href="/" class="active">Predictions</a>
+                <a href="/ui/registry">Registry</a>
+                <a href="/ui/models/{{ model_info.model_name }}/{{ model_info.model_version }}">Model Lineage</a>
+            </div>
         </div>
         <div class="topbar-right">
             <div class="sys-status">
@@ -381,7 +448,7 @@
 
         {% if records %}
         {# Compute status counts #}
-        {% set ns = namespace(verified=0, anchored=0, failed=0, local=0) %}
+        {% set ns = namespace(verified=0, anchored=0, failed=0, local=0, anchoring=0) %}
         {% for env in records %}
             {% set v = env.get('last_verification') %}
             {% if v and v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
@@ -390,6 +457,8 @@
                 {% set ns.failed = ns.failed + 1 %}
             {% elif env.arweave_tx_id %}
                 {% set ns.anchored = ns.anchored + 1 %}
+            {% elif arweave_enabled %}
+                {% set ns.anchoring = ns.anchoring + 1 %}
             {% else %}
                 {% set ns.local = ns.local + 1 %}
             {% endif %}
@@ -402,7 +471,7 @@
                 <div class="stat-label">Verified</div>
             </div>
             <div class="stat-card stat-anchored" onclick="filterStatus('anchored')" id="filter-anchored">
-                <div class="stat-number">{{ ns.anchored }}</div>
+                <div class="stat-number">{{ ns.anchored + ns.anchoring }}</div>
                 <div class="stat-label">Anchored</div>
             </div>
             <div class="stat-card stat-failed" onclick="filterStatus('failed')" id="filter-failed">
@@ -415,6 +484,46 @@
             </div>
         </div>
         {% endif %}
+
+        <!-- Chain Integrity -->
+        {% if records %}
+        <div id="chain-integrity" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 1.25rem; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 1rem; font-size: 0.8rem; color: var(--muted);">
+            <span>Hash Chain:</span>
+            <span id="chain-status">checking...</span>
+        </div>
+        {% endif %}
+
+        <!-- Model Provenance -->
+        <div class="provenance-card">
+            <div class="provenance-inner">
+                <span class="provenance-model">{{ model_info.model_name }} / v{{ model_info.model_version }}</span>
+                <span class="provenance-label">
+                    Training
+                    {% if training_status == 'verified' %}
+                        <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
+                    {% elif training_status == 'anchored' %}
+                        <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
+                    {% elif training_status == 'local' %}
+                        <span class="badge badge-gray"><span class="badge-dot"></span> Local</span>
+                    {% else %}
+                        <span class="badge badge-gray">--</span>
+                    {% endif %}
+                </span>
+                <span class="provenance-label">
+                    Registration
+                    {% if registration_status == 'verified' %}
+                        <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
+                    {% elif registration_status == 'anchored' %}
+                        <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
+                    {% elif registration_status == 'local' %}
+                        <span class="badge badge-gray"><span class="badge-dot"></span> Local</span>
+                    {% else %}
+                        <span class="badge badge-gray">--</span>
+                    {% endif %}
+                </span>
+            </div>
+            <a href="/ui/models/{{ model_info.model_name }}/{{ model_info.model_version }}" class="provenance-link">View chain &rarr;</a>
+        </div>
 
         <!-- Prediction form -->
         <form action="/predict-form" method="POST" class="predict-form">
@@ -474,6 +583,8 @@
                     {% set row_status = 'failed' %}
                 {% elif env.arweave_tx_id %}
                     {% set row_status = 'anchored' %}
+                {% elif arweave_enabled %}
+                    {% set row_status = 'anchoring' %}
                 {% else %}
                     {% set row_status = 'local' %}
                 {% endif %}
@@ -485,6 +596,8 @@
                     <td>
                         {% if env.arweave_tx_id %}
                             <a href="{{ env.arweave_url }}" target="_blank"><span class="mono">{{ env.arweave_tx_id[:12] }}</span></a>
+                        {% elif arweave_enabled %}
+                            <span style="color: var(--muted); font-size: 0.8rem;">Uploading...</span>
                         {% else %}
                             <span class="badge badge-gray">None</span>
                         {% endif %}
@@ -496,6 +609,8 @@
                             <span class="badge badge-red"><span class="badge-dot"></span> Failed</span>
                         {% elif row_status == 'anchored' %}
                             <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
+                        {% elif row_status == 'anchoring' %}
+                            <span class="badge badge-yellow"><span class="badge-dot badge-dot-pulse"></span> Anchoring</span>
                         {% else %}
                             <span class="badge badge-gray"><span class="badge-dot"></span> Local Only</span>
                         {% endif %}
@@ -506,7 +621,7 @@
                             {% if env.arweave_tx_id %}
                             <a href="/ui/decisions/{{ env.record.decision_id }}?verify=true" class="btn btn-primary btn-sm">Verify</a>
                             {% endif %}
-                            <form action="/tamper/{{ env.record.decision_id }}" method="POST" style="display:inline;">
+                            <form action="/tamper/{{ env.record.decision_id }}" method="POST" style="display:inline;" onsubmit="return confirm('This will permanently modify this record locally. The Arweave copy is unaffected. Continue?')">
                                 <button type="submit" class="btn btn-danger-outline btn-sm">Tamper</button>
                             </form>
                         </div>
@@ -549,13 +664,35 @@
 
         rows.forEach(row => {
             let show = true;
-            if (activeStatus && row.dataset.status !== activeStatus) show = false;
+            if (activeStatus) {
+                const s = row.dataset.status;
+                if (activeStatus === 'anchored') {
+                    if (s !== 'anchored' && s !== 'anchoring') show = false;
+                } else {
+                    if (s !== activeStatus) show = false;
+                }
+            }
             const rowDate = row.dataset.date;
             if (show && dateFrom && rowDate < dateFrom) show = false;
             if (show && dateTo && rowDate > dateTo) show = false;
             row.classList.toggle('hidden', !show);
         });
     }
+    // Chain integrity check
+    (function() {
+        const el = document.getElementById('chain-status');
+        if (!el) return;
+        fetch('/api/chain-integrity')
+            .then(r => r.json())
+            .then(data => {
+                if (data.intact) {
+                    el.innerHTML = '<span style="color: var(--green); font-weight: 600;">' + data.total + ' records, unbroken</span>';
+                } else {
+                    el.innerHTML = '<span style="color: var(--red); font-weight: 600;">BROKEN at record #' + data.broken_at + '</span>';
+                }
+            })
+            .catch(() => { el.textContent = 'unavailable'; });
+    })();
     </script>
 </body>
 </html>

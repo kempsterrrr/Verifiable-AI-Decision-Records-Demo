@@ -1,9 +1,10 @@
 import logging
+import threading
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi import BackgroundTasks, FastAPI, Form, Request
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
@@ -12,15 +13,90 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 from app.config import get_settings
 from app.storage import RecordStore
+from app.lifecycle_store import LifecycleStore
 from app.proof import ProofEngine
 from app.decision_record import build_decision_record, canonical_json, hash_data
-from app.model import load_model, predict, FEATURE_NAMES
+from app.lifecycle import build_training_record, build_registration_record
+from app.model import load_model, predict, train_and_register_with_params, FEATURE_NAMES
 from app.anchor import ArweaveAnchor
 from app.ario_verify import ArioVerifyClient
 from app.ui import router as ui_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _anchor_lifecycle_record(lifecycle_store, anchor, event_id: str, proof: dict):
+    """Background: upload lifecycle proof to Arweave and update stored record."""
+    try:
+        anchor_result = anchor.upload_proof(proof)
+        if anchor_result:
+            envelope = lifecycle_store.get_by_event_id(event_id)
+            if envelope:
+                envelope["arweave_tx_id"] = anchor_result["tx_id"]
+                envelope["arweave_url"] = anchor_result["url"]
+                envelope["turbo_receipt"] = anchor_result["receipt"]
+                lifecycle_store.update(event_id, envelope)
+                logger.info(f"Anchored lifecycle event {event_id}: tx={anchor_result['tx_id']}")
+    except Exception as e:
+        logger.error(f"Background lifecycle anchoring failed for {event_id}: {e}")
+
+
+def _startup_anchor_lifecycle(settings, model_info, proof_engine, lifecycle_store, anchor):
+    """Anchor training run and model registration if not already done."""
+    run_id = model_info["run_id"]
+    model_name = model_info["model_name"]
+    model_version = model_info["model_version"]
+
+    # Check if training record already exists
+    existing_training = lifecycle_store.get_by_run_id(run_id)
+    training_tx = None
+
+    if not existing_training:
+        logger.info(f"Anchoring training run {run_id}...")
+        record = build_training_record(
+            settings.mlflow_tracking_uri, run_id, model_name, model_version,
+        )
+        last = lifecycle_store.list_all()
+        previous_hash = last[-1]["record_hash"] if last else "GENESIS"
+        proof = proof_engine.create_proof(record, previous_hash)
+        envelope = {
+            **proof,
+            "arweave_tx_id": None,
+            "arweave_url": None,
+            "turbo_receipt": None,
+        }
+        lifecycle_store.append(envelope)
+
+        if anchor.enabled:
+            _anchor_lifecycle_record(lifecycle_store, anchor, record["event_id"], proof)
+        training_tx = envelope.get("arweave_tx_id")
+    else:
+        training_tx = existing_training.get("arweave_tx_id")
+        logger.info(f"Training run {run_id} already anchored.")
+
+    # Check if registration record already exists
+    existing_reg = lifecycle_store.get_by_model_version(model_name, model_version)
+    if not existing_reg:
+        logger.info(f"Anchoring model registration {model_name}/v{model_version}...")
+        record = build_registration_record(
+            settings.mlflow_tracking_uri, model_name, model_version, training_tx,
+        )
+        last = lifecycle_store.list_all()
+        previous_hash = last[-1]["record_hash"] if last else "GENESIS"
+        proof = proof_engine.create_proof(record, previous_hash)
+        envelope = {
+            **proof,
+            "arweave_tx_id": None,
+            "arweave_url": None,
+            "turbo_receipt": None,
+        }
+        lifecycle_store.append(envelope)
+
+        if anchor.enabled:
+            _anchor_lifecycle_record(lifecycle_store, anchor, record["event_id"], proof)
+    else:
+        logger.info(f"Model registration {model_name}/v{model_version} already anchored.")
 
 
 @asynccontextmanager
@@ -35,6 +111,7 @@ async def lifespan(app: FastAPI):
     # Core components
     app.state.settings = settings
     app.state.store = RecordStore(settings.records_file)
+    app.state.lifecycle_store = LifecycleStore(settings.lifecycle_file)
     app.state.proof_engine = ProofEngine(
         settings.ed25519_private_key_path,
         settings.ed25519_public_key_path,
@@ -51,6 +128,14 @@ async def lifespan(app: FastAPI):
     # AR.IO Verify
     app.state.ario_verify = ArioVerifyClient(settings.ario_verify_url)
 
+    # Anchor training and registration in background thread
+    threading.Thread(
+        target=_startup_anchor_lifecycle,
+        args=(settings, app.state.model_info, app.state.proof_engine,
+              app.state.lifecycle_store, app.state.anchor),
+        daemon=True,
+    ).start()
+
     yield
 
     # Shutdown
@@ -64,8 +149,24 @@ tracer = trace.get_tracer(__name__)
 app.include_router(ui_router)
 
 
-def _run_prediction(app_state, features: list[float]) -> dict:
-    """Core prediction flow: inference -> record -> proof -> anchor -> store."""
+def _anchor_record(store, anchor, decision_id: str, proof: dict):
+    """Background task: upload proof to Arweave and update stored record."""
+    try:
+        anchor_result = anchor.upload_proof(proof)
+        if anchor_result:
+            envelope = store.get_by_id(decision_id)
+            if envelope:
+                envelope["arweave_tx_id"] = anchor_result["tx_id"]
+                envelope["arweave_url"] = anchor_result["url"]
+                envelope["turbo_receipt"] = anchor_result["receipt"]
+                store.update(decision_id, envelope)
+                logger.info(f"Anchored decision {decision_id}: tx={anchor_result['tx_id']}")
+    except Exception as e:
+        logger.error(f"Background anchoring failed for {decision_id}: {e}")
+
+
+def _run_prediction(app_state, features: list[float]) -> tuple[dict, dict]:
+    """Core prediction flow: inference -> record -> proof -> store. Anchoring happens async."""
     settings = app_state.settings
     model_info = app_state.model_info
 
@@ -100,10 +201,7 @@ def _run_prediction(app_state, features: list[float]) -> dict:
         # Create proof
         proof = app_state.proof_engine.create_proof(record, previous_hash)
 
-        # Upload proof to Arweave
-        anchor_result = app_state.anchor.upload_proof(proof)
-
-        # Build local envelope: proof + anchoring metadata
+        # Build local envelope: proof + placeholder anchoring metadata
         envelope = {
             **proof,
             "arweave_tx_id": None,
@@ -111,43 +209,120 @@ def _run_prediction(app_state, features: list[float]) -> dict:
             "turbo_receipt": None,
         }
 
-        if anchor_result:
-            envelope["arweave_tx_id"] = anchor_result["tx_id"]
-            envelope["arweave_url"] = anchor_result["url"]
-            envelope["turbo_receipt"] = anchor_result["receipt"]
-
-        # Store
+        # Store immediately (without Arweave data)
         app_state.store.append(envelope)
 
-        return envelope
+        return envelope, proof
 
 
 # --- API Endpoints ---
 
 @app.post("/predict")
-def api_predict(request: Request, body: dict):
+def api_predict(request: Request, body: dict, background_tasks: BackgroundTasks):
     features = [
         float(body.get("sepal_length", 5.1)),
         float(body.get("sepal_width", 3.5)),
         float(body.get("petal_length", 1.4)),
         float(body.get("petal_width", 0.2)),
     ]
-    envelope = _run_prediction(request.app.state, features)
+    envelope, proof = _run_prediction(request.app.state, features)
+    decision_id = envelope["record"]["decision_id"]
+    if request.app.state.anchor.enabled:
+        background_tasks.add_task(
+            _anchor_record,
+            request.app.state.store,
+            request.app.state.anchor,
+            decision_id,
+            proof,
+        )
     return envelope
 
 
 @app.post("/predict-form")
 def form_predict(
     request: Request,
+    background_tasks: BackgroundTasks,
     sepal_length: float = Form(5.1),
     sepal_width: float = Form(3.5),
     petal_length: float = Form(1.4),
     petal_width: float = Form(0.2),
 ):
     features = [sepal_length, sepal_width, petal_length, petal_width]
-    envelope = _run_prediction(request.app.state, features)
+    envelope, proof = _run_prediction(request.app.state, features)
     decision_id = envelope["record"]["decision_id"]
+    if request.app.state.anchor.enabled:
+        background_tasks.add_task(
+            _anchor_record,
+            request.app.state.store,
+            request.app.state.anchor,
+            decision_id,
+            proof,
+        )
     return RedirectResponse(f"/ui/decisions/{decision_id}", status_code=303)
+
+
+@app.post("/api/train")
+def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
+    """Train a new model version, register it, and anchor proofs."""
+    import random
+    settings = request.app.state.settings
+    max_iter = int(body.get("max_iter", 200))
+    random_state = int(body.get("random_state", random.randint(1, 10000)))
+
+    # Train and register (synchronous, <1s)
+    info = train_and_register_with_params(
+        settings.mlflow_tracking_uri,
+        settings.mlflow_model_name,
+        max_iter=max_iter,
+        random_state=random_state,
+    )
+
+    # Build lifecycle proof records
+    training_record = build_training_record(
+        settings.mlflow_tracking_uri, info["run_id"],
+        info["model_name"], info["model_version"],
+    )
+    last = request.app.state.lifecycle_store.list_all()
+    previous_hash = last[-1]["record_hash"] if last else "GENESIS"
+    training_proof = request.app.state.proof_engine.create_proof(training_record, previous_hash)
+    training_envelope = {**training_proof, "arweave_tx_id": None, "arweave_url": None, "turbo_receipt": None}
+    request.app.state.lifecycle_store.append(training_envelope)
+
+    registration_record = build_registration_record(
+        settings.mlflow_tracking_uri, info["model_name"], info["model_version"],
+        training_envelope.get("arweave_tx_id"),
+    )
+    last = request.app.state.lifecycle_store.list_all()
+    previous_hash = last[-1]["record_hash"]
+    registration_proof = request.app.state.proof_engine.create_proof(registration_record, previous_hash)
+    registration_envelope = {**registration_proof, "arweave_tx_id": None, "arweave_url": None, "turbo_receipt": None}
+    request.app.state.lifecycle_store.append(registration_envelope)
+
+    # Anchor both in background
+    if request.app.state.anchor.enabled:
+        background_tasks.add_task(
+            _anchor_lifecycle_record,
+            request.app.state.lifecycle_store,
+            request.app.state.anchor,
+            training_record["event_id"],
+            training_proof,
+        )
+        background_tasks.add_task(
+            _anchor_lifecycle_record,
+            request.app.state.lifecycle_store,
+            request.app.state.anchor,
+            registration_record["event_id"],
+            registration_proof,
+        )
+
+    return {
+        "run_id": info["run_id"],
+        "model_name": info["model_name"],
+        "model_version": info["model_version"],
+        "accuracy": info["accuracy"],
+        "training_event_id": training_record["event_id"],
+        "registration_event_id": registration_record["event_id"],
+    }
 
 
 @app.get("/decisions")
@@ -207,6 +382,49 @@ def verify_decision(request: Request, decision_id: str):
         return RedirectResponse(f"/ui/decisions/{decision_id}?verify=true", status_code=303)
 
     return result
+
+
+@app.get("/lifecycle")
+def list_lifecycle(request: Request):
+    return request.app.state.lifecycle_store.list_all()
+
+
+@app.get("/lifecycle/{event_id}")
+def get_lifecycle_event(request: Request, event_id: str):
+    envelope = request.app.state.lifecycle_store.get_by_event_id(event_id)
+    if not envelope:
+        return JSONResponse({"error": "Lifecycle event not found"}, status_code=404)
+    return envelope
+
+
+@app.get("/api/export/{decision_id}")
+def export_decision(request: Request, decision_id: str):
+    """Download a decision record as a JSON file."""
+    envelope = request.app.state.store.get_by_id(decision_id)
+    if not envelope:
+        return JSONResponse({"error": "Decision not found"}, status_code=404)
+    import json
+    content = json.dumps(envelope, indent=2)
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="decision-{decision_id[:8]}.json"'},
+    )
+
+
+@app.get("/api/chain-integrity")
+def chain_integrity(request: Request):
+    """Verify the previous_hash chain is unbroken across all records."""
+    records = request.app.state.store.list_all()
+    if not records:
+        return {"total": 0, "intact": True, "broken_at": None}
+
+    for i, rec in enumerate(records):
+        expected = records[i - 1]["record_hash"] if i > 0 else "GENESIS"
+        if rec.get("previous_hash") != expected:
+            return {"total": len(records), "intact": False, "broken_at": i, "decision_id": rec["record"]["decision_id"]}
+
+    return {"total": len(records), "intact": True, "broken_at": None}
 
 
 @app.post("/tamper/{decision_id}")

@@ -15,6 +15,7 @@ class Settings:
 
     # Storage
     records_file: str = "data/records.json"
+    lifecycle_file: str = "data/lifecycle.json"
 
     # MLflow
     mlflow_tracking_uri: str = "mlruns"

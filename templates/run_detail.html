@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Run {{ envelope.record.run_id[:8] }} — Verifiable AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Besley:wght@400;800&family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #5427C8;
+            --primary-hover: #6B3FE4;
+            --lavender: #DFD6F7;
+            --black: #23232D;
+            --white: #FFFFFF;
+            --surface: #F0F0F0;
+            --border: #E4E4E8;
+            --muted: #8A8A99;
+            --green: #1A7F37;
+            --green-bg: #DAFBE1;
+            --yellow: #9A6700;
+            --yellow-bg: #FFF8C5;
+            --red: #CF222E;
+            --red-bg: #FFEBE9;
+            --gray-bg: #F0F0F4;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background: var(--white);
+            color: var(--black);
+            min-height: 100vh;
+        }
+
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 2rem;
+            border-bottom: 1px solid var(--border);
+            background: var(--white);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        .topbar-left {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        .topbar-left img { height: 22px; opacity: 0.9; }
+        .topbar-left a { color: var(--black); text-decoration: none; }
+        .topbar-title {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 1rem;
+            color: var(--black);
+        }
+        .topbar-nav {
+            display: flex;
+            gap: 1.25rem;
+            align-items: center;
+            margin-left: 1.5rem;
+        }
+        .topbar-nav a {
+            color: var(--muted);
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: color 0.15s;
+        }
+        .topbar-nav a:hover { color: var(--black); text-decoration: none; }
+        .topbar-nav a.active { color: var(--black); font-weight: 600; }
+        .topbar-right {
+            display: flex;
+            gap: 0.75rem;
+            align-items: center;
+        }
+
+        .main { padding: 2rem; max-width: 1400px; margin: 0 auto; }
+
+        .page-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            margin-bottom: 2rem;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .page-id { font-size: 0.8rem; color: var(--muted); margin-top: 0.25rem; font-family: 'JetBrains Mono', 'SF Mono', monospace; }
+        .page-header h1 { font-family: 'Besley', serif; font-weight: 800; font-size: 1.5rem; letter-spacing: -0.02em; }
+        .page-actions { display: flex; gap: 0.5rem; align-items: center; }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.25rem;
+        }
+        .section {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .section-header {
+            padding: 0.75rem 1rem;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--muted);
+        }
+        .section-body { padding: 1rem; }
+
+        .kv { display: flex; flex-direction: column; gap: 0; }
+        .kv-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            padding: 0.5rem 0;
+            gap: 1rem;
+            font-size: 0.85rem;
+        }
+        .kv-row + .kv-row { border-top: 1px solid var(--border); }
+        .kv-key {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            white-space: nowrap;
+            min-width: 100px;
+            padding-top: 0.1rem;
+        }
+        .kv-value { text-align: right; word-break: break-all; flex: 1; }
+        .mono { font-family: 'JetBrains Mono', 'SF Mono', monospace; color: var(--primary); }
+        .mono-sm { font-size: 0.75rem; }
+
+        .btn {
+            padding: 0.5rem 1rem;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            font-weight: 600;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            transition: all 0.15s;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .btn-primary { background: var(--primary); color: var(--white); }
+        .btn-primary:hover { background: var(--primary-hover); text-decoration: none; }
+        .btn-outline { background: transparent; color: var(--primary); border: 1px solid var(--lavender); }
+        .btn-outline:hover { background: var(--lavender); text-decoration: none; }
+        .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.75rem; border-radius: 4px; }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            padding: 0.2rem 0.55rem;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .badge-green { background: var(--green-bg); color: var(--green); }
+        .badge-yellow { background: var(--yellow-bg); color: var(--yellow); }
+        .badge-red { background: var(--red-bg); color: var(--red); }
+        .badge-gray { background: var(--gray-bg); color: var(--muted); }
+        .badge-dot { width: 5px; height: 5px; border-radius: 50%; display: inline-block; }
+        .badge-green .badge-dot { background: var(--green); }
+        .badge-yellow .badge-dot { background: var(--yellow); }
+
+        .verify-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.4rem 0;
+            font-size: 0.85rem;
+        }
+        .verify-row + .verify-row { border-top: 1px solid var(--surface); }
+        .verify-divider { margin-top: 0.5rem; padding-top: 0.75rem; border-top: 1px solid var(--border) !important; }
+        .check { color: var(--green); font-weight: 600; }
+        .cross { color: var(--red); font-weight: 600; }
+        .unchecked { color: var(--muted); font-size: 0.8rem; }
+
+        .verify-actions { margin-top: 0.75rem; display: flex; gap: 0.5rem; }
+        .verify-meta { margin-top: 0.5rem; font-size: 0.75rem; color: var(--muted); }
+        .verify-note { margin-top: 0.75rem; padding: 0.6rem 0.75rem; border-radius: 6px; font-size: 0.8rem; }
+        .verify-note-warn { background: var(--yellow-bg); color: var(--yellow); }
+
+        a { color: var(--primary); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+        .badge-dot-pulse { animation: pulse-dot 1.5s ease-in-out infinite; }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+        .main { animation: fadeIn 0.25s ease-out; }
+
+        @media (max-width: 768px) {
+            .topbar { flex-wrap: wrap; padding: 0.75rem 1rem; }
+            .topbar-nav { margin-left: 0; margin-top: 0.5rem; width: 100%; }
+            .main { padding: 1rem; }
+            .grid { grid-template-columns: 1fr; }
+            .page-header { flex-direction: column; }
+        }
+    </style>
+</head>
+<body>
+    <div class="topbar">
+        <div class="topbar-left">
+            <a href="/"><img src="https://ar.io/brand/ario-full-black.svg" alt="ar.io"></a>
+            <a href="/" class="topbar-title">Verifiable AI</a>
+            <div class="topbar-nav">
+                <a href="/">Predictions</a>
+                <a href="/ui/registry">Registry</a>
+                <a href="/ui/models/{{ envelope.record.model_name }}/{{ envelope.record.model_version }}">Model Lineage</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="main">
+        {% set v = envelope.get('last_verification') %}
+
+        <div class="page-header">
+            <div>
+                <h1>Training Run</h1>
+                <div class="page-id">{{ envelope.record.run_id }}</div>
+            </div>
+            <div class="page-actions">
+                {% if envelope.arweave_tx_id %}
+                <a href="/ui/runs/{{ envelope.record.run_id }}?verify=true" class="btn btn-primary btn-sm">Verify with ar.io</a>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="grid">
+            <!-- Training Parameters -->
+            <div class="section">
+                <div class="section-header">Parameters</div>
+                <div class="section-body">
+                    <div class="kv">
+                        {% for k, val in envelope.record.params.items() %}
+                        <div class="kv-row">
+                            <span class="kv-key">{{ k }}</span>
+                            <span class="kv-value">{{ val }}</span>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- ar.io Verification -->
+            <div class="section">
+                <div class="section-header">ar.io Verification</div>
+                <div class="section-body">
+                    <div class="verify-row">
+                        <span>Hash Integrity</span>
+                        {% if v %}
+                            <span class="{{ 'check' if v.hash_valid else 'cross' }}">{{ 'PASS' if v.hash_valid else 'FAIL' }}</span>
+                        {% else %}
+                            <span class="{{ 'check' if local_verification.hash_valid else 'cross' }}">{{ 'PASS' if local_verification.hash_valid else 'FAIL' }}</span>
+                        {% endif %}
+                    </div>
+                    <div class="verify-row">
+                        <span>Signature</span>
+                        {% if v %}
+                            <span class="{{ 'check' if v.signature_valid else 'cross' }}">{{ 'PASS' if v.signature_valid else 'FAIL' }}</span>
+                        {% else %}
+                            <span class="{{ 'check' if local_verification.signature_valid else 'cross' }}">{{ 'PASS' if local_verification.signature_valid else 'FAIL' }}</span>
+                        {% endif %}
+                    </div>
+                    <div class="verify-row">
+                        <span>Permanent Copy</span>
+                        {% if v %}
+                            {% if v.permanent_copy_found %}
+                                <span class="check">Found</span>
+                            {% else %}
+                                <span class="badge badge-yellow">Pending</span>
+                            {% endif %}
+                        {% else %}
+                            <span class="unchecked">Not checked</span>
+                        {% endif %}
+                    </div>
+                    <div class="verify-row">
+                        <span>Hash Match</span>
+                        {% if v %}
+                            {% if v.permanent_copy_found %}
+                                <span class="{{ 'check' if v.hash_match else 'cross' }}">{{ 'PASS' if v.hash_match else 'FAIL' }}</span>
+                            {% else %}
+                                <span class="badge badge-yellow">Pending</span>
+                            {% endif %}
+                        {% else %}
+                            <span class="unchecked">Not checked</span>
+                        {% endif %}
+                    </div>
+                    <div class="verify-row">
+                        <span>Attestation</span>
+                        {% if v and v.attestation_level %}
+                            <span class="badge badge-green"><span class="badge-dot"></span> Level {{ v.attestation_level }}</span>
+                        {% elif v %}
+                            <span class="badge badge-yellow">Pending</span>
+                        {% else %}
+                            <span class="unchecked">Not checked</span>
+                        {% endif %}
+                    </div>
+
+                    <div class="verify-row verify-divider">
+                        <strong>Overall</strong>
+                        {% if v %}
+                            {% if v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
+                                <strong class="check">VERIFIED</strong>
+                            {% elif v.hash_valid and v.signature_valid and not v.permanent_copy_found %}
+                                <span class="badge badge-yellow">Pending</span>
+                            {% else %}
+                                <strong class="cross">FAILED</strong>
+                            {% endif %}
+                        {% else %}
+                            <span class="unchecked">Not verified</span>
+                        {% endif %}
+                    </div>
+
+                    {% if v and v.permanent_copy_found and v.report_url %}
+                    <div class="verify-actions">
+                        <a href="{{ v.report_url }}" target="_blank" class="btn btn-outline btn-sm">View Report</a>
+                    </div>
+                    <div class="verify-meta">
+                        {% if v.attested_by %}Attested by <strong>{{ v.attested_by }}</strong>{% endif %}{% if v.attested_at %} at {{ v.attested_at[:19] }}Z{% endif %}
+                    </div>
+                    {% endif %}
+
+                    {% if not v and envelope.arweave_tx_id %}
+                    <div class="verify-meta">
+                        Hash and signature checked locally. Click <strong>Verify with ar.io</strong> for full verification.
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Metrics -->
+            <div class="section">
+                <div class="section-header">Metrics</div>
+                <div class="section-body">
+                    <div class="kv">
+                        {% for k, val in envelope.record.metrics.items() %}
+                        <div class="kv-row">
+                            <span class="kv-key">{{ k }}</span>
+                            <span class="kv-value">{{ val }}</span>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- ar.io Anchoring -->
+            <div class="section">
+                <div class="section-header">ar.io Anchoring</div>
+                <div class="section-body">
+                    {% if envelope.arweave_tx_id %}
+                    <div class="kv">
+                        <div class="kv-row">
+                            <span class="kv-key">Transaction</span>
+                            <span class="kv-value"><a href="{{ envelope.arweave_url }}" target="_blank"><span class="mono mono-sm">{{ envelope.arweave_tx_id }}</span></a></span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Status</span>
+                            <span class="kv-value">
+                                {% if turbo_status and turbo_status.status == 'FINALIZED' %}
+                                    <span class="badge badge-green"><span class="badge-dot"></span> Permanent</span>
+                                {% elif turbo_status and turbo_status.status == 'CONFIRMED' %}
+                                    <span class="badge badge-yellow"><span class="badge-dot"></span> Confirmed</span>
+                                {% else %}
+                                    <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
+                                {% endif %}
+                            </span>
+                        </div>
+                    </div>
+                    {% elif arweave_enabled %}
+                    <div style="display: flex; align-items: center; gap: 0.5rem; color: var(--yellow); font-size: 0.85rem;">
+                        <span class="badge badge-yellow"><span class="badge-dot badge-dot-pulse"></span> Anchoring</span>
+                        <span style="color: var(--muted);">Uploading proof to Arweave...</span>
+                    </div>
+                    {% else %}
+                    <div style="color: var(--muted); font-size: 0.85rem;">Not anchored — no wallet configured.</div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Artifact Integrity -->
+            <div class="section">
+                <div class="section-header">Artifact Integrity</div>
+                <div class="section-body">
+                    <div class="kv">
+                        <div class="kv-row">
+                            <span class="kv-key">Artifact Hash</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.record.artifact_hash }}</span>
+                        </div>
+                        {% if envelope.record.artifact_checksums %}
+                        {% for fname, checksum in envelope.record.artifact_checksums.items() %}
+                        <div class="kv-row">
+                            <span class="kv-key">{{ fname }}</span>
+                            <span class="kv-value mono mono-sm">{{ checksum[:24] }}...</span>
+                        </div>
+                        {% endfor %}
+                        {% endif %}
+                        {% if envelope.record.git_commit %}
+                        <div class="kv-row">
+                            <span class="kv-key">Git Commit</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.record.git_commit }}</span>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Proof Layer -->
+            <div class="section">
+                <div class="section-header">Proof Layer</div>
+                <div class="section-body">
+                    <div class="kv">
+                        <div class="kv-row">
+                            <span class="kv-key">Record Hash</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.record_hash }}</span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Previous Hash</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.previous_hash }}</span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Signature</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.signature }}</span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Public Key</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.public_key }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Model Info -->
+            <div class="section">
+                <div class="section-header">Model</div>
+                <div class="section-body">
+                    <div class="kv">
+                        <div class="kv-row">
+                            <span class="kv-key">Name</span>
+                            <span class="kv-value">{{ envelope.record.model_name }}</span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Version</span>
+                            <span class="kv-value">{{ envelope.record.model_version }}</span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Chain</span>
+                            <span class="kv-value"><a href="/ui/models/{{ envelope.record.model_name }}/{{ envelope.record.model_version }}">View chain of custody &rarr;</a></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Upload Receipt -->
+            <div class="section">
+                <div class="section-header">Upload Receipt</div>
+                <div class="section-body">
+                    {% if envelope.turbo_receipt %}
+                    <div class="kv">
+                        {% if envelope.turbo_receipt.timestamp %}
+                        <div class="kv-row">
+                            <span class="kv-key">Timestamp</span>
+                            <span class="kv-value mono">{{ envelope.turbo_receipt.timestamp }} ms</span>
+                        </div>
+                        {% endif %}
+                        <div class="kv-row">
+                            <span class="kv-key">Owner</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.turbo_receipt.owner }}</span>
+                        </div>
+                        {% if envelope.turbo_receipt.signature %}
+                        <div class="kv-row">
+                            <span class="kv-key">Signature</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.turbo_receipt.signature[:64] }}...</span>
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% else %}
+                    <div style="color: var(--muted); font-size: 0.85rem;">No receipt available.</div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

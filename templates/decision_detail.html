@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Decision {{ envelope.record.decision_id[:8] }} — Verifiable AI</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Besley:wght@400;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Besley:wght@400;800&family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
             --primary: #5427C8;
@@ -13,7 +13,7 @@
             --lavender: #DFD6F7;
             --black: #23232D;
             --white: #FFFFFF;
-            --surface: #F7F7F8;
+            --surface: #F0F0F0;
             --border: #E4E4E8;
             --muted: #8A8A99;
             --green: #1A7F37;
@@ -59,6 +59,21 @@
             font-size: 1rem;
             color: var(--black);
         }
+        .topbar-nav {
+            display: flex;
+            gap: 1.25rem;
+            align-items: center;
+            margin-left: 1.5rem;
+        }
+        .topbar-nav a {
+            color: var(--muted);
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: color 0.15s;
+        }
+        .topbar-nav a:hover { color: var(--black); text-decoration: none; }
+        .topbar-nav a.active { color: var(--black); font-weight: 600; }
         .topbar-right {
             display: flex;
             gap: 0.75rem;
@@ -138,7 +153,7 @@
             padding: 0.75rem 1rem;
             background: var(--surface);
             border-bottom: 1px solid var(--border);
-            font-size: 0.7rem;
+            font-size: 0.75rem;
             font-weight: 600;
             color: var(--muted);
             text-transform: uppercase;
@@ -252,7 +267,7 @@
         .verify-divider { border-top: 2px solid var(--border); margin-top: 0.25rem; padding-top: 0.5rem; }
         .check { color: var(--green); font-weight: 600; }
         .cross { color: var(--red); font-weight: 600; }
-        .unchecked { color: var(--border); }
+        .unchecked { color: var(--muted); font-size: 0.8rem; }
         .verify-actions {
             display: flex;
             gap: 0.5rem;
@@ -298,6 +313,19 @@
         .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.75rem; border-radius: 4px; }
         a { color: var(--primary); text-decoration: none; }
         a:hover { text-decoration: underline; }
+        @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+        .badge-dot-pulse { animation: pulse-dot 1.5s ease-in-out infinite; }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+        .main { animation: fadeIn 0.25s ease-out; }
+
+        @media (max-width: 768px) {
+            .topbar { flex-wrap: wrap; padding: 0.75rem 1rem; }
+            .topbar-nav { margin-left: 0; margin-top: 0.5rem; width: 100%; }
+            .main { padding: 1rem; }
+            .grid { grid-template-columns: 1fr; }
+            .page-header { flex-direction: column; }
+        }
     </style>
 </head>
 <body>
@@ -305,9 +333,11 @@
         <div class="topbar-left">
             <a href="/"><img src="https://ar.io/brand/ario-full-black.svg" alt="ar.io"></a>
             <a href="/" class="topbar-title">Verifiable AI</a>
-        </div>
-        <div class="topbar-right">
-            <a href="/" class="btn btn-outline btn-sm">&larr; Dashboard</a>
+            <div class="topbar-nav">
+                <a href="/">Predictions</a>
+                <a href="/ui/registry">Registry</a>
+                <a href="/ui/models/{{ envelope.record.model_name }}/{{ envelope.record.model_version }}">Model Lineage</a>
+            </div>
         </div>
     </div>
 
@@ -320,11 +350,10 @@
                 <div class="page-id">{{ envelope.record.decision_id }}</div>
             </div>
             <div class="page-actions">
-                {% if envelope.arweave_tx_id %}
-                <a href="/ui/decisions/{{ envelope.record.decision_id }}?verify=true" class="btn btn-primary btn-sm">Verify with ar.io</a>
-                {% endif %}
+                <a id="verify-btn" href="/ui/decisions/{{ envelope.record.decision_id }}?verify=true" class="btn btn-primary btn-sm" {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>Verify with ar.io</a>
+                <a href="/api/export/{{ envelope.record.decision_id }}" class="btn btn-outline btn-sm">Download Proof</a>
                 {% if not envelope.get('tampered') %}
-                <form action="/tamper/{{ envelope.record.decision_id }}" method="POST" style="display:inline;">
+                <form action="/tamper/{{ envelope.record.decision_id }}" method="POST" style="display:inline;" onsubmit="return confirm('This will permanently modify this record locally. The Arweave copy is unaffected. Continue?')">
                     <button type="submit" class="btn btn-danger-outline btn-sm">Tamper</button>
                 </form>
                 {% endif %}
@@ -488,6 +517,21 @@
                         <a href="{{ envelope.arweave_url }}" target="_blank">{{ envelope.arweave_tx_id[:24] }}...</a>
                     </div>
                     {% endif %}
+
+                    {% if envelope.arweave_tx_id %}
+                    <details style="margin-top: 0.75rem; font-size: 0.8rem; color: var(--muted);">
+                        <summary style="cursor: pointer; font-weight: 600; color: var(--black); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em;">How to verify independently</summary>
+                        <div style="margin-top: 0.5rem; line-height: 1.6;">
+                            <p>1. Fetch the proof from Arweave:</p>
+                            <code style="display: block; background: var(--surface); padding: 0.4rem 0.6rem; border-radius: 4px; margin: 0.25rem 0 0.5rem; font-size: 0.7rem; word-break: break-all; font-family: 'JetBrains Mono', monospace;">curl https://{{ envelope.arweave_url.split('//')[1] if envelope.arweave_url else 'turbo-gateway.com/' + envelope.arweave_tx_id }}</code>
+                            <p>2. Compute <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">SHA-256</code> of the canonical JSON <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">record</code> field (sorted keys, compact separators, floats to 6 decimal places). Compare with <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">record_hash</code>.</p>
+                            <p style="margin-top: 0.25rem;">3. Verify the Ed25519 signature using public key:</p>
+                            <code style="display: block; background: var(--surface); padding: 0.4rem 0.6rem; border-radius: 4px; margin: 0.25rem 0 0.5rem; font-size: 0.7rem; word-break: break-all; font-family: 'JetBrains Mono', monospace;">{{ envelope.public_key }}</code>
+                            <p>4. Check <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">previous_hash</code> matches the prior record's <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">record_hash</code> to verify chain integrity.</p>
+                            <p style="margin-top: 0.25rem; font-style: italic;">No dependency on ar.io, MLflow, or any external service required.</p>
+                        </div>
+                    </details>
+                    {% endif %}
                 </div>
             </div>
 
@@ -521,9 +565,9 @@
             </div>
 
             <!-- ar.io Anchoring -->
-            <div class="section">
+            <div class="section" id="anchoring-section">
                 <div class="section-header">ar.io Anchoring</div>
-                <div class="section-body">
+                <div class="section-body" id="anchoring-body">
                     {% if envelope.arweave_tx_id %}
                     <div class="kv">
                         <div class="kv-row">
@@ -546,6 +590,11 @@
                                 {% endif %}
                             </span>
                         </div>
+                    </div>
+                    {% elif arweave_enabled %}
+                    <div style="display: flex; align-items: center; gap: 0.5rem; color: var(--yellow); font-size: 0.85rem;">
+                        <span class="badge badge-yellow"><span class="badge-dot badge-dot-pulse"></span> Anchoring</span>
+                        <span style="color: var(--muted);">Uploading proof to Arweave...</span>
                     </div>
                     {% else %}
                     <div style="color: var(--muted); font-size: 0.85rem;">Not anchored — no wallet configured.</div>
@@ -594,6 +643,10 @@
                         <div class="kv-row">
                             <span class="kv-key">Artifact</span>
                             <span class="kv-value mono mono-sm">{{ envelope.record.artifact_uri }}</span>
+                        </div>
+                        <div class="kv-row">
+                            <span class="kv-key">Provenance</span>
+                            <span class="kv-value"><a href="/ui/models/{{ envelope.record.model_name }}/{{ envelope.record.model_version }}">View chain of custody &rarr;</a></span>
                         </div>
                     </div>
                 </div>
@@ -662,5 +715,32 @@
             </div>
         </div>
     </div>
+
+    {% if not envelope.arweave_tx_id and arweave_enabled %}
+    <script>
+    (function() {
+        const decisionId = "{{ envelope.record.decision_id }}";
+        const poll = setInterval(function() {
+            fetch("/decisions/" + decisionId)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.arweave_tx_id) {
+                        clearInterval(poll);
+                        const body = document.getElementById("anchoring-body");
+                        body.innerHTML =
+                            '<div class="kv">' +
+                            '<div class="kv-row"><span class="kv-key">Transaction</span>' +
+                            '<span class="kv-value"><a href="' + data.arweave_url + '" target="_blank"><span class="mono mono-sm">' + data.arweave_tx_id + '</span></a></span></div>' +
+                            '<div class="kv-row"><span class="kv-key">Status</span>' +
+                            '<span class="kv-value"><span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span></span></div>' +
+                            '</div>';
+                        document.getElementById("verify-btn").style.display = "";
+                    }
+                })
+                .catch(function() {});
+        }, 2500);
+    })();
+    </script>
+    {% endif %}
 </body>
 </html>

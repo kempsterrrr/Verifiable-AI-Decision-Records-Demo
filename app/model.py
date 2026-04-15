@@ -15,21 +15,32 @@ CLASS_NAMES = ["setosa", "versicolor", "virginica"]
 
 
 def train_and_register(tracking_uri: str, model_name: str) -> dict:
-    """Train an iris classifier and register it with MLflow."""
+    """Train an iris classifier and register it with MLflow (default params)."""
+    return train_and_register_with_params(tracking_uri, model_name)
+
+
+def train_and_register_with_params(
+    tracking_uri: str,
+    model_name: str,
+    max_iter: int = 200,
+    random_state: int = 42,
+) -> dict:
+    """Train an iris classifier with configurable params and register it with MLflow."""
     mlflow.set_tracking_uri(os.path.abspath(tracking_uri))
 
     iris = load_iris()
     X_train, X_test, y_train, y_test = train_test_split(
-        iris.data, iris.target, test_size=0.2, random_state=42
+        iris.data, iris.target, test_size=0.2, random_state=random_state,
     )
 
-    model = LogisticRegression(max_iter=200, random_state=42)
+    model = LogisticRegression(max_iter=max_iter, random_state=random_state)
     model.fit(X_train, y_train)
     accuracy = model.score(X_test, y_test)
 
     with mlflow.start_run() as run:
         mlflow.log_param("model_type", "LogisticRegression")
-        mlflow.log_param("max_iter", 200)
+        mlflow.log_param("max_iter", max_iter)
+        mlflow.log_param("random_state", random_state)
         mlflow.log_metric("accuracy", accuracy)
 
         model_info = mlflow.sklearn.log_model(
@@ -39,12 +50,17 @@ def train_and_register(tracking_uri: str, model_name: str) -> dict:
             input_example=X_train[:1],
         )
 
-        logger.info(f"Model trained: accuracy={accuracy:.4f}, run_id={run.info.run_id}")
+        # Get the actual registered version number
+        client = mlflow.tracking.MlflowClient()
+        versions = client.search_model_versions(f"name='{model_name}'")
+        latest_version = max(int(v.version) for v in versions)
+
+        logger.info(f"Model trained: accuracy={accuracy:.4f}, run_id={run.info.run_id}, version={latest_version}")
 
         return {
             "run_id": run.info.run_id,
             "model_name": model_name,
-            "model_version": "1",
+            "model_version": str(latest_version),
             "artifact_uri": model_info.model_uri,
             "accuracy": accuracy,
         }

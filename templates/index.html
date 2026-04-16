@@ -311,7 +311,7 @@
                 <label>Petal Width</label>
                 <input type="number" name="petal_width" value="0.2" step="0.1" required>
             </div>
-            <button type="submit" class="btn btn-primary">Predict &amp; Record</button>
+            <button type="submit" class="btn btn-primary" data-loading-text="Predicting...">Predict &amp; Record</button>
         </form>
 
         {% if records %}
@@ -399,10 +399,10 @@
                         <div class="actions">
                             <a href="/ui/decisions/{{ env.record.decision_id }}" class="btn btn-outline btn-sm">Detail</a>
                             {% if env.arweave_tx_id %}
-                            <a href="/ui/decisions/{{ env.record.decision_id }}?verify=true" class="btn btn-primary btn-sm">Verify</a>
+                            <a href="/ui/decisions/{{ env.record.decision_id }}?verify=true" class="btn btn-primary btn-sm" data-loading-text="Verifying...">Verify</a>
                             {% endif %}
                             <form action="/tamper/{{ env.record.decision_id }}" method="POST" style="display:inline;" onsubmit="return confirm('This will permanently modify this record locally. The Arweave copy is unaffected. Continue?')">
-                                <button type="submit" class="btn btn-danger-outline btn-sm">Tamper</button>
+                                <button type="submit" class="btn btn-danger-outline btn-sm" data-loading-text="Tampering...">Tamper</button>
                             </form>
                         </div>
                     </td>

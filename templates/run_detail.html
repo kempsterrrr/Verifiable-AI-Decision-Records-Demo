@@ -89,7 +89,7 @@
             </div>
             <div class="page-actions">
                 {% if envelope.arweave_tx_id %}
-                <a href="/ui/runs/{{ envelope.record.run_id }}?verify=true" class="btn btn-primary btn-sm">Verify with ar.io</a>
+                <a href="/ui/runs/{{ envelope.record.run_id }}?verify=true" class="btn btn-primary btn-sm" data-loading-text="Verifying...">Verify with ar.io</a>
                 {% endif %}
             </div>
         </div>

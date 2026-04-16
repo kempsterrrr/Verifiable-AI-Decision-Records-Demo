@@ -174,11 +174,11 @@
                 <div class="page-id">{{ envelope.record.decision_id }}</div>
             </div>
             <div class="page-actions">
-                <a id="verify-btn" href="/ui/decisions/{{ envelope.record.decision_id }}?verify=true" class="btn btn-primary btn-sm" {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>Verify with ar.io</a>
+                <a id="verify-btn" href="/ui/decisions/{{ envelope.record.decision_id }}?verify=true" class="btn btn-primary btn-sm" data-loading-text="Verifying..." {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>Verify with ar.io</a>
                 <a href="/api/export/{{ envelope.record.decision_id }}" class="btn btn-outline btn-sm">Download Proof</a>
                 {% if not envelope.get('tampered') %}
                 <form action="/tamper/{{ envelope.record.decision_id }}" method="POST" style="display:inline;" onsubmit="return confirm('This will permanently modify this record locally. The Arweave copy is unaffected. Continue?')">
-                    <button type="submit" class="btn btn-danger-outline btn-sm">Tamper</button>
+                    <button type="submit" class="btn btn-danger-outline btn-sm" data-loading-text="Tampering...">Tamper</button>
                 </form>
                 {% endif %}
             </div>

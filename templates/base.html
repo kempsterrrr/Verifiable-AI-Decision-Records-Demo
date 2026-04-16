@@ -216,6 +216,23 @@
         /* ── Actions ── */
         .actions { display: flex; gap: 0.35rem; align-items: center; }
 
+        /* ── Button loading state ── */
+        .btn-loading {
+            pointer-events: none;
+            opacity: 0.7;
+        }
+        .btn-spinner {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid currentColor;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            margin-right: 0.3rem;
+            vertical-align: -1px;
+        }
+
         /* ── Page transition ── */
         @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
         .main { animation: fadeIn 0.25s ease-out; }
@@ -309,6 +326,36 @@
             <a href="https://form.typeform.com/to/placeholder" target="_blank" class="footer-link">Request early access</a>
         </div>
     </footer>
+
+    <script>
+    // Universal button loading states
+    document.addEventListener('click', function(e) {
+        const btn = e.target.closest('[data-loading-text]');
+        if (!btn || btn.classList.contains('btn-loading')) return;
+
+        // For form submit buttons, let the confirm dialog run first
+        const form = btn.closest('form[onsubmit]');
+        if (form) {
+            // Defer — the confirm() runs synchronously before this fires
+            setTimeout(function() {
+                // If the page is still here, the user cancelled
+            }, 100);
+        }
+
+        btn.classList.add('btn-loading');
+        btn.innerHTML = '<span class="btn-spinner"></span>' + btn.getAttribute('data-loading-text');
+    });
+
+    // Handle forms with confirm dialogs separately
+    document.querySelectorAll('form[onsubmit] [data-loading-text]').forEach(function(btn) {
+        btn.closest('form').addEventListener('submit', function() {
+            btn.classList.add('btn-loading');
+            btn.innerHTML = '<span class="btn-spinner"></span>' + btn.getAttribute('data-loading-text');
+        });
+        // Remove the click handler for these by stopping propagation
+        btn.addEventListener('click', function(e) { e.stopPropagation(); });
+    });
+    </script>
 
     {% block scripts %}{% endblock %}
 </body>

@@ -126,7 +126,7 @@
                 <h1>Chain of Custody</h1>
                 <p>{{ model_name }} / v{{ version }}</p>
             </div>
-            <a href="/ui/models/{{ model_name }}/{{ version }}?verify=true" class="btn btn-primary btn-sm" id="verify-all-btn" onclick="this.textContent='Verifying...';this.style.pointerEvents='none';this.style.opacity='0.6';">Verify All</a>
+            <a href="/ui/models/{{ model_name }}/{{ version }}?verify=true" class="btn btn-primary btn-sm" id="verify-all-btn" data-loading-text="Verifying...">Verify All</a>
         </div>
 
         <div class="chain">

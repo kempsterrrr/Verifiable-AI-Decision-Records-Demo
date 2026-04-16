@@ -4,25 +4,6 @@
 {% block nav_predictions %}active{% endblock %}
 {% block lineage_url %}/ui/models/{{ model_info.model_name }}/{{ model_info.model_version }}{% endblock %}
 
-{% block topbar_right %}
-<div class="topbar-right">
-    <div class="sys-status">
-        <span class="sys-dot sys-dot-on"></span> MLflow {{ model_info.model_name }}/v{{ model_info.model_version }}
-    </div>
-    <div class="sys-status">
-        <span class="sys-dot sys-dot-on"></span> OpenTelemetry
-    </div>
-    <div class="sys-status">
-        <span class="sys-dot {{ 'sys-dot-on' if arweave_enabled else 'sys-dot-off' }}"></span>
-        Arweave
-    </div>
-    <div class="sys-status">
-        <span class="sys-dot {{ 'sys-dot-on' if ario_verify_enabled else 'sys-dot-off' }}"></span>
-        ar.io Verify
-    </div>
-</div>
-{% endblock %}
-
 {% block styles %}
         /* ── Stats row ── */
         .stats {

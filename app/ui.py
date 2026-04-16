@@ -12,6 +12,15 @@ router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 
 
+def _common_context(app):
+    """Shared template context for all pages (status bar, model info)."""
+    return {
+        "model_info": app.state.model_info,
+        "arweave_enabled": app.state.anchor.enabled if app.state.anchor else False,
+        "ario_verify_enabled": app.state.ario_verify.enabled if app.state.ario_verify else False,
+    }
+
+
 def _verify_envelope(app, envelope):
     """Run three-level verification on any proof envelope. Returns result dict."""
     local = app.state.proof_engine.verify_local(envelope)
@@ -81,10 +90,8 @@ def predictions(request: Request):
         request,
         "index.html",
         {
+            **_common_context(app),
             "records": records,
-            "model_info": model_info,
-            "arweave_enabled": app.state.anchor.enabled if app.state.anchor else False,
-            "ario_verify_enabled": app.state.ario_verify.enabled if app.state.ario_verify else False,
             "training_status": training_status,
             "registration_status": registration_status,
         },
@@ -145,10 +152,10 @@ def model_registry(request: Request):
         request,
         "model_registry.html",
         {
+            **_common_context(app),
             "model_name": model_name,
             "versions": version_data,
             "active_version": active_version,
-            "arweave_enabled": app.state.anchor.enabled if app.state.anchor else False,
         },
     )
 
@@ -215,10 +222,10 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
         request,
         "decision_detail.html",
         {
+            **_common_context(app),
             "envelope": envelope,
             "local_verification": local,
             "turbo_status": turbo_status,
-            "arweave_enabled": app.state.anchor.enabled if app.state.anchor else False,
         },
     )
 
@@ -247,10 +254,10 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
         request,
         "run_detail.html",
         {
+            **_common_context(app),
             "envelope": envelope,
             "local_verification": local,
             "turbo_status": turbo_status,
-            "arweave_enabled": app.state.anchor.enabled if app.state.anchor else False,
         },
     )
 
@@ -314,6 +321,7 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
         request,
         "model_chain.html",
         {
+            **_common_context(app),
             "model_name": model_name,
             "version": version,
             "training": training_env,
@@ -325,6 +333,5 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
             "prediction_count": len(model_predictions),
             "anchored_count": anchored_count,
             "verified_count": verified_count,
-            "arweave_enabled": app.state.anchor.enabled if app.state.anchor else False,
         },
     )

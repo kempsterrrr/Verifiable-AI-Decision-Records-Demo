@@ -6,7 +6,7 @@ import os
 import requests
 
 from ario_mlflow.proof import ProofEngine, canonical_json, hash_data
-from ario_mlflow.anchor import ArweaveAnchor
+from ario_mlflow.arweave import ArweaveAnchor
 
 logger = logging.getLogger(__name__)
 

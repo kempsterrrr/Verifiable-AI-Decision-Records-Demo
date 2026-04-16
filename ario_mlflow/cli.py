@@ -8,7 +8,7 @@ import sys
 import mlflow
 
 from ario_mlflow.proof import ProofEngine, canonical_json, hash_data
-from ario_mlflow.anchor import ArweaveAnchor
+from ario_mlflow.arweave import ArweaveAnchor
 from ario_mlflow.verify import ArioVerifyClient, verify_record, verify_arweave, verify_ario
 
 

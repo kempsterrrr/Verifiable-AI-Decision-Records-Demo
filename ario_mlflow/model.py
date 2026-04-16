@@ -41,7 +41,6 @@ class VerifiedModel:
         proof_engine: ProofEngine | None = None,
         anchor: ArweaveAnchor | None = None,
     ):
-        self._model = mlflow.pyfunc.load_model(model_uri)
         self._model_uri = model_uri
         self._proof_engine = proof_engine or ProofEngine()
         self._anchor = anchor or ArweaveAnchor(
@@ -52,17 +51,21 @@ class VerifiedModel:
         client = mlflow.tracking.MlflowClient()
         parts = model_uri.replace("models:/", "").split("/")
         self.model_name = parts[0] if parts else "unknown"
-        self.model_version = "unknown"
+        self.model_version = parts[1] if len(parts) > 1 else "unknown"
         self.run_id = "unknown"
 
+        # Resolve the run_id and load model via runs:/ URI for compatibility
+        # with both file-based and database-backed MLflow stores
+        load_uri = model_uri
         try:
-            versions = client.search_model_versions(f"name='{self.model_name}'")
-            if versions:
-                latest = max(versions, key=lambda v: int(v.version))
-                self.model_version = str(latest.version)
-                self.run_id = latest.run_id or "unknown"
+            mv = client.get_model_version(self.model_name, self.model_version)
+            self.run_id = mv.run_id or "unknown"
+            if self.run_id != "unknown":
+                load_uri = f"runs:/{self.run_id}/model"
         except Exception:
             pass
+
+        self._model = mlflow.pyfunc.load_model(load_uri)
 
         self._artifact_verified = None
         if self.run_id != "unknown":
@@ -70,7 +73,7 @@ class VerifiedModel:
                 run = client.get_run(self.run_id)
                 expected_hash = run.data.tags.get("ario.artifact_hash")
                 if expected_hash:
-                    checksums = artifact_checksums(client, self.run_id)
+                    checksums = artifact_checksums(self.run_id)
                     computed_hash = hash_data(canonical_json(checksums))
                     if computed_hash != expected_hash:
                         raise IntegrityError(
@@ -78,6 +81,7 @@ class VerifiedModel:
                             f"Expected {expected_hash}, got {computed_hash}"
                         )
                     self._artifact_verified = True
+                    logger.info(f"Artifact integrity verified for {model_uri}")
             except IntegrityError:
                 raise
             except Exception as e:

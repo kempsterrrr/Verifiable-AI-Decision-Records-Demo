@@ -72,7 +72,7 @@ class ArioMlflowClient(MlflowClient):
                 except Exception:
                     pass
 
-                checksums = artifact_checksums(self, run_id)
+                checksums = artifact_checksums(run_id)
                 if checksums:
                     computed_hash = hash_data(canonical_json(checksums))
                     artifact_verified = expected_hash is not None and computed_hash == expected_hash
@@ -110,16 +110,20 @@ class ArioMlflowClient(MlflowClient):
                 ario_dir = os.path.join(tmpdir, "ario")
                 os.makedirs(ario_dir)
 
-                with open(os.path.join(ario_dir, "proof.json"), "w") as f:
+                with open(os.path.join(ario_dir, "registration_proof.json"), "w") as f:
                     json.dump(proof, f, indent=2)
 
-                html = generate_verification_html(
+                if result and result.get("receipt"):
+                    with open(os.path.join(ario_dir, "registration_receipt.json"), "w") as f:
+                        json.dump(result["receipt"], f, indent=2)
+
+                report = generate_verification_html(
                     proof, result,
                     artifact_hash=expected_hash,
                     artifact_verified=artifact_verified,
                 )
-                with open(os.path.join(ario_dir, "verification.html"), "w") as f:
-                    f.write(html)
+                with open(os.path.join(ario_dir, "registration_verification.html"), "w") as f:
+                    f.write(report)
 
                 if run_id:
                     mlflow.log_artifacts(ario_dir, "ario")

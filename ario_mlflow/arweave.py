@@ -22,23 +22,52 @@ class ArweaveAnchor:
         self._token = None
 
         wallet_path = wallet_path or os.environ.get("ARIO_MLFLOW_ARWEAVE_WALLET", "")
-        if not wallet_path or not os.path.exists(wallet_path):
-            logger.warning("Arweave wallet not found. Anchoring disabled.")
-            return
 
         try:
             from turbo_sdk import ArweaveSigner, Turbo
 
-            with open(wallet_path) as f:
-                jwk = json.load(f)
+            if wallet_path and os.path.exists(wallet_path):
+                with open(wallet_path) as f:
+                    jwk = json.load(f)
+                logger.info(f"Using Arweave wallet from {wallet_path}")
+            else:
+                jwk = self._generate_wallet()
+                logger.info("Auto-generated Arweave wallet for anchoring")
+
             self._signer = ArweaveSigner(jwk)
             turbo = Turbo(self._signer)
             self._upload_url = turbo.upload_url
             self._token = turbo.token
             self.enabled = True
-            logger.info("Arweave anchoring enabled.")
+            logger.info(f"Arweave anchoring enabled (wallet: {self._signer.get_wallet_address()})")
         except Exception as e:
             logger.warning(f"Failed to initialize Arweave anchor: {e}")
+
+    @staticmethod
+    def _generate_wallet() -> dict:
+        """Generate a fresh Arweave RSA-4096 wallet in JWK format."""
+        import base64
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
+        pn = private_key.private_numbers()
+        pub = pn.public_numbers
+
+        def to_b64(n):
+            b = n.to_bytes((n.bit_length() + 7) // 8, "big")
+            return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+        return {
+            "kty": "RSA",
+            "n": to_b64(pub.n),
+            "e": to_b64(pub.e),
+            "d": to_b64(pn.d),
+            "p": to_b64(pn.p),
+            "q": to_b64(pn.q),
+            "dp": to_b64(pn.dmp1),
+            "dq": to_b64(pn.dmq1),
+            "qi": to_b64(pn.iqmp),
+        }
 
     def upload_proof(self, proof: dict, tags: list[dict] | None = None) -> dict | None:
         if not self.enabled or not self._signer:

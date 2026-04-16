@@ -17,10 +17,21 @@ from ario_mlflow.report import generate_verification_html
 logger = logging.getLogger(__name__)
 
 
-def artifact_checksums(client, run_id: str) -> dict[str, str]:
-    """Compute SHA-256 checksums of all artifacts in an MLflow run."""
+def artifact_checksums(client_or_run_id, run_id: str | None = None, artifact_path: str = "model") -> dict[str, str]:
+    """Compute SHA-256 checksums of model artifacts in an MLflow run.
+
+    Uses ``mlflow.artifacts.download_artifacts`` which works with both
+    file-based and database-backed tracking stores in MLflow 3.x.
+
+    Args:
+        client_or_run_id: An MlflowClient (ignored, kept for backward compat) or a run_id string.
+        run_id: The run ID. If client_or_run_id is a string, this is ignored.
+        artifact_path: Artifact subdirectory to hash (default "model").
+    """
+    if isinstance(client_or_run_id, str):
+        run_id = client_or_run_id
     try:
-        local_path = client.download_artifacts(run_id, "")
+        local_path = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path=artifact_path)
         checksums = {}
         for root, _dirs, files in os.walk(local_path):
             for fname in files:
@@ -58,7 +69,7 @@ def anchor(proof_engine: ProofEngine | None = None, arweave: ArweaveAnchor | Non
 
     params = dict(run_data.data.params)
     metrics = {k: round(v, 6) if isinstance(v, float) else v for k, v in run_data.data.metrics.items()}
-    checksums = artifact_checksums(client, run_id)
+    checksums = artifact_checksums(run_id)
     art_hash = hash_data(canonical_json(checksums))
 
     record = {
@@ -94,9 +105,16 @@ def anchor(proof_engine: ProofEngine | None = None, arweave: ArweaveAnchor | Non
         ario_dir = os.path.join(tmpdir, "ario")
         os.makedirs(ario_dir)
 
+        # proof.json — only the cryptographic proof (matches what's on Arweave)
         with open(os.path.join(ario_dir, "proof.json"), "w") as f:
             json.dump(proof, f, indent=2)
 
+        # receipt.json — Turbo upload receipt (independent timestamp witness)
+        if anchor_result and anchor_result.get("receipt"):
+            with open(os.path.join(ario_dir, "receipt.json"), "w") as f:
+                json.dump(anchor_result["receipt"], f, indent=2)
+
+        # verification.html — human-readable report
         html_content = generate_verification_html(proof, anchor_result, artifact_hash=art_hash)
         with open(os.path.join(ario_dir, "verification.html"), "w") as f:
             f.write(html_content)

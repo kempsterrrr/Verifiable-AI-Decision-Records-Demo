@@ -271,7 +271,7 @@
                                 <span class="kv-value mono mono-sm">{{ registration.record.artifact_hash[:24] }}...</span>
                             </div>
                             {% endif %}
-                            {% if training and training.record.artifact_hash and registration.record.artifact_hash %}
+                            {% if training and training.arweave_tx_id and training.record.artifact_hash and registration.record.artifact_hash %}
                             <div class="kv-row">
                                 <span class="kv-key">Artifact Integrity</span>
                                 <span class="kv-value">

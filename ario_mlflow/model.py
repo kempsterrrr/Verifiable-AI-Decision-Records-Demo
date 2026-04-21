@@ -22,6 +22,57 @@ class IntegrityError(Exception):
     """Raised when model artifacts fail integrity verification."""
 
 
+def _resolve_model_version(client, model_uri: str):
+    """Resolve a ``models:/`` URI to a ``ModelVersion`` using the correct MLflow API.
+
+    Supports numeric versions (``models:/name/1``), aliases
+    (``models:/name@champion``), and legacy stage URIs
+    (``models:/name/Production``). Returns the resolved ``ModelVersion`` or
+    ``None`` if the URI cannot be parsed or the registry lookup fails.
+    """
+    if not model_uri.startswith("models:/"):
+        return None
+    rest = model_uri[len("models:/"):]
+    if not rest:
+        return None
+
+    if "@" in rest:
+        name, alias = rest.split("@", 1)
+        if not name or not alias:
+            return None
+        try:
+            return client.get_model_version_by_alias(name, alias)
+        except Exception as e:
+            logger.warning(f"Could not resolve alias {model_uri}: {e}")
+            return None
+
+    parts = rest.split("/", 1)
+    name = parts[0]
+    suffix = parts[1] if len(parts) > 1 else ""
+    if not name or not suffix:
+        return None
+
+    if suffix.isdigit():
+        try:
+            return client.get_model_version(name, suffix)
+        except Exception as e:
+            logger.warning(f"Could not resolve version {model_uri}: {e}")
+            return None
+
+    # Stage URI (deprecated in MLflow 2.9+ but still supported).
+    try:
+        results = client.search_model_versions(
+            f"name='{name}' and current_stage='{suffix}'"
+        )
+    except Exception as e:
+        logger.warning(f"Could not resolve stage {model_uri}: {e}")
+        return None
+    if not results:
+        return None
+    # MLflow returns latest-first; take the most recent version in the stage.
+    return results[0]
+
+
 @dataclass
 class VerifiedPrediction:
     """Result of a verified prediction."""
@@ -49,26 +100,31 @@ class VerifiedModel:
         )
 
         client = mlflow.tracking.MlflowClient()
-        parts = model_uri.replace("models:/", "").split("/")
-        self.model_name = parts[0] if parts else "unknown"
-        self.model_version = parts[1] if len(parts) > 1 else "unknown"
+        self.model_name = "unknown"
+        self.model_version = "unknown"
         self.run_id = "unknown"
 
-        # Resolve the run_id via the registry. ModelVersion.source preserves the
-        # original artifact path from registration (e.g. "sklearn-model",
-        # "keras-model") — we must use it rather than hardcoding "/model".
+        # Resolve the models:/ URI via the correct MLflow registry API for each
+        # supported URI form:
+        #   models:/<name>/<numeric_version>  → get_model_version
+        #   models:/<name>@<alias>            → get_model_version_by_alias
+        #   models:/<name>/<stage>            → search_model_versions (deprecated)
+        mv = _resolve_model_version(client, model_uri)
+        if mv is not None:
+            self.model_name = mv.name
+            self.model_version = str(mv.version)
+            self.run_id = mv.run_id or "unknown"
+
+        # ModelVersion.source preserves the original artifact path from
+        # registration (e.g. "sklearn-model") — we must use it rather than
+        # hardcoding "/model".
         load_uri = model_uri
         artifact_path = "model"
-        try:
-            mv = client.get_model_version(self.model_name, self.model_version)
-            self.run_id = mv.run_id or "unknown"
-            if mv.source:
-                load_uri = mv.source
-                _src_run_id, src_artifact_path = parse_runs_uri(mv.source)
-                if src_artifact_path:
-                    artifact_path = src_artifact_path
-        except Exception:
-            pass
+        if mv is not None and mv.source:
+            load_uri = mv.source
+            _src_run_id, src_artifact_path = parse_runs_uri(mv.source)
+            if src_artifact_path:
+                artifact_path = src_artifact_path
 
         # Verify artifact integrity BEFORE loading the model. pyfunc models can
         # execute user code during load (PythonModel subclasses, custom loaders),

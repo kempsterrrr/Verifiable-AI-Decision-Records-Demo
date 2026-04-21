@@ -17,6 +17,15 @@ from ario_mlflow.report import generate_verification_html
 logger = logging.getLogger(__name__)
 
 
+class ArtifactAccessError(RuntimeError):
+    """Raised when an MLflow run's artifacts cannot be downloaded or read for hashing.
+
+    Callers must NOT treat this as "no artifacts" — the true state is unknown and
+    they should skip writing an `ario.artifact_hash` rather than anchor a hash of
+    an empty tree as if it were a real provenance record.
+    """
+
+
 def parse_runs_uri(source: str | None) -> tuple[str | None, str | None]:
     """Parse a ``runs:/<run_id>/<artifact_path>`` URI.
 
@@ -50,24 +59,47 @@ def artifact_checksums(client_or_run_id, run_id: str | None = None, artifact_pat
         run_id = client_or_run_id
     try:
         local_path = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path=artifact_path)
-        checksums = {}
-        for root, _dirs, files in os.walk(local_path):
-            for fname in files:
-                fpath = os.path.join(root, fname)
-                rel = os.path.relpath(fpath, local_path)
+    except Exception as e:
+        # Callers must not silently anchor an empty tree as if it were the
+        # artifact's real hash — surface the failure so they can skip.
+        raise ArtifactAccessError(
+            f"Could not download artifacts for run {run_id!r} at path {artifact_path!r}: {e}"
+        ) from e
+
+    checksums: dict[str, str] = {}
+    for root, _dirs, files in os.walk(local_path):
+        for fname in files:
+            fpath = os.path.join(root, fname)
+            rel = os.path.relpath(fpath, local_path)
+            try:
                 with open(fpath, "rb") as f:
                     checksums[rel] = hashlib.sha256(f.read()).hexdigest()
-        return checksums
-    except Exception:
-        return {}
+            except OSError as e:
+                raise ArtifactAccessError(
+                    f"Failed to read artifact file {fpath!r} for run {run_id!r}: {e}"
+                ) from e
+    return checksums
 
 
-def anchor(proof_engine: ProofEngine | None = None, arweave: ArweaveAnchor | None = None) -> dict:
+def anchor(
+    proof_engine: ProofEngine | None = None,
+    arweave: ArweaveAnchor | None = None,
+    artifact_path: str = "model",
+) -> dict:
     """Create a verifiable proof of the current training run.
 
     Must be called inside an active ``mlflow.start_run()`` block, after
     artifacts have been logged.  Signs a proof envelope, optionally uploads
     to Arweave, and writes rich tags + artifacts to the run.
+
+    Args:
+        proof_engine: Optional override for the signing engine.
+        arweave: Optional override for the Arweave anchor client.
+        artifact_path: The MLflow artifact subdirectory that was logged
+            (e.g. ``"model"``, ``"sklearn-model"``). Defaults to ``"model"`` —
+            the standard path used by ``mlflow.<flavor>.log_model`` when no
+            path is passed. Pass the real path here if the user logged under
+            a custom name so the anchored hash matches the registered model.
     """
     active = mlflow.active_run()
     if active is None:
@@ -87,8 +119,15 @@ def anchor(proof_engine: ProofEngine | None = None, arweave: ArweaveAnchor | Non
 
     params = dict(run_data.data.params)
     metrics = {k: round(v, 6) if isinstance(v, float) else v for k, v in run_data.data.metrics.items()}
-    checksums = artifact_checksums(run_id)
-    art_hash = hash_data(canonical_json(checksums))
+    try:
+        checksums = artifact_checksums(run_id, artifact_path=artifact_path)
+    except ArtifactAccessError as e:
+        # Record-keeping only: we cannot know the real hash, so we anchor the
+        # run's params/metrics but omit the artifact hash rather than
+        # fabricate one from an empty tree.
+        logger.warning(f"Skipping artifact_hash in proof for run {run_id}: {e}")
+        checksums = {}
+    art_hash = hash_data(canonical_json(checksums)) if checksums else None
 
     record = {
         "event_id": str(uuid.uuid4()),
@@ -108,10 +147,11 @@ def anchor(proof_engine: ProofEngine | None = None, arweave: ArweaveAnchor | Non
     anchor_result = arweave.upload_proof(proof) if arweave.enabled else None
 
     tags = {
-        "ario.artifact_hash": art_hash,
         "ario.public_key": proof["public_key"],
         "ario.verify_status": "anchored" if anchor_result else "signed",
     }
+    if art_hash is not None:
+        tags["ario.artifact_hash"] = art_hash
     if anchor_result:
         tags["ario.training_tx"] = anchor_result["tx_id"]
         tags["ario.arweave_url"] = anchor_result["url"]

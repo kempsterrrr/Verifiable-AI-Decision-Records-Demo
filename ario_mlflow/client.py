@@ -12,7 +12,7 @@ from mlflow.tracking import MlflowClient
 
 from ario_mlflow.proof import ProofEngine, canonical_json, hash_data
 from ario_mlflow.arweave import ArweaveAnchor
-from ario_mlflow.anchoring import artifact_checksums, parse_runs_uri
+from ario_mlflow.anchoring import artifact_checksums, parse_runs_uri, ArtifactAccessError
 from ario_mlflow.report import generate_verification_html
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,15 @@ class ArioMlflowClient(MlflowClient):
                 # source URI (runs:/<run_id>/<artifact_path>) preserves the
                 # original path — it is not always "model".
                 _src_run_id, src_artifact_path = parse_runs_uri(source)
-                checksums = artifact_checksums(run_id, artifact_path=src_artifact_path or "model")
+                try:
+                    checksums = artifact_checksums(run_id, artifact_path=src_artifact_path or "model")
+                except ArtifactAccessError as e:
+                    # We can't verify — leave artifact_verified as None (unknown)
+                    # and continue anchoring the registration event itself.
+                    logger.warning(
+                        f"Could not re-hash artifacts for {model_name}/v{version}: {e}"
+                    )
+                    checksums = {}
                 if checksums and expected_hash is not None:
                     computed_hash = hash_data(canonical_json(checksums))
                     artifact_verified = computed_hash == expected_hash

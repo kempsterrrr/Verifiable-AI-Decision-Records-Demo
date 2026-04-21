@@ -271,6 +271,8 @@ def test_verified_model_checks_integrity_before_load(monkeypatch):
         data = type("D", (), {"tags": {"ario.artifact_hash": "EXPECTED"}})()
 
     class _FakeMV:
+        name = "foo"
+        version = 1
         run_id = "run-xyz"
         source = "runs:/run-xyz/model"
 
@@ -317,6 +319,8 @@ def test_verified_model_loads_only_after_integrity_passes(monkeypatch):
         data = type("D", (), {"tags": {"ario.artifact_hash": expected}})()
 
     class _FakeMV:
+        name = "foo"
+        version = 1
         run_id = "run-xyz"
         source = "runs:/run-xyz/model"
 
@@ -380,6 +384,8 @@ def test_verified_model_uses_mv_source_for_load_and_integrity(monkeypatch):
         data = type("D", (), {"tags": {"ario.artifact_hash": expected}})()
 
     class _FakeMV:
+        name = "foo"
+        version = 1
         run_id = "run-xyz"
         source = "runs:/run-xyz/sklearn-model"
 
@@ -405,6 +411,201 @@ def test_verified_model_uses_mv_source_for_load_and_integrity(monkeypatch):
     assert vm._artifact_verified is True
     assert recorded["artifact_path"] == "sklearn-model"
     assert recorded["load_uri"] == "runs:/run-xyz/sklearn-model"
+
+
+# --- CodeRabbit round 4 regressions ---------------------------------------
+
+
+def test_artifact_checksums_raises_on_download_failure(monkeypatch):
+    """Regression for CodeRabbit r4 #1: silent {} on failure would be anchored as a bogus hash."""
+    import ario_mlflow.anchoring as anchoring
+
+    def _boom(*a, **kw):
+        raise RuntimeError("tracking store unavailable")
+
+    monkeypatch.setattr(anchoring.mlflow.artifacts, "download_artifacts", _boom)
+
+    with pytest.raises(anchoring.ArtifactAccessError) as excinfo:
+        anchoring.artifact_checksums("run-123", artifact_path="model")
+    assert "run-123" in str(excinfo.value)
+    assert "tracking store unavailable" in str(excinfo.value)
+
+
+def test_anchor_omits_artifact_hash_when_artifacts_unavailable(monkeypatch, tmp_path):
+    """Regression: anchor() must not publish an empty-tree hash as ario.artifact_hash."""
+    import ario_mlflow.anchoring as anchoring
+    from ario_mlflow.anchoring import anchor, ArtifactAccessError
+
+    def _boom(run_id, artifact_path="model"):
+        raise ArtifactAccessError("simulated failure")
+
+    # Stand in for artifact_checksums.
+    monkeypatch.setattr(anchoring, "artifact_checksums", _boom)
+
+    # Minimal MLflow stubs for the rest of anchor().
+    class _RunData:
+        params: dict = {}
+        metrics: dict = {}
+        tags: dict = {}
+
+    class _RunInfo:
+        run_id = "run-xyz"
+
+    class _ActiveRun:
+        info = _RunInfo()
+
+    class _FakeRun:
+        data = _RunData()
+
+    class _FakeMlflowClient:
+        def get_run(self, run_id): return _FakeRun()
+        def set_tag(self, run_id, key, value):
+            set_tags.setdefault(run_id, {})[key] = value
+
+    set_tags: dict = {}
+
+    class _FakeAnchor:
+        enabled = False
+        def upload_proof(self, *a, **kw): return None
+
+    monkeypatch.setattr(anchoring.mlflow, "active_run", lambda: _ActiveRun())
+    monkeypatch.setattr(anchoring.mlflow.tracking, "MlflowClient", lambda: _FakeMlflowClient())
+    monkeypatch.setattr(anchoring.mlflow, "log_artifacts", lambda *a, **kw: None)
+
+    # Point ProofEngine / ArweaveAnchor at deterministic stubs.
+    result = anchor(
+        proof_engine=anchoring.ProofEngine(
+            str(tmp_path / "priv"), str(tmp_path / "pub")
+        ),
+        arweave=_FakeAnchor(),
+    )
+
+    # The fatal assertion: no ario.artifact_hash tag was written.
+    assert "ario.artifact_hash" not in set_tags.get("run-xyz", {}), set_tags
+    assert "ario.artifact_hash" not in result["tags"]
+    # Record's artifact_hash is None — not the hash of an empty dict.
+    assert result["proof"]["record"]["artifact_hash"] is None
+
+
+def test_anchor_accepts_custom_artifact_path(monkeypatch, tmp_path):
+    """Regression for CodeRabbit r4 #2: anchor() hashes the logged path, not hardcoded 'model'."""
+    import ario_mlflow.anchoring as anchoring
+    from ario_mlflow.anchoring import anchor
+
+    recorded: dict = {}
+
+    def _capture_path(run_id, artifact_path="model"):
+        recorded["artifact_path"] = artifact_path
+        return {f"{artifact_path}/data.pkl": "abc123"}
+
+    monkeypatch.setattr(anchoring, "artifact_checksums", _capture_path)
+
+    class _RunData:
+        params: dict = {}
+        metrics: dict = {}
+        tags: dict = {}
+
+    class _RunInfo:
+        run_id = "run-abc"
+
+    class _ActiveRun:
+        info = _RunInfo()
+
+    class _FakeRun:
+        data = _RunData()
+
+    class _FakeMlflowClient:
+        def get_run(self, run_id): return _FakeRun()
+        def set_tag(self, *a, **kw): pass
+
+    class _FakeAnchor:
+        enabled = False
+        def upload_proof(self, *a, **kw): return None
+
+    monkeypatch.setattr(anchoring.mlflow, "active_run", lambda: _ActiveRun())
+    monkeypatch.setattr(anchoring.mlflow.tracking, "MlflowClient", lambda: _FakeMlflowClient())
+    monkeypatch.setattr(anchoring.mlflow, "log_artifacts", lambda *a, **kw: None)
+
+    anchor(
+        proof_engine=anchoring.ProofEngine(
+            str(tmp_path / "priv"), str(tmp_path / "pub")
+        ),
+        arweave=_FakeAnchor(),
+        artifact_path="sklearn-model",
+    )
+
+    assert recorded["artifact_path"] == "sklearn-model"
+
+
+def test_verified_model_resolves_alias_uri(monkeypatch):
+    """Regression for CodeRabbit r4 #3: models:/name@alias must use get_model_version_by_alias."""
+    import ario_mlflow.model as model_module
+    from ario_mlflow.model import VerifiedModel
+
+    class _FakeMV:
+        name = "fraud-detector"
+        version = 7
+        run_id = "run-alias"
+        source = "runs:/run-alias/model"
+
+    calls: list[str] = []
+
+    class _FakeClient:
+        def get_model_version_by_alias(self, name, alias):
+            calls.append(f"by_alias:{name}:{alias}")
+            return _FakeMV()
+
+        def get_model_version(self, *a, **kw):
+            calls.append("by_version_WRONG")
+            raise AssertionError("numeric API was used for an alias URI")
+
+        def get_run(self, run_id):
+            return type("R", (), {"data": type("D", (), {"tags": {}})()})()
+
+    monkeypatch.setattr(model_module.mlflow.tracking, "MlflowClient", lambda: _FakeClient())
+    monkeypatch.setattr(model_module, "artifact_checksums", lambda *a, **kw: {})
+    monkeypatch.setattr(model_module.mlflow.pyfunc, "load_model", lambda uri: object())
+
+    vm = VerifiedModel("models:/fraud-detector@champion")
+    assert calls == ["by_alias:fraud-detector:champion"]
+    assert vm.model_name == "fraud-detector"
+    assert vm.model_version == "7"
+    assert vm.run_id == "run-alias"
+
+
+def test_verified_model_resolves_stage_uri(monkeypatch):
+    """Regression for CodeRabbit r4 #3: models:/name/Production uses search_model_versions."""
+    import ario_mlflow.model as model_module
+    from ario_mlflow.model import VerifiedModel
+
+    class _FakeMV:
+        name = "fraud-detector"
+        version = 3
+        run_id = "run-stage"
+        source = "runs:/run-stage/model"
+
+    calls: list[str] = []
+
+    class _FakeClient:
+        def search_model_versions(self, query):
+            calls.append(f"search:{query}")
+            return [_FakeMV()]
+
+        def get_model_version(self, *a, **kw):
+            calls.append("by_version_WRONG")
+            raise AssertionError("numeric API was used for a stage URI")
+
+        def get_run(self, run_id):
+            return type("R", (), {"data": type("D", (), {"tags": {}})()})()
+
+    monkeypatch.setattr(model_module.mlflow.tracking, "MlflowClient", lambda: _FakeClient())
+    monkeypatch.setattr(model_module, "artifact_checksums", lambda *a, **kw: {})
+    monkeypatch.setattr(model_module.mlflow.pyfunc, "load_model", lambda uri: object())
+
+    vm = VerifiedModel("models:/fraud-detector/Production")
+    assert len(calls) == 1 and "Production" in calls[0]
+    assert vm.model_name == "fraud-detector"
+    assert vm.model_version == "3"
 
 
 def test_ario_client_skips_registration_anchor_on_get_run_failure(monkeypatch, caplog):

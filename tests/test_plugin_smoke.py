@@ -272,6 +272,7 @@ def test_verified_model_checks_integrity_before_load(monkeypatch):
 
     class _FakeMV:
         run_id = "run-xyz"
+        source = "runs:/run-xyz/model"
 
     class _FakeClient:
         def get_model_version(self, name, version):
@@ -317,6 +318,7 @@ def test_verified_model_loads_only_after_integrity_passes(monkeypatch):
 
     class _FakeMV:
         run_id = "run-xyz"
+        source = "runs:/run-xyz/model"
 
     class _FakeClient:
         def get_model_version(self, n, v): return _FakeMV()
@@ -340,3 +342,105 @@ def test_verified_model_loads_only_after_integrity_passes(monkeypatch):
     assert vm._artifact_verified is True
     # Integrity ran first, load ran second.
     assert call_order == ["integrity", "load"], call_order
+
+
+# --- parse_runs_uri helper -------------------------------------------------
+
+
+def test_parse_runs_uri_extracts_run_and_artifact_path():
+    from ario_mlflow.anchoring import parse_runs_uri
+
+    assert parse_runs_uri("runs:/abc123/model") == ("abc123", "model")
+    assert parse_runs_uri("runs:/abc123/sklearn-model") == ("abc123", "sklearn-model")
+    assert parse_runs_uri("runs:/abc123/nested/path") == ("abc123", "nested/path")
+    assert parse_runs_uri("runs:/abc123") == ("abc123", None)
+    assert parse_runs_uri("s3://bucket/model") == (None, None)
+    assert parse_runs_uri(None) == (None, None)
+    assert parse_runs_uri("") == (None, None)
+
+
+# --- CodeRabbit round 3 regressions ---------------------------------------
+
+
+def test_verified_model_uses_mv_source_for_load_and_integrity(monkeypatch):
+    """Regression for CodeRabbit r3 #3: non-default artifact paths must be respected.
+
+    When a model is registered at e.g. ``sklearn-model``, load_uri must be
+    ``mv.source`` (not ``runs:/<id>/model``) and the integrity check must hash
+    the ``sklearn-model`` artifact path.
+    """
+    import ario_mlflow.model as model_module
+    from ario_mlflow.model import VerifiedModel
+    from ario_mlflow.proof import canonical_json, hash_data
+
+    checksums = {"sklearn-model/data.pkl": "abc"}
+    expected = hash_data(canonical_json(checksums))
+
+    class _FakeRun:
+        data = type("D", (), {"tags": {"ario.artifact_hash": expected}})()
+
+    class _FakeMV:
+        run_id = "run-xyz"
+        source = "runs:/run-xyz/sklearn-model"
+
+    class _FakeClient:
+        def get_model_version(self, n, v): return _FakeMV()
+        def get_run(self, rid): return _FakeRun()
+
+    recorded: dict = {}
+
+    def _fake_checksums(run_id, *, artifact_path="model", **_):
+        recorded["artifact_path"] = artifact_path
+        return checksums
+
+    def _fake_load_model(uri):
+        recorded["load_uri"] = uri
+        return object()
+
+    monkeypatch.setattr(model_module.mlflow.tracking, "MlflowClient", lambda: _FakeClient())
+    monkeypatch.setattr(model_module, "artifact_checksums", _fake_checksums)
+    monkeypatch.setattr(model_module.mlflow.pyfunc, "load_model", _fake_load_model)
+
+    vm = VerifiedModel("models:/foo/1")
+    assert vm._artifact_verified is True
+    assert recorded["artifact_path"] == "sklearn-model"
+    assert recorded["load_uri"] == "runs:/run-xyz/sklearn-model"
+
+
+def test_ario_client_skips_registration_anchor_on_get_run_failure(monkeypatch, caplog):
+    """Regression for CodeRabbit r3 #2: don't mint a bad GENESIS proof when the
+    source run lookup fails transiently."""
+    import ario_mlflow.client as client_module
+
+    captured: dict = {"create_proof_called": False, "upload_called": False}
+
+    class _FailingClient(client_module.ArioMlflowClient):
+        def __init__(self):
+            # Skip MlflowClient __init__; we override everything we touch.
+            self._proof_engine = type(
+                "PE", (), {"create_proof": lambda *a, **kw: (captured.__setitem__("create_proof_called", True) or {})}
+            )()
+            self._anchor = type(
+                "A", (), {"enabled": True, "upload_proof": lambda *a, **kw: (captured.__setitem__("upload_called", True) or None)}
+            )()
+
+        def get_run(self, run_id):
+            raise RuntimeError("tracking store down")
+
+        def set_model_version_tag(self, *a, **kw):
+            captured["set_tag_called"] = True
+
+        def log_artifacts(self, *a, **kw):
+            captured["log_artifacts_called"] = True
+
+    c = _FailingClient()
+    with caplog.at_level("WARNING"):
+        c._anchor_registration("fraud", "1", "run-id", "runs:/run-id/model")
+
+    assert captured["create_proof_called"] is False, (
+        "Must not mint a registration proof when source-run lookup failed"
+    )
+    assert captured["upload_called"] is False
+    assert not captured.get("set_tag_called")
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert any("Skipping registration anchoring" in m for m in warnings), warnings

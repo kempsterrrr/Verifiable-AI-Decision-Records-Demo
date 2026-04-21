@@ -193,11 +193,14 @@ def cmd_verify_model(args):
         if mv.run_id:
             try:
                 run = client.get_run(mv.run_id)
+                # Only use the model-version's Arweave URL here. The training
+                # run's ario.arweave_url points to a different transaction and
+                # would produce a mismatched link on the registration report.
                 _regenerate_html(
                     mv.run_id,
                     proof_data,
                     tx_id,
-                    mv.tags.get("ario.arweave_url") or run.data.tags.get("ario.arweave_url"),
+                    mv.tags.get("ario.arweave_url"),
                     run.data.tags.get("ario.artifact_hash"),
                     artifact_verified,
                     ario_result,

@@ -12,7 +12,7 @@ from mlflow.tracking import MlflowClient
 
 from ario_mlflow.proof import ProofEngine, canonical_json, hash_data
 from ario_mlflow.arweave import ArweaveAnchor
-from ario_mlflow.anchoring import artifact_checksums
+from ario_mlflow.anchoring import artifact_checksums, parse_runs_uri
 from ario_mlflow.report import generate_verification_html
 
 logger = logging.getLogger(__name__)
@@ -68,10 +68,22 @@ class ArioMlflowClient(MlflowClient):
                     run = self.get_run(run_id)
                     training_tx = run.data.tags.get("ario.training_tx")
                     expected_hash = run.data.tags.get("ario.artifact_hash")
-                except Exception:
-                    pass
+                except Exception as e:
+                    # A transient tracking-store failure must NOT silently drop
+                    # training_tx and cause us to mint a fresh GENESIS chain —
+                    # that would permanently break provenance for this model
+                    # version. Skip anchoring this attempt instead.
+                    logger.warning(
+                        f"Skipping registration anchoring for {model_name}/v{version}: "
+                        f"could not load source run {run_id}: {e}"
+                    )
+                    return
 
-                checksums = artifact_checksums(run_id)
+                # Hash the artifact path that was actually registered. MLflow's
+                # source URI (runs:/<run_id>/<artifact_path>) preserves the
+                # original path — it is not always "model".
+                _src_run_id, src_artifact_path = parse_runs_uri(source)
+                checksums = artifact_checksums(run_id, artifact_path=src_artifact_path or "model")
                 if checksums and expected_hash is not None:
                     computed_hash = hash_data(canonical_json(checksums))
                     artifact_verified = computed_hash == expected_hash

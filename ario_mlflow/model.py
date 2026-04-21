@@ -13,7 +13,7 @@ import numpy as np
 
 from ario_mlflow.proof import ProofEngine, canonical_json, hash_data
 from ario_mlflow.arweave import ArweaveAnchor
-from ario_mlflow.anchoring import artifact_checksums
+from ario_mlflow.anchoring import artifact_checksums, parse_runs_uri
 
 logger = logging.getLogger(__name__)
 
@@ -54,14 +54,19 @@ class VerifiedModel:
         self.model_version = parts[1] if len(parts) > 1 else "unknown"
         self.run_id = "unknown"
 
-        # Resolve the run_id via the registry so we can verify integrity
-        # against the source run's ario.artifact_hash tag.
+        # Resolve the run_id via the registry. ModelVersion.source preserves the
+        # original artifact path from registration (e.g. "sklearn-model",
+        # "keras-model") — we must use it rather than hardcoding "/model".
         load_uri = model_uri
+        artifact_path = "model"
         try:
             mv = client.get_model_version(self.model_name, self.model_version)
             self.run_id = mv.run_id or "unknown"
-            if self.run_id != "unknown":
-                load_uri = f"runs:/{self.run_id}/model"
+            if mv.source:
+                load_uri = mv.source
+                _src_run_id, src_artifact_path = parse_runs_uri(mv.source)
+                if src_artifact_path:
+                    artifact_path = src_artifact_path
         except Exception:
             pass
 
@@ -75,7 +80,7 @@ class VerifiedModel:
                 run = client.get_run(self.run_id)
                 expected_hash = run.data.tags.get("ario.artifact_hash")
                 if expected_hash:
-                    checksums = artifact_checksums(self.run_id)
+                    checksums = artifact_checksums(self.run_id, artifact_path=artifact_path)
                     if not checksums:
                         logger.warning(
                             f"Could not download artifacts for integrity check of {model_uri}; "

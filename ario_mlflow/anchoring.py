@@ -17,6 +17,24 @@ from ario_mlflow.report import generate_verification_html
 logger = logging.getLogger(__name__)
 
 
+def parse_runs_uri(source: str | None) -> tuple[str | None, str | None]:
+    """Parse a ``runs:/<run_id>/<artifact_path>`` URI.
+
+    Returns ``(run_id, artifact_path)`` where either element may be ``None`` if
+    the source is missing, not a ``runs:/`` URI, or has no artifact path. This
+    matters because MLflow's ``ModelVersion.source`` preserves the original
+    artifact path from registration (e.g. ``sklearn-model``, ``keras-model``)
+    and we must not assume it is always ``model``.
+    """
+    if not source or not source.startswith("runs:/"):
+        return None, None
+    rest = source[len("runs:/"):].lstrip("/")
+    if "/" not in rest:
+        return (rest or None), None
+    run_id, artifact_path = rest.split("/", 1)
+    return (run_id or None), (artifact_path or None)
+
+
 def artifact_checksums(client_or_run_id, run_id: str | None = None, artifact_path: str = "model") -> dict[str, str]:
     """Compute SHA-256 checksums of model artifacts in an MLflow run.
 

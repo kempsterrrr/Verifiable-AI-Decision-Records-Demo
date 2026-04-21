@@ -90,8 +90,9 @@ class VerifiedModel:
         self._last_hash = "GENESIS"
         self._lock = threading.Lock()
 
+    @mlflow.trace(name="VerifiedModel.predict")
     def predict(self, input_data) -> VerifiedPrediction:
-        """Run inference and anchor a decision record in the background."""
+        """Run inference, create cryptographic proof, and log an MLflow trace."""
         decision_id = str(uuid.uuid4())
         start = time()
 
@@ -137,22 +138,43 @@ class VerifiedModel:
             record=record,
         )
 
+        # Tag the MLflow trace with proof metadata — links trace to proof
+        trace_id = mlflow.get_active_trace_id()
+        if trace_id:
+            mlflow.set_trace_tag(trace_id, "ario.decision_id", decision_id)
+            mlflow.set_trace_tag(trace_id, "ario.model_name", self.model_name)
+            mlflow.set_trace_tag(trace_id, "ario.model_version", self.model_version)
+            mlflow.set_trace_tag(trace_id, "ario.input_hash", record["input_hash"])
+            mlflow.set_trace_tag(trace_id, "ario.output_hash", record["output_hash"])
+            mlflow.set_trace_tag(trace_id, "ario.record_hash", proof["record_hash"])
+            mlflow.set_trace_tag(trace_id, "ario.proof_status", result.proof_status)
+            if self._artifact_verified is not None:
+                mlflow.set_trace_tag(trace_id, "ario.artifact_verified", str(self._artifact_verified).lower())
+
         if self._anchor.enabled:
             threading.Thread(
                 target=self._anchor_prediction,
-                args=(result, proof),
+                args=(result, proof, trace_id),
                 daemon=True,
             ).start()
 
         return result
 
-    def _anchor_prediction(self, result: VerifiedPrediction, proof: dict):
-        """Background: upload prediction proof to Arweave."""
+    def _anchor_prediction(self, result: VerifiedPrediction, proof: dict, trace_id: str | None = None):
+        """Background: upload prediction proof to Arweave, update trace."""
         try:
             anchor_result = self._anchor.upload_proof(proof)
             if anchor_result:
                 result.tx_id = anchor_result["tx_id"]
                 result.proof_status = "anchored"
+                # Update the trace with the Arweave TX — links trace to on-chain proof
+                if trace_id:
+                    try:
+                        mlflow.set_trace_tag(trace_id, "ario.arweave_tx", anchor_result["tx_id"])
+                        mlflow.set_trace_tag(trace_id, "ario.arweave_url", anchor_result["url"])
+                        mlflow.set_trace_tag(trace_id, "ario.proof_status", "anchored")
+                    except Exception:
+                        pass  # Trace may have been flushed already
                 logger.info(f"Prediction {result.decision_id} anchored: tx={anchor_result['tx_id']}")
         except Exception as e:
             logger.error(f"Prediction anchoring failed for {result.decision_id}: {e}")

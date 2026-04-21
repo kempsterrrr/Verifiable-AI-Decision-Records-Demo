@@ -6,7 +6,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app.decision_record import canonical_json, hash_data
+from ario_mlflow.proof import canonical_json, hash_data
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
@@ -43,10 +43,11 @@ def _verify_envelope(app, envelope):
             result["hash_match"] = arweave_hash == arweave_data.get("record_hash")
 
         if app.state.ario_verify.enabled:
-            ario_result = app.state.ario_verify.submit_verification(envelope["arweave_tx_id"])
-            if ario_result:
-                normalized = app.state.ario_verify._normalize_result(ario_result)
-                result["attestation_level"] = normalized.get("level")
+            # Plugin's submit_verification returns a pre-normalized dict with
+            # attestation_level / report_url / attested_by / attested_at.
+            normalized = app.state.ario_verify.submit_verification(envelope["arweave_tx_id"])
+            if normalized:
+                result["attestation_level"] = normalized.get("attestation_level")
                 result["report_url"] = normalized.get("report_url")
                 result["attested_by"] = normalized.get("attested_by")
                 result["attested_at"] = normalized.get("attested_at")
@@ -198,12 +199,12 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
             result["permanent_copy_found"] = True
             result["hash_match"] = arweave_hash == arweave_data.get("record_hash")
 
-        # ar.io Verify attestation
+        # ar.io Verify attestation. Plugin's submit_verification returns a
+        # pre-normalized dict — no second _normalize_result call needed.
         if app.state.ario_verify.enabled:
-            ario_result = app.state.ario_verify.submit_verification(envelope["arweave_tx_id"])
-            if ario_result:
-                normalized = app.state.ario_verify._normalize_result(ario_result)
-                result["attestation_level"] = normalized.get("level")
+            normalized = app.state.ario_verify.submit_verification(envelope["arweave_tx_id"])
+            if normalized:
+                result["attestation_level"] = normalized.get("attestation_level")
                 result["report_url"] = normalized.get("report_url")
                 result["pdf_url"] = normalized.get("pdf_url")
                 result["attested_by"] = normalized.get("attested_by")

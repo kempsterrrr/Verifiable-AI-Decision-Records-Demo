@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 import mlflow
 
-from app.decision_record import canonical_json, hash_data
+from ario_mlflow.proof import canonical_json, hash_data
 
 
 def _artifact_checksums(tracking_uri: str, run_id: str) -> dict[str, str]:

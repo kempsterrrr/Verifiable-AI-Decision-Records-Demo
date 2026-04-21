@@ -1,31 +1,14 @@
-import hashlib
-import json
+"""Demo-specific decision record builder.
+
+The cryptographic primitives (``canonical_json``, ``hash_data``,
+``normalize_floats``) live in the ``ario_mlflow`` plugin — this module imports
+them so both the demo and the plugin share a single source of truth.
+"""
+
 import uuid
 from datetime import datetime, timezone
 
-
-def normalize_floats(obj, precision=6):
-    """Recursively round floats for deterministic hashing."""
-    if isinstance(obj, float):
-        return round(obj, precision)
-    if isinstance(obj, dict):
-        return {k: normalize_floats(v, precision) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [normalize_floats(v, precision) for v in obj]
-    return obj
-
-
-def canonical_json(obj: dict) -> bytes:
-    """Deterministic JSON serialization: sorted keys, compact, UTF-8."""
-    normalized = normalize_floats(obj)
-    return json.dumps(
-        normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
-
-
-def hash_data(data: bytes) -> str:
-    """SHA-256 hex digest."""
-    return hashlib.sha256(data).hexdigest()
+from ario_mlflow.proof import canonical_json, hash_data
 
 
 def build_decision_record(

@@ -15,12 +15,12 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from app.config import get_settings
 from app.storage import RecordStore
 from app.lifecycle_store import LifecycleStore
-from app.proof import ProofEngine
-from app.decision_record import build_decision_record, canonical_json, hash_data
+from ario_mlflow.proof import ProofEngine, canonical_json, hash_data
+from ario_mlflow.arweave import ArweaveAnchor
+from ario_mlflow.verify import ArioVerifyClient
+from app.decision_record import build_decision_record
 from app.lifecycle import build_training_record, build_registration_record
 from app.model import load_model, predict, train_and_register_with_params, FEATURE_NAMES
-from app.anchor import ArweaveAnchor
-from app.ario_verify import ArioVerifyClient
 from app.ui import router as ui_router
 
 logging.basicConfig(level=logging.INFO)
@@ -404,9 +404,8 @@ def verify_decision(request: Request, decision_id: str):
     # ar.io Verify — on-demand attestation
     ario_result = None
     if envelope.get("arweave_tx_id") and request.app.state.ario_verify.enabled:
+        # Plugin's submit_verification returns a pre-normalized dict.
         ario_result = request.app.state.ario_verify.submit_verification(envelope["arweave_tx_id"])
-        if ario_result:
-            ario_result = request.app.state.ario_verify._normalize_result(ario_result)
 
     result = {
         "decision_id": decision_id,

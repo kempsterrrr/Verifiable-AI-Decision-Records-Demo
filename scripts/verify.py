@@ -8,8 +8,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.config import get_settings
-from app.proof import ProofEngine
-from app.decision_record import canonical_json, hash_data
+from ario_mlflow.proof import ProofEngine, canonical_json, hash_data
 
 
 def verify_record(envelope: dict, proof_engine: ProofEngine) -> dict:

@@ -271,10 +271,21 @@
                                 <span class="kv-value mono mono-sm">{{ registration.record.artifact_hash[:24] }}...</span>
                             </div>
                             {% endif %}
-                            {% if training and registration.record.artifact_hash == training.record.artifact_hash %}
+                            {% if training and training.record.artifact_hash and registration.record.artifact_hash %}
                             <div class="kv-row">
-                                <span class="kv-key">Artifact Match</span>
-                                <span class="kv-value"><span class="check">Matches training</span></span>
+                                <span class="kv-key">Artifact Integrity</span>
+                                <span class="kv-value">
+                                    {% if registration.record.artifact_hash == training.record.artifact_hash %}
+                                        <span class="check">Verified — matches training</span>
+                                    {% else %}
+                                        <span class="cross">Mismatch — artifacts changed after training</span>
+                                    {% endif %}
+                                </span>
+                            </div>
+                            {% elif registration.record.artifact_hash %}
+                            <div class="kv-row">
+                                <span class="kv-key">Artifact Integrity</span>
+                                <span class="kv-value"><span class="unchecked">Not checked (no anchored training hash)</span></span>
                             </div>
                             {% endif %}
                             {% if registration.record.previous_tx %}

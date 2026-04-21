@@ -56,7 +56,7 @@ class ArioVerifyClient:
         return {
             "verification_id": data.get("verificationId"),
             "status": data.get("existence", {}).get("status", "unknown"),
-            "level": data.get("level"),
+            "attestation_level": data.get("level"),
             "report_url": resolve(links.get("dashboard")),
             "pdf_url": resolve(links.get("pdf")),
             "attested_by": attestation.get("gateway"),

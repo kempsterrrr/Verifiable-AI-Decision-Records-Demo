@@ -224,42 +224,64 @@ pip install -e .
 
 ### Usage
 
-**Data Scientist — zero code changes:**
+**Training — one explicit `anchor()` call:**
 
 ```python
 import mlflow
-import ario_mlflow  # Importing activates the RunContextProvider
+from ario_mlflow import anchor
 
-with mlflow.start_run():
+with mlflow.start_run() as run:
     mlflow.log_param("lr", 0.01)
     mlflow.sklearn.log_model(model, "model")
     mlflow.log_metric("accuracy", 0.95)
-# Run ends → proof auto-anchored → TX ID written as ario.training_tx tag
+    anchor()  # signs a proof, uploads to Arweave, writes ario.* tags + artifacts
 ```
 
-**ML Engineer — one import swap:**
+Just importing `ario_mlflow` auto-injects `ario.enabled` / `ario.version` tags on every run via the `RunContextProvider`. `anchor()` adds the rich proof layer and must be called inside the run.
+
+**Registration / promotion — one client swap:**
 
 ```python
 from ario_mlflow import ArioMlflowClient
 
 client = ArioMlflowClient()
 client.create_model_version("fraud-detector", source=uri, run_id=run_id)
-# → Anchors registration proof, writes ario.registration_tx tag
+# → Re-hashes artifacts, anchors registration proof, writes ario.registration_tx
+#   and ario.artifact_verified on the model version.
 
 client.transition_model_version_stage("fraud-detector", "1", "Production")
-# → Anchors promotion proof, writes ario.promotion_tx tag
+# → Anchors promotion proof, writes ario.promotion_tx tag.
 ```
 
-**Inference:**
+**Inference — `VerifiedModel` wrapper:**
 
 ```python
 from ario_mlflow import VerifiedModel
 
 model = VerifiedModel("models:/fraud-detector/Production")
+# Model artifacts are re-hashed at load time and compared to ario.artifact_hash.
+# A mismatch raises IntegrityError (refuses to serve).
+
 result = model.predict({"feature1": 1.0, "feature2": 2.0})
 # result.prediction   — immediate
 # result.decision_id  — immediate
 # result.proof_status — "anchoring" → "anchored"
+```
+
+Every `predict()` creates an MLflow trace (visible in the Traces tab) and anchors
+a signed proof for that specific prediction in the background.
+
+**Reject tampered artifacts at load time:**
+
+```python
+from ario_mlflow import VerifiedModel, IntegrityError
+
+try:
+    model = VerifiedModel("models:/fraud-detector/Production")
+except IntegrityError as e:
+    # Artifact hash does not match ario.artifact_hash — do not serve this model
+    alert_secops(e)
+    raise
 ```
 
 **Compliance / Audit — CLI:**
@@ -271,27 +293,58 @@ ario-mlflow verify run <run_id>
 # Verify a model registration
 ario-mlflow verify model fraud-detector/3
 
+# Verify an individual inference trace
+ario-mlflow verify trace <trace_id>
+
 # Full chain of custody audit
 ario-mlflow audit fraud-detector/3
 ```
+
+All three `verify` commands call ar.io Verify, then write the attestation back to MLflow:
+
+- `verify run` → sets `ario.verify_status`, `ario.attestation_level`, `ario.report_url`, `ario.attested_by`, `ario.attested_at` on the run and refreshes `ario/verification.html`.
+- `verify model` → sets the same tags on the model version and refreshes `ario/registration_verification.html` on the source run.
+- `verify trace` → sets the same tags on the trace.
+
+Re-run any `verify` command to pick up newer attestation levels (1 → 2 → 3) as the proof propagates.
 
 ### Plugin configuration
 
 | Variable | Required | Description |
 |---|---|---|
-| `ARIO_MLFLOW_ARWEAVE_WALLET` | Yes | Path to Arweave JWK wallet |
-| `ARIO_MLFLOW_SIGNING_KEY` | No | Base64 Ed25519 seed (auto-generated if not set) |
+| `ARIO_MLFLOW_ARWEAVE_WALLET` | No | Path to Arweave JWK wallet. If unset, a wallet is auto-generated at `~/.ario-mlflow/wallets/default.json` on first use. |
+| `ARIO_MLFLOW_SIGNING_KEY` | No | Base64 Ed25519 seed. If unset, a keypair is auto-generated at `~/.ario-mlflow/keys/`. |
 | `ARIO_MLFLOW_GATEWAY_HOST` | No | ar.io gateway (default: `turbo-gateway.com`) |
-| `ARIO_MLFLOW_ARIO_VERIFY_URL` | No | ar.io Verify URL |
+| `ARIO_MLFLOW_ARIO_VERIFY_URL` | No | ar.io Verify URL. Verification is skipped if unset. |
+
+### What shows up where in MLflow
+
+| MLflow surface | Who writes it | What you see |
+|---|---|---|
+| **Runs** tab → Tags + `ario/` artifacts | `anchor()` | `ario.training_tx`, `ario.artifact_hash`, `ario.verify_status`; `ario/proof.json`, `ario/receipt.json`, `ario/verification.html` |
+| **Models** tab → Model version tags + `ario/` artifacts on the source run | `ArioMlflowClient` | `ario.registration_tx`, `ario.promotion_tx`, `ario.artifact_verified`; `ario/registration_verification.html` |
+| **Traces** tab → Trace tags | `VerifiedModel.predict()` | `ario.decision_id`, `ario.arweave_tx`, `ario.record_hash`, `ario.proof_status`, `ario.artifact_verified` |
+
+After running the CLI `verify` commands, each surface also carries `ario.verify_status = verified`, `ario.attestation_level`, `ario.report_url`, `ario.attested_by`, `ario.attested_at`.
 
 ### MLflow UI integration
 
-The plugin writes tags visible in MLflow's native UI:
+The plugin writes these tags, all visible in the native MLflow UI:
 
-- `ario.training_tx` — Arweave TX ID for training proof
-- `ario.registration_tx` — TX ID for registration proof
-- `ario.promotion_tx` — TX ID for promotion proof
-- `ario.artifact_hash` — SHA-256 of model artifacts at anchor time
+| Tag | Where | Written by |
+|---|---|---|
+| `ario.training_tx` | Run | `anchor()` |
+| `ario.registration_tx` | Model version | `ArioMlflowClient.create_model_version` |
+| `ario.promotion_tx` | Model version | `ArioMlflowClient.transition_model_version_stage` |
+| `ario.artifact_hash` | Run | `anchor()` |
+| `ario.artifact_verified` | Model version, Trace | `ArioMlflowClient`, `VerifiedModel` |
+| `ario.verify_status` | Run, Model version, Trace | `anchor()`, `ArioMlflowClient`, CLI verify |
+| `ario.attestation_level` | Run, Model version, Trace | CLI verify |
+| `ario.report_url` | Run, Model version, Trace | CLI verify |
+| `ario.attested_by` | Run, Model version, Trace | CLI verify |
+| `ario.attested_at` | Run, Model version, Trace | CLI verify |
+| `ario.arweave_tx` | Trace | `VerifiedModel.predict` |
+| `ario.arweave_url` | Run, Model version, Trace | all |
 
 ---
 

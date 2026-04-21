@@ -4,12 +4,14 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 
 import mlflow
 
 from ario_mlflow.proof import ProofEngine, canonical_json, hash_data
 from ario_mlflow.arweave import ArweaveAnchor
 from ario_mlflow.verify import ArioVerifyClient, verify_record, verify_arweave, verify_ario
+from ario_mlflow.report import generate_verification_html
 
 
 def _get_components():
@@ -42,7 +44,7 @@ def _print_verification(label: str, local: dict, arweave: dict, ario: dict | Non
         print(f"  Arweave:  {pending} fetch failed")
 
     if ario:
-        level = ario.get("level")
+        level = ario.get("attestation_level")
         attester = ario.get("attested_by", "unknown")
         if level:
             print(f"  ar.io:    {check} attested (Level {level}) by {attester}")
@@ -54,8 +56,54 @@ def _print_verification(label: str, local: dict, arweave: dict, ario: dict | Non
         print(f"  ar.io:    {pending} not checked")
 
 
+def _verification_run_tags(verification: dict | None) -> dict[str, str]:
+    """Map a normalized ar.io Verify result to MLflow tag key/values."""
+    tags: dict[str, str] = {}
+    if not verification:
+        return tags
+    level = verification.get("attestation_level")
+    if level is not None:
+        tags["ario.verify_status"] = "verified"
+        tags["ario.attestation_level"] = str(level)
+    if verification.get("report_url"):
+        tags["ario.report_url"] = verification["report_url"]
+    if verification.get("attested_by"):
+        tags["ario.attested_by"] = verification["attested_by"]
+    if verification.get("attested_at"):
+        tags["ario.attested_at"] = verification["attested_at"]
+    return tags
+
+
+def _regenerate_html(
+    run_id: str,
+    proof: dict,
+    tx_id: str,
+    arweave_url: str | None,
+    artifact_hash: str | None,
+    artifact_verified: bool | None,
+    verification: dict | None,
+    filename: str,
+):
+    """Regenerate an ario/<filename> artifact on a run with updated verification."""
+    anchor_result = {"tx_id": tx_id, "url": arweave_url or "", "receipt": None}
+    html_content = generate_verification_html(
+        proof,
+        anchor_result,
+        artifact_hash=artifact_hash,
+        artifact_verified=artifact_verified,
+        verification=verification,
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ario_dir = os.path.join(tmpdir, "ario")
+        os.makedirs(ario_dir)
+        with open(os.path.join(ario_dir, filename), "w") as f:
+            f.write(html_content)
+        client = mlflow.tracking.MlflowClient()
+        client.log_artifacts(run_id, ario_dir, "ario")
+
+
 def cmd_verify_run(args):
-    """Verify a training run's proof record."""
+    """Verify a training run's proof record and write attestation back to MLflow."""
     proof_engine, anchor, ario_client = _get_components()
     client = mlflow.tracking.MlflowClient()
 
@@ -80,11 +128,29 @@ def cmd_verify_run(args):
     ario_result = verify_ario({"arweave_tx_id": tx_id}, ario_client)
 
     _print_verification("Training Run", local, arweave_result, ario_result)
+
+    tags = _verification_run_tags(ario_result)
+    if tags:
+        for key, value in tags.items():
+            client.set_tag(args.run_id, key, value)
+        artifact_hash = run.data.tags.get("ario.artifact_hash")
+        _regenerate_html(
+            args.run_id,
+            proof_data,
+            tx_id,
+            run.data.tags.get("ario.arweave_url"),
+            artifact_hash,
+            None,
+            ario_result,
+            "verification.html",
+        )
+        print(f"  → updated {len(tags)} MLflow tag(s) on run; refreshed ario/verification.html")
+
     return 0 if local.get("overall", False) else 1
 
 
 def cmd_verify_model(args):
-    """Verify a model version's registration proof."""
+    """Verify a model version's registration proof and write attestation back to MLflow."""
     proof_engine, anchor, ario_client = _get_components()
     client = mlflow.tracking.MlflowClient()
 
@@ -112,6 +178,78 @@ def cmd_verify_model(args):
     ario_result = verify_ario({"arweave_tx_id": tx_id}, ario_client)
 
     _print_verification("Registration", local, arweave_result, ario_result)
+
+    tags = _verification_run_tags(ario_result)
+    if tags:
+        for key, value in tags.items():
+            client.set_model_version_tag(name, version, key, value)
+        artifact_verified_tag = mv.tags.get("ario.artifact_verified")
+        artifact_verified: bool | None = None
+        if artifact_verified_tag is not None:
+            artifact_verified = artifact_verified_tag.lower() == "true"
+        if mv.run_id:
+            run = client.get_run(mv.run_id)
+            _regenerate_html(
+                mv.run_id,
+                proof_data,
+                tx_id,
+                mv.tags.get("ario.arweave_url") or run.data.tags.get("ario.arweave_url"),
+                run.data.tags.get("ario.artifact_hash"),
+                artifact_verified,
+                ario_result,
+                "registration_verification.html",
+            )
+            print(f"  → updated {len(tags)} MLflow tag(s) on model version; refreshed ario/registration_verification.html on run {mv.run_id}")
+        else:
+            print(f"  → updated {len(tags)} MLflow tag(s) on model version (no source run — skipped HTML refresh)")
+
+    return 0 if local.get("overall", False) else 1
+
+
+def cmd_verify_trace(args):
+    """Verify an inference trace's proof record and write attestation back to MLflow."""
+    proof_engine, anchor, ario_client = _get_components()
+
+    try:
+        trace = mlflow.get_trace(args.trace_id)
+    except Exception as e:
+        print(f"Could not load trace {args.trace_id}: {e}")
+        return 1
+
+    if trace is None:
+        print(f"Trace {args.trace_id} not found.")
+        return 1
+
+    tags = getattr(trace.info, "tags", {}) or {}
+    tx_id = tags.get("ario.arweave_tx")
+
+    if not tx_id:
+        print(f"Trace {args.trace_id}: no ario.arweave_tx tag found. Not anchored yet.")
+        return 1
+
+    print(f"Verifying trace {args.trace_id}")
+    print(f"  TX: {tx_id}")
+
+    proof_data = anchor.fetch_proof(tx_id)
+    if not proof_data:
+        print("  Could not fetch proof from Arweave.")
+        return 1
+
+    local = proof_engine.verify_local(proof_data)
+    arweave_result = {"arweave_data_found": True, "hash_match": local.get("hash_valid", False)}
+    ario_result = verify_ario({"arweave_tx_id": tx_id}, ario_client)
+
+    _print_verification("Trace", local, arweave_result, ario_result)
+
+    back_tags = _verification_run_tags(ario_result)
+    if back_tags:
+        for key, value in back_tags.items():
+            try:
+                mlflow.set_trace_tag(args.trace_id, key, value)
+            except Exception as e:
+                print(f"  ! failed to set trace tag {key}: {e}")
+        print(f"  → updated {len(back_tags)} MLflow trace tag(s)")
+
     return 0 if local.get("overall", False) else 1
 
 
@@ -224,6 +362,9 @@ def main():
     model_parser = verify_sub.add_parser("model", help="Verify a model registration")
     model_parser.add_argument("model", help="Model name/version (e.g. fraud-detector/3)")
 
+    trace_parser = verify_sub.add_parser("trace", help="Verify an inference trace")
+    trace_parser.add_argument("trace_id", help="MLflow trace ID")
+
     # audit
     audit_parser = subparsers.add_parser("audit", help="Audit full chain of custody")
     audit_parser.add_argument("model", help="Model name/version (e.g. fraud-detector/3)")
@@ -235,6 +376,8 @@ def main():
             sys.exit(cmd_verify_run(args))
         elif args.verify_type == "model":
             sys.exit(cmd_verify_model(args))
+        elif args.verify_type == "trace":
+            sys.exit(cmd_verify_trace(args))
         else:
             verify_parser.print_help()
     elif args.command == "audit":

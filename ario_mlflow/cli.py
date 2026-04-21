@@ -191,19 +191,25 @@ def cmd_verify_model(args):
         if artifact_verified_tag is not None:
             artifact_verified = artifact_verified_tag.lower() == "true"
         if mv.run_id:
-            run = client.get_run(mv.run_id)
-            _regenerate_html(
-                mv.run_id,
-                proof_data,
-                tx_id,
-                mv.tags.get("ario.arweave_url") or run.data.tags.get("ario.arweave_url"),
-                run.data.tags.get("ario.artifact_hash"),
-                artifact_verified,
-                ario_result,
-                "registration_verification.html",
-                cli_verify_cmd=f"ario-mlflow verify model {name}/{version}",
-            )
-            print(f"  → updated {len(tags)} MLflow tag(s) on model version; refreshed ario/registration_verification.html on run {mv.run_id}")
+            try:
+                run = client.get_run(mv.run_id)
+                _regenerate_html(
+                    mv.run_id,
+                    proof_data,
+                    tx_id,
+                    mv.tags.get("ario.arweave_url") or run.data.tags.get("ario.arweave_url"),
+                    run.data.tags.get("ario.artifact_hash"),
+                    artifact_verified,
+                    ario_result,
+                    "registration_verification.html",
+                    cli_verify_cmd=f"ario-mlflow verify model {name}/{version}",
+                )
+                print(f"  → updated {len(tags)} MLflow tag(s) on model version; refreshed ario/registration_verification.html on run {mv.run_id}")
+            except Exception as e:
+                print(
+                    f"  → updated {len(tags)} MLflow tag(s) on model version; "
+                    f"could not refresh ario/registration_verification.html on run {mv.run_id}: {e}"
+                )
         else:
             print(f"  → updated {len(tags)} MLflow tag(s) on model version (no source run — skipped HTML refresh)")
 
@@ -352,7 +358,8 @@ def cmd_audit(args):
     return 0 if all_ok else 1
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser. Exposed so tests can exercise the real wiring."""
     parser = argparse.ArgumentParser(prog="ario-mlflow", description="ar.io MLflow verification CLI")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -373,6 +380,11 @@ def main():
     audit_parser = subparsers.add_parser("audit", help="Audit full chain of custody")
     audit_parser.add_argument("model", help="Model name/version (e.g. fraud-detector/3)")
 
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.command == "verify":
@@ -383,7 +395,8 @@ def main():
         elif args.verify_type == "trace":
             sys.exit(cmd_verify_trace(args))
         else:
-            verify_parser.print_help()
+            # Print help for the verify subparser by re-parsing.
+            parser.parse_args(["verify", "--help"])
     elif args.command == "audit":
         sys.exit(cmd_audit(args))
     else:

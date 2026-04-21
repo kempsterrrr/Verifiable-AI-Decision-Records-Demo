@@ -128,7 +128,8 @@ class ArioMlflowClient(MlflowClient):
                 if run_id:
                     self.log_artifacts(run_id, ario_dir, "ario")
 
-            logger.info(f"Registration {model_name}/v{version} anchored: verified={artifact_verified}")
+            status = "anchored" if result else "signed (anchoring disabled or upload failed)"
+            logger.info(f"Registration {model_name}/v{version} {status}: verified={artifact_verified}")
 
         except Exception as e:
             logger.error(f"Failed to anchor registration {model_name}/v{version}: {e}")

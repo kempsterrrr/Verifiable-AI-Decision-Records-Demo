@@ -70,6 +70,18 @@ def test_arweave_anchor_with_unreadable_wallet_falls_back(tmp_path, monkeypatch,
     assert any("Invalid Arweave wallet" in m for m in warnings), warnings
 
 
+def test_arweave_anchor_with_structurally_invalid_jwk_falls_back(tmp_path, monkeypatch, caplog):
+    """Valid JSON but missing RSA fields should fall back, not crash ArweaveSigner."""
+    bad = tmp_path / "incomplete.json"
+    bad.write_text('{"kty": "RSA"}')  # valid JSON, missing n/e/d/...
+    monkeypatch.delenv("ARIO_MLFLOW_ARWEAVE_WALLET", raising=False)
+    with caplog.at_level("WARNING"):
+        anchor = ArweaveAnchor(wallet_path=str(bad))
+    assert isinstance(anchor.enabled, bool)
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert any("Invalid Arweave wallet" in m and "RSA JWK" in m for m in warnings), warnings
+
+
 # --- ArioVerifyClient normalize key rename (S1 / #5) ----------------------
 
 
@@ -174,32 +186,33 @@ def test_report_shows_attestation_level_when_verified():
 
 
 def test_cli_verify_subparser_includes_trace():
-    from ario_mlflow import cli
+    """Exercises the real ario_mlflow.cli.build_parser — not a handcrafted copy."""
+    from ario_mlflow.cli import build_parser
 
-    parser = _build_cli_parser(cli)
+    parser = build_parser()
     args = parser.parse_args(["verify", "trace", "trace-xyz"])
     assert args.command == "verify"
     assert args.verify_type == "trace"
     assert args.trace_id == "trace-xyz"
 
 
-def _build_cli_parser(cli_module):
-    """Replicate the parser cli.main() constructs so we can test parsing."""
-    import argparse
+def test_cli_verify_run_and_model_and_audit_parse():
+    """Real-parser smoke coverage for the other verify subcommands."""
+    from ario_mlflow.cli import build_parser
 
-    parser = argparse.ArgumentParser(prog="ario-mlflow")
-    subparsers = parser.add_subparsers(dest="command")
-    verify_parser = subparsers.add_parser("verify")
-    verify_sub = verify_parser.add_subparsers(dest="verify_type")
-    run_parser = verify_sub.add_parser("run")
-    run_parser.add_argument("run_id")
-    model_parser = verify_sub.add_parser("model")
-    model_parser.add_argument("model")
-    trace_parser = verify_sub.add_parser("trace")
-    trace_parser.add_argument("trace_id")
-    audit_parser = subparsers.add_parser("audit")
-    audit_parser.add_argument("model")
-    return parser
+    parser = build_parser()
+
+    run_args = parser.parse_args(["verify", "run", "run-123"])
+    assert run_args.command == "verify" and run_args.verify_type == "run"
+    assert run_args.run_id == "run-123"
+
+    model_args = parser.parse_args(["verify", "model", "foo/1"])
+    assert model_args.command == "verify" and model_args.verify_type == "model"
+    assert model_args.model == "foo/1"
+
+    audit_args = parser.parse_args(["audit", "foo/1"])
+    assert audit_args.command == "audit"
+    assert audit_args.model == "foo/1"
 
 
 # --- CLI verification-tag mapping (S1) ------------------------------------
@@ -237,3 +250,93 @@ def test_verification_run_tags_empty_for_none():
     from ario_mlflow.cli import _verification_run_tags
 
     assert _verification_run_tags(None) == {}
+
+
+# --- VerifiedModel ordering: integrity must run before load_model (CodeRabbit r2 #4) ---
+
+
+def test_verified_model_checks_integrity_before_load(monkeypatch):
+    """Regression: tampered pyfunc artifacts must be rejected before load_model runs.
+
+    We stub every MLflow surface VerifiedModel touches and record the order that
+    artifact_checksums and mlflow.pyfunc.load_model are invoked. On mismatch,
+    IntegrityError must fire before load_model is ever called.
+    """
+    import ario_mlflow.model as model_module
+    from ario_mlflow.model import VerifiedModel, IntegrityError
+
+    calls: list[str] = []
+
+    class _FakeRun:
+        data = type("D", (), {"tags": {"ario.artifact_hash": "EXPECTED"}})()
+
+    class _FakeMV:
+        run_id = "run-xyz"
+
+    class _FakeClient:
+        def get_model_version(self, name, version):
+            return _FakeMV()
+
+        def get_run(self, run_id):
+            return _FakeRun()
+
+    def _fake_checksums(run_id, *a, **kw):
+        calls.append("artifact_checksums")
+        return {"model/foo": "deadbeef"}  # will hash != "EXPECTED"
+
+    def _fake_load_model(uri):
+        calls.append("load_model")
+        return object()
+
+    monkeypatch.setattr(model_module.mlflow.tracking, "MlflowClient", lambda: _FakeClient())
+    monkeypatch.setattr(model_module, "artifact_checksums", _fake_checksums)
+    monkeypatch.setattr(model_module.mlflow.pyfunc, "load_model", _fake_load_model)
+
+    with pytest.raises(IntegrityError):
+        VerifiedModel("models:/foo/1")
+
+    # The key assertion: load_model must NOT have been reached.
+    assert "artifact_checksums" in calls, calls
+    assert "load_model" not in calls, (
+        "Tampered model code would have executed: load_model ran before IntegrityError"
+    )
+
+
+def test_verified_model_loads_only_after_integrity_passes(monkeypatch):
+    """Complement: when hashes match, load_model still runs and _artifact_verified is True."""
+    import ario_mlflow.model as model_module
+    from ario_mlflow.model import VerifiedModel
+    from ario_mlflow.proof import canonical_json, hash_data
+
+    # Build matching hashes so verification succeeds.
+    checksums = {"model/foo": "deadbeef"}
+    expected = hash_data(canonical_json(checksums))
+
+    class _FakeRun:
+        data = type("D", (), {"tags": {"ario.artifact_hash": expected}})()
+
+    class _FakeMV:
+        run_id = "run-xyz"
+
+    class _FakeClient:
+        def get_model_version(self, n, v): return _FakeMV()
+        def get_run(self, rid): return _FakeRun()
+
+    call_order: list[str] = []
+
+    def _fake_checksums(run_id, *a, **kw):
+        call_order.append("integrity")
+        return checksums
+
+    def _fake_load_model(uri):
+        call_order.append("load")
+        return object()
+
+    monkeypatch.setattr(model_module.mlflow.tracking, "MlflowClient", lambda: _FakeClient())
+    monkeypatch.setattr(model_module, "artifact_checksums", _fake_checksums)
+    monkeypatch.setattr(model_module.mlflow.pyfunc, "load_model", _fake_load_model)
+
+    vm = VerifiedModel("models:/foo/1")
+    assert vm._artifact_verified is True
+    # Integrity ran first, load ran second.
+    assert call_order == ["integrity", "load"], call_order

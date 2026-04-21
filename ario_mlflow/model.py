@@ -54,8 +54,8 @@ class VerifiedModel:
         self.model_version = parts[1] if len(parts) > 1 else "unknown"
         self.run_id = "unknown"
 
-        # Resolve the run_id and load model via runs:/ URI for compatibility
-        # with both file-based and database-backed MLflow stores
+        # Resolve the run_id via the registry so we can verify integrity
+        # against the source run's ario.artifact_hash tag.
         load_uri = model_uri
         try:
             mv = client.get_model_version(self.model_name, self.model_version)
@@ -65,8 +65,10 @@ class VerifiedModel:
         except Exception:
             pass
 
-        self._model = mlflow.pyfunc.load_model(load_uri)
-
+        # Verify artifact integrity BEFORE loading the model. pyfunc models can
+        # execute user code during load (PythonModel subclasses, custom loaders),
+        # so a tampered artifact must be rejected before mlflow.pyfunc.load_model
+        # is given a chance to run it.
         self._artifact_verified = None
         if self.run_id != "unknown":
             try:
@@ -92,6 +94,10 @@ class VerifiedModel:
                 raise
             except Exception as e:
                 logger.warning(f"Could not verify artifact integrity: {e}")
+
+        # Integrity has passed (or was unverifiable with a logged warning).
+        # Only now load the model.
+        self._model = mlflow.pyfunc.load_model(load_uri)
 
         self._last_hash = "GENESIS"
         self._lock = threading.Lock()
@@ -144,18 +150,23 @@ class VerifiedModel:
             record=record,
         )
 
-        # Tag the MLflow trace with proof metadata — links trace to proof
+        # Tag the MLflow trace with proof metadata — links trace to proof.
+        # Best-effort: tracing backends can fail (network, backend down); we
+        # don't want that to surface as an inference failure.
         trace_id = mlflow.get_active_trace_id()
         if trace_id:
-            mlflow.set_trace_tag(trace_id, "ario.decision_id", decision_id)
-            mlflow.set_trace_tag(trace_id, "ario.model_name", self.model_name)
-            mlflow.set_trace_tag(trace_id, "ario.model_version", self.model_version)
-            mlflow.set_trace_tag(trace_id, "ario.input_hash", record["input_hash"])
-            mlflow.set_trace_tag(trace_id, "ario.output_hash", record["output_hash"])
-            mlflow.set_trace_tag(trace_id, "ario.record_hash", proof["record_hash"])
-            mlflow.set_trace_tag(trace_id, "ario.proof_status", result.proof_status)
-            if self._artifact_verified is not None:
-                mlflow.set_trace_tag(trace_id, "ario.artifact_verified", str(self._artifact_verified).lower())
+            try:
+                mlflow.set_trace_tag(trace_id, "ario.decision_id", decision_id)
+                mlflow.set_trace_tag(trace_id, "ario.model_name", self.model_name)
+                mlflow.set_trace_tag(trace_id, "ario.model_version", self.model_version)
+                mlflow.set_trace_tag(trace_id, "ario.input_hash", record["input_hash"])
+                mlflow.set_trace_tag(trace_id, "ario.output_hash", record["output_hash"])
+                mlflow.set_trace_tag(trace_id, "ario.record_hash", proof["record_hash"])
+                mlflow.set_trace_tag(trace_id, "ario.proof_status", result.proof_status)
+                if self._artifact_verified is not None:
+                    mlflow.set_trace_tag(trace_id, "ario.artifact_verified", str(self._artifact_verified).lower())
+            except Exception as e:
+                logger.warning(f"Failed to tag MLflow trace {trace_id}: {e}")
 
         if self._anchor.enabled:
             threading.Thread(

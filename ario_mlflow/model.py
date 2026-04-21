@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from time import time
+from typing import Any
 
 import mlflow
 import numpy as np
@@ -76,7 +77,7 @@ def _resolve_model_version(client, model_uri: str):
 @dataclass
 class VerifiedPrediction:
     """Result of a verified prediction."""
-    prediction: any
+    prediction: Any
     decision_id: str
     proof_status: str  # "anchoring" | "anchored" | "disabled"
     record: dict | None = None
@@ -251,8 +252,9 @@ class VerifiedModel:
                         mlflow.set_trace_tag(trace_id, "ario.arweave_tx", anchor_result["tx_id"])
                         mlflow.set_trace_tag(trace_id, "ario.arweave_url", anchor_result["url"])
                         mlflow.set_trace_tag(trace_id, "ario.proof_status", "anchored")
-                    except Exception:
-                        pass  # Trace may have been flushed already
+                    except Exception as e:
+                        # Trace may have been flushed by the backend already.
+                        logger.debug(f"Could not update trace {trace_id} with anchor tags: {e}")
                 logger.info(f"Prediction {result.decision_id} anchored: tx={anchor_result['tx_id']}")
         except Exception as e:
             logger.error(f"Prediction anchoring failed for {result.decision_id}: {e}")

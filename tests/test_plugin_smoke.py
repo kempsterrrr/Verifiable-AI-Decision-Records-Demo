@@ -608,6 +608,148 @@ def test_verified_model_resolves_stage_uri(monkeypatch):
     assert vm.model_version == "3"
 
 
+# --- Previously missed out-of-diff regressions ----------------------------
+
+
+def test_ario_client_uses_source_uri_for_run_id_fallback(monkeypatch):
+    """When create_model_version is called with run_id=None but source is a runs:/
+    URI, the registration must still link to training (not mint a GENESIS proof)."""
+    import ario_mlflow.client as client_module
+
+    captured: dict = {"create_proof_calls": [], "upload_calls": 0}
+
+    class _FakeRun:
+        # Include a training_tx so the registration record links back.
+        data = type("D", (), {"tags": {
+            "ario.training_tx": "TX-training-123",
+            "ario.artifact_hash": "expected-hash",
+        }})()
+
+    class _Client(client_module.ArioMlflowClient):
+        def __init__(self):
+            self._proof_engine = type(
+                "PE",
+                (),
+                {
+                    "create_proof": lambda self_, record, previous: (
+                        captured["create_proof_calls"].append({"record": record, "previous": previous})
+                        or {"public_key": "PK", "record_hash": "H", "record": record}
+                    ),
+                },
+            )()
+            self._anchor = type(
+                "A",
+                (),
+                {
+                    "enabled": False,
+                    "upload_proof": lambda self_, *a, **kw: (
+                        captured.__setitem__("upload_calls", captured["upload_calls"] + 1) or None
+                    ),
+                },
+            )()
+
+        def get_run(self, run_id):
+            captured["get_run_called_with"] = run_id
+            return _FakeRun()
+
+        def set_model_version_tag(self, *a, **kw): pass
+        def log_artifacts(self, *a, **kw): pass
+
+    # artifact_checksums returns empty (no artifacts) to keep the test fast
+    monkeypatch.setattr(client_module, "artifact_checksums", lambda *a, **kw: {})
+
+    c = _Client()
+    c._anchor_registration("fraud", "1", run_id=None, source="runs:/train-abc/sklearn-model")
+
+    # The key assertions:
+    # - get_run must have been called with the run_id parsed from source
+    assert captured.get("get_run_called_with") == "train-abc", captured
+    # - The registration proof must link back to the training tx (not GENESIS)
+    assert captured["create_proof_calls"], "No registration proof was minted"
+    last = captured["create_proof_calls"][-1]
+    assert last["previous"] == "TX-training-123", (
+        f"Expected registration proof to link to training tx; got previous={last['previous']!r}"
+    )
+    assert last["record"]["source_run_id"] == "train-abc"
+
+
+def test_arweave_upload_proof_sets_post_timeout(monkeypatch):
+    """POST must not hang indefinitely — matches the sibling GET's 30s bound."""
+    import ario_mlflow.arweave as arweave_module
+
+    captured: dict = {}
+
+    class _FakeResp:
+        status_code = 200
+        def json(self): return {"id": "TX123"}
+
+    def _fake_post(url, *, data=None, headers=None, timeout=None):
+        captured["timeout"] = timeout
+        return _FakeResp()
+
+    monkeypatch.setattr(arweave_module.requests, "post", _fake_post)
+
+    # Construct an anchor with the internals populated enough to reach the POST.
+    anchor = arweave_module.ArweaveAnchor.__new__(arweave_module.ArweaveAnchor)
+    anchor.enabled = True
+    anchor.gateway_host = "turbo-gateway.com"
+
+    class _FakeSigner:
+        def get_wallet_address(self): return "addr"
+
+    anchor._signer = _FakeSigner()
+    anchor._upload_url = "https://upload.example"
+    anchor._token = "token"
+
+    # Stub the data-item creation path so we don't depend on turbo_sdk internals.
+    class _FakeDataItem:
+        def get_raw(self): return b"payload"
+
+    import sys, types
+    fake_bundle = types.ModuleType("turbo_sdk.bundle")
+    fake_bundle.create_data = lambda data, signer, tags: _FakeDataItem()
+    fake_bundle.sign = lambda item, signer: None
+    sys.modules["turbo_sdk.bundle"] = fake_bundle
+
+    result = anchor.upload_proof({"record": {"event_type": "x"}, "record_hash": "h"})
+    assert result is not None
+    # The test's real purpose: the POST carried an explicit timeout.
+    assert captured.get("timeout") is not None, "requests.post was called without timeout"
+    assert captured["timeout"] >= 10, captured["timeout"]
+
+
+def test_plugin_version_tag_reflects_installed_package():
+    """ario.version must come from package metadata, not a hardcoded string."""
+    from ario_mlflow.plugin import ArioContextProvider, _plugin_version
+
+    provider = ArioContextProvider()
+    tags = provider.tags()
+    assert tags["ario.enabled"] == "true"
+    # Must match whatever importlib reports (may be the real version or "unknown").
+    assert tags["ario.version"] == _plugin_version()
+    # Must not be the stale hardcoded string from before this fix.
+    # (If the installed version happens to be exactly "0.1.0", the helper returns
+    # that same value; we just assert the source of truth is importlib, which is
+    # what _plugin_version() exercises.)
+
+
+def test_verified_prediction_uses_Any_not_lowercase_any():
+    """Regression: dataclass annotation must be a real type hint (Any), not the
+    lowercase builtin ``any``. Static type checkers treat ``any`` as the builtin
+    function and reject it."""
+    from ario_mlflow.model import VerifiedPrediction
+
+    hints = VerifiedPrediction.__annotations__
+    # The annotation can be stored as the actual Any type or as the string "Any",
+    # depending on `from __future__ import annotations`. It must never be the
+    # builtin ``any`` function.
+    assert hints["prediction"] is not any
+    assert hints["prediction"] in (
+        __import__("typing").Any,
+        "Any",
+    ), hints["prediction"]
+
+
 def test_ario_client_skips_registration_anchor_on_get_run_failure(monkeypatch, caplog):
     """Regression for CodeRabbit r3 #2: don't mint a bad GENESIS proof when the
     source run lookup fails transiently."""

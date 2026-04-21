@@ -107,6 +107,7 @@ class ArweaveAnchor:
                 url,
                 data=raw_data,
                 headers={"Content-Type": "application/octet-stream", "Content-Length": str(len(raw_data))},
+                timeout=60,
             )
 
             if response.status_code != 200:

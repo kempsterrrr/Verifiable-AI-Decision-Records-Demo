@@ -63,9 +63,16 @@ class ArioMlflowClient(MlflowClient):
             expected_hash = None
             artifact_verified = None
 
-            if run_id:
+            # create_model_version's run_id parameter is optional. When absent,
+            # derive it from the source URI so we still link the registration
+            # proof back to the training run (and its ario.training_tx) instead
+            # of fabricating a fresh GENESIS chain.
+            src_run_id, src_artifact_path = parse_runs_uri(source)
+            source_run_id = run_id or src_run_id
+
+            if source_run_id:
                 try:
-                    run = self.get_run(run_id)
+                    run = self.get_run(source_run_id)
                     training_tx = run.data.tags.get("ario.training_tx")
                     expected_hash = run.data.tags.get("ario.artifact_hash")
                 except Exception as e:
@@ -75,16 +82,15 @@ class ArioMlflowClient(MlflowClient):
                     # version. Skip anchoring this attempt instead.
                     logger.warning(
                         f"Skipping registration anchoring for {model_name}/v{version}: "
-                        f"could not load source run {run_id}: {e}"
+                        f"could not load source run {source_run_id}: {e}"
                     )
                     return
 
                 # Hash the artifact path that was actually registered. MLflow's
                 # source URI (runs:/<run_id>/<artifact_path>) preserves the
                 # original path — it is not always "model".
-                _src_run_id, src_artifact_path = parse_runs_uri(source)
                 try:
-                    checksums = artifact_checksums(run_id, artifact_path=src_artifact_path or "model")
+                    checksums = artifact_checksums(source_run_id, artifact_path=src_artifact_path or "model")
                 except ArtifactAccessError as e:
                     # We can't verify — leave artifact_verified as None (unknown)
                     # and continue anchoring the registration event itself.
@@ -102,7 +108,7 @@ class ArioMlflowClient(MlflowClient):
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "model_name": model_name,
                 "model_version": version,
-                "source_run_id": run_id,
+                "source_run_id": source_run_id,
                 "source": source,
                 "artifact_verified": artifact_verified,
                 "artifact_hash": expected_hash,
@@ -145,8 +151,8 @@ class ArioMlflowClient(MlflowClient):
                 with open(os.path.join(ario_dir, "registration_verification.html"), "w") as f:
                     f.write(report)
 
-                if run_id:
-                    self.log_artifacts(run_id, ario_dir, "ario")
+                if source_run_id:
+                    self.log_artifacts(source_run_id, ario_dir, "ario")
 
             status = "anchored" if result else "signed (anchoring disabled or upload failed)"
             logger.info(f"Registration {model_name}/v{version} {status}: verified={artifact_verified}")

@@ -26,13 +26,19 @@ class ArweaveAnchor:
         try:
             from turbo_sdk import ArweaveSigner, Turbo
 
+            jwk = None
             if wallet_path and os.path.exists(wallet_path):
-                with open(wallet_path) as f:
-                    jwk = json.load(f)
-                logger.info(f"Using Arweave wallet from {wallet_path}")
-            else:
+                try:
+                    with open(wallet_path) as f:
+                        jwk = json.load(f)
+                    logger.info(f"Using Arweave wallet from {wallet_path}")
+                except (OSError, json.JSONDecodeError, ValueError) as e:
+                    logger.warning(
+                        f"Invalid Arweave wallet at {wallet_path}: {e}; generating a fresh in-memory wallet"
+                    )
+            if jwk is None:
                 jwk = self._generate_wallet()
-                logger.info("Auto-generated Arweave wallet for anchoring")
+                logger.info("Auto-generated in-memory Arweave wallet for anchoring")
 
             self._signer = ArweaveSigner(jwk)
             turbo = Turbo(self._signer)

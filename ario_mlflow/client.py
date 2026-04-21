@@ -8,7 +8,6 @@ import threading
 import uuid
 from datetime import datetime, timezone
 
-import mlflow
 from mlflow.tracking import MlflowClient
 
 from ario_mlflow.proof import ProofEngine, canonical_json, hash_data
@@ -73,9 +72,9 @@ class ArioMlflowClient(MlflowClient):
                     pass
 
                 checksums = artifact_checksums(run_id)
-                if checksums:
+                if checksums and expected_hash is not None:
                     computed_hash = hash_data(canonical_json(checksums))
-                    artifact_verified = expected_hash is not None and computed_hash == expected_hash
+                    artifact_verified = computed_hash == expected_hash
 
             record = {
                 "event_id": str(uuid.uuid4()),
@@ -121,12 +120,13 @@ class ArioMlflowClient(MlflowClient):
                     proof, result,
                     artifact_hash=expected_hash,
                     artifact_verified=artifact_verified,
+                    cli_verify_cmd=f"ario-mlflow verify model {model_name}/{version}",
                 )
                 with open(os.path.join(ario_dir, "registration_verification.html"), "w") as f:
                     f.write(report)
 
                 if run_id:
-                    mlflow.log_artifacts(ario_dir, "ario")
+                    self.log_artifacts(run_id, ario_dir, "ario")
 
             logger.info(f"Registration {model_name}/v{version} anchored: verified={artifact_verified}")
 

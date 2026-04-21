@@ -83,6 +83,7 @@ def _regenerate_html(
     artifact_verified: bool | None,
     verification: dict | None,
     filename: str,
+    cli_verify_cmd: str | None = None,
 ):
     """Regenerate an ario/<filename> artifact on a run with updated verification."""
     anchor_result = {"tx_id": tx_id, "url": arweave_url or "", "receipt": None}
@@ -92,6 +93,7 @@ def _regenerate_html(
         artifact_hash=artifact_hash,
         artifact_verified=artifact_verified,
         verification=verification,
+        cli_verify_cmd=cli_verify_cmd,
     )
     with tempfile.TemporaryDirectory() as tmpdir:
         ario_dir = os.path.join(tmpdir, "ario")
@@ -143,6 +145,7 @@ def cmd_verify_run(args):
             None,
             ario_result,
             "verification.html",
+            cli_verify_cmd=f"ario-mlflow verify run {args.run_id}",
         )
         print(f"  → updated {len(tags)} MLflow tag(s) on run; refreshed ario/verification.html")
 
@@ -198,6 +201,7 @@ def cmd_verify_model(args):
                 artifact_verified,
                 ario_result,
                 "registration_verification.html",
+                cli_verify_cmd=f"ario-mlflow verify model {name}/{version}",
             )
             print(f"  → updated {len(tags)} MLflow tag(s) on model version; refreshed ario/registration_verification.html on run {mv.run_id}")
         else:

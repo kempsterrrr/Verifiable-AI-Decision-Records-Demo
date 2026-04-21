@@ -1,6 +1,7 @@
 """Generate self-contained HTML verification reports for MLflow artifact viewer."""
 
 import html
+import os
 
 
 def generate_verification_html(
@@ -9,6 +10,8 @@ def generate_verification_html(
     artifact_hash: str | None = None,
     artifact_verified: bool | None = None,
     verification: dict | None = None,
+    cli_verify_cmd: str | None = None,
+    verify_base_url: str | None = None,
 ) -> str:
     """Generate an HTML report for the MLflow artifact viewer.
 
@@ -19,6 +22,13 @@ def generate_verification_html(
         artifact_verified: Whether artifact integrity was checked and passed.
         verification: ar.io Verify result (from CLI verify command). Contains
             attestation_level, report_url, attested_by, attested_at.
+        cli_verify_cmd: Full CLI command to print as the "verify this proof"
+            hint (e.g. ``"ario-mlflow verify run <run_id>"`` or
+            ``"ario-mlflow verify model fraud-detector/3"``). If omitted, falls
+            back to the training-run form using ``run_id`` from the proof.
+        verify_base_url: Base URL for the ar.io Verify dashboard (tx_id is
+            appended). Falls back to ``ARIO_MLFLOW_ARIO_VERIFY_URL`` or the
+            public vilenarios.com endpoint.
     """
     record = proof.get("record", {})
     event_type = record.get("event_type", "unknown")
@@ -93,12 +103,18 @@ def generate_verification_html(
     # ar.io Verify link (always show if we have a TX)
     verify_link = ""
     if tx_id and not verification:
-        verify_url = f"https://vilenarios.com/local/verify/{html.escape(tx_id)}"
+        base = (
+            verify_base_url
+            or os.environ.get("ARIO_MLFLOW_ARIO_VERIFY_URL")
+            or "https://vilenarios.com/local/verify"
+        ).rstrip("/")
+        verify_url = f"{base}/{html.escape(tx_id)}"
+        cmd = cli_verify_cmd or (f"ario-mlflow verify run {run_id}" if run_id else "ario-mlflow verify run <run_id>")
         verify_link = f"""
   <div style="background:#fff;border:1px solid #e5e7eb;border-radius:6px;padding:14px;margin-bottom:16px;">
     <div style="font-size:13px;font-weight:600;margin-bottom:6px;">ar.io Verification</div>
     <div style="font-size:13px;color:#6b7280;">
-      Run <code style="font-family:'SF Mono',monospace;font-size:12px;">ario-mlflow verify run {html.escape(run_id)}</code> to verify this proof
+      Run <code style="font-family:'SF Mono',monospace;font-size:12px;">{html.escape(cmd)}</code> to verify this proof
       and update this report, or
       <a href="{verify_url}" target="_blank" rel="noopener">check manually on ar.io Verify</a>.
     </div>
@@ -161,8 +177,8 @@ def generate_verification_html(
     <p style="font-size:13px;color:#6b7280;margin-bottom:10px;">
       To verify this proof independently:
     </p>
-    <pre><code># 1. Fetch the proof from Arweave
-curl {html.escape(arweave_url or 'https://turbo-gateway.com/TX_ID')}/raw
+    <pre><code># 1. Fetch the proof from Arweave (gateway serves raw data at /raw/&lt;tx_id&gt;)
+curl https://{html.escape(_gateway_host(arweave_url))}/raw/{html.escape(tx_id or 'TX_ID')}
 
 # 2. Verify: re-hash the record field with SHA-256
 #    and compare to record_hash
@@ -177,6 +193,16 @@ curl {html.escape(arweave_url or 'https://turbo-gateway.com/TX_ID')}/raw
 </div>
 </body>
 </html>"""
+
+
+def _gateway_host(arweave_url: str | None) -> str:
+    """Extract the gateway hostname from an Arweave URL, or return a default."""
+    if not arweave_url:
+        return "turbo-gateway.com"
+    from urllib.parse import urlparse
+
+    host = urlparse(arweave_url).hostname
+    return host or "turbo-gateway.com"
 
 
 def _row(label: str, value: str) -> str:

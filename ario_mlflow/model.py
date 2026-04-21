@@ -74,14 +74,20 @@ class VerifiedModel:
                 expected_hash = run.data.tags.get("ario.artifact_hash")
                 if expected_hash:
                     checksums = artifact_checksums(self.run_id)
-                    computed_hash = hash_data(canonical_json(checksums))
-                    if computed_hash != expected_hash:
-                        raise IntegrityError(
-                            f"Model artifact integrity check failed for {model_uri}. "
-                            f"Expected {expected_hash}, got {computed_hash}"
+                    if not checksums:
+                        logger.warning(
+                            f"Could not download artifacts for integrity check of {model_uri}; "
+                            f"treating status as unknown"
                         )
-                    self._artifact_verified = True
-                    logger.info(f"Artifact integrity verified for {model_uri}")
+                    else:
+                        computed_hash = hash_data(canonical_json(checksums))
+                        if computed_hash != expected_hash:
+                            raise IntegrityError(
+                                f"Model artifact integrity check failed for {model_uri}. "
+                                f"Expected {expected_hash}, got {computed_hash}"
+                            )
+                        self._artifact_verified = True
+                        logger.info(f"Artifact integrity verified for {model_uri}")
             except IntegrityError:
                 raise
             except Exception as e:

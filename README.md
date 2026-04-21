@@ -312,7 +312,7 @@ Re-run any `verify` command to pick up newer attestation levels (1 → 2 → 3) 
 
 | Variable | Required | Description |
 |---|---|---|
-| `ARIO_MLFLOW_ARWEAVE_WALLET` | No | Path to Arweave JWK wallet. If unset, a wallet is auto-generated at `~/.ario-mlflow/wallets/default.json` on first use. |
+| `ARIO_MLFLOW_ARWEAVE_WALLET` | No | Path to Arweave JWK wallet. If unset or unreadable, an in-memory wallet is generated for the session (not persisted — set this in production so proofs stay owned by the same address). |
 | `ARIO_MLFLOW_SIGNING_KEY` | No | Base64 Ed25519 seed. If unset, a keypair is auto-generated at `~/.ario-mlflow/keys/`. |
 | `ARIO_MLFLOW_GATEWAY_HOST` | No | ar.io gateway (default: `turbo-gateway.com`) |
 | `ARIO_MLFLOW_ARIO_VERIFY_URL` | No | ar.io Verify URL. Verification is skipped if unset. |

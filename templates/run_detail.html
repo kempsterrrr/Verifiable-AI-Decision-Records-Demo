@@ -319,6 +319,32 @@
                 </div>
             </div>
 
+            <!-- Live MLflow Tags -->
+            <div class="section">
+                <div class="section-header">ario.* tags (live from MLflow)</div>
+                <div class="section-body">
+                    {% if mlflow_ario_tags %}
+                    <div style="font-size:0.78rem;color:var(--muted);line-height:1.5;margin-bottom:0.75rem;">
+                        Pulled just now from the MLflow tracking store via <code>MlflowClient.get_run()</code>. These are the actual tags on the run — not synthesised by this page.
+                    </div>
+                    <div class="kv">
+                        {% for k, val in mlflow_ario_tags.items() %}
+                        <div class="kv-row">
+                            <span class="kv-key">{{ k }}</span>
+                            <span class="kv-value mono mono-sm">{{ val }}</span>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    <div style="margin-top:0.75rem;padding:0.6rem 0.75rem;background:var(--surface);border-radius:6px;font-size:0.78rem;color:var(--muted);line-height:1.5;">
+                        To see this in the native MLflow UI, run locally:<br>
+                        <code style="display:inline-block;margin-top:0.3rem;font-size:0.75rem;">mlflow ui --backend-store-uri {{ mlflow_tracking_dir }}</code>
+                    </div>
+                    {% else %}
+                    <div style="color: var(--muted); font-size: 0.85rem;">No MLflow tags found on this run (tracking store unreachable or run removed).</div>
+                    {% endif %}
+                </div>
+            </div>
+
             <!-- Upload Receipt -->
             <div class="section">
                 <div class="section-header">Upload Receipt</div>

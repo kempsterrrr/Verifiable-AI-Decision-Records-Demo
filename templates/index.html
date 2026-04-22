@@ -212,7 +212,7 @@
         <div class="page-header">
             <div>
                 <h1>Decision Records</h1>
-                <p>Tamper-evident AI audit trail anchored to Arweave</p>
+                <p>Every credit-decision below has a signed proof anchored on Arweave via ar.io — verifiable by any third party, without trusting this app.</p>
             </div>
         </div>
 
@@ -296,20 +296,24 @@
         <!-- Prediction form (always shown) -->
         <form action="/predict-form" method="POST" class="predict-form">
             <div class="form-group">
-                <label>Sepal Length</label>
-                <input type="number" name="sepal_length" value="5.1" step="0.1" required>
+                <label>Annual Income (USD)</label>
+                <input type="number" name="annual_income" value="78000" step="1000" min="0" required>
             </div>
             <div class="form-group">
-                <label>Sepal Width</label>
-                <input type="number" name="sepal_width" value="3.5" step="0.1" required>
+                <label>Credit Utilization (0–1)</label>
+                <input type="number" name="credit_utilization" value="0.18" step="0.01" min="0" max="1" required>
             </div>
             <div class="form-group">
-                <label>Petal Length</label>
-                <input type="number" name="petal_length" value="1.4" step="0.1" required>
+                <label>Debt-to-Income (0–1)</label>
+                <input type="number" name="debt_to_income_ratio" value="0.22" step="0.01" min="0" max="1" required>
             </div>
             <div class="form-group">
-                <label>Petal Width</label>
-                <input type="number" name="petal_width" value="0.2" step="0.1" required>
+                <label>Months Employed</label>
+                <input type="number" name="months_employed" value="72" step="1" min="0" required>
+            </div>
+            <div class="form-group">
+                <label>Credit Score (300–850)</label>
+                <input type="number" name="credit_score" value="745" step="1" min="300" max="850" required>
             </div>
             <button type="submit" class="btn btn-primary" data-loading-text="Predicting...">Predict &amp; Record</button>
         </form>

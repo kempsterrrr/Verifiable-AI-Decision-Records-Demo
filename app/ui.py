@@ -166,6 +166,17 @@ def registry_redirect():
     return RedirectResponse("/", status_code=301)
 
 
+@router.get("/ui/who-this-is-for", response_class=HTMLResponse)
+def who_this_is_for(request: Request):
+    """Four-persona framing page so visitors find a doorway matched to their context."""
+    app = request.app
+    return templates.TemplateResponse(
+        request,
+        "who_this_is_for.html",
+        _common_context(app),
+    )
+
+
 @router.get("/ui/decisions/{decision_id}", response_class=HTMLResponse)
 def decision_detail(request: Request, decision_id: str, verify: bool = False):
     app = request.app
@@ -251,6 +262,24 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
     if envelope.get("arweave_tx_id"):
         turbo_status = app.state.anchor.check_status(envelope["arweave_tx_id"])
 
+    # Fetch the live MLflow tags directly from the tracking store so evaluators
+    # can confirm the ario.* tags are really on the run (not synthesised by the
+    # demo UI). This is the closest thing to "View in MLflow UI" we can offer
+    # without running a second server alongside uvicorn on Railway.
+    mlflow_tags: dict[str, str] = {}
+    try:
+        import mlflow as _mlflow
+        settings = app.state.settings
+        _mlflow.set_tracking_uri(os.path.abspath(settings.mlflow_tracking_uri))
+        client = _mlflow.tracking.MlflowClient()
+        run = client.get_run(run_id)
+        mlflow_tags = dict(run.data.tags)
+    except Exception:
+        mlflow_tags = {}
+
+    ario_tags = {k: v for k, v in sorted(mlflow_tags.items()) if k.startswith("ario.")}
+    tracking_dir = os.path.abspath(app.state.settings.mlflow_tracking_uri)
+
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -259,6 +288,8 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
             "envelope": envelope,
             "local_verification": local,
             "turbo_status": turbo_status,
+            "mlflow_ario_tags": ario_tags,
+            "mlflow_tracking_dir": tracking_dir,
         },
     )
 

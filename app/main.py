@@ -221,10 +221,11 @@ def _run_prediction(app_state, features: list[float]) -> tuple[dict, dict]:
 @app.post("/predict")
 def api_predict(request: Request, body: dict, background_tasks: BackgroundTasks):
     features = [
-        float(body.get("sepal_length", 5.1)),
-        float(body.get("sepal_width", 3.5)),
-        float(body.get("petal_length", 1.4)),
-        float(body.get("petal_width", 0.2)),
+        float(body.get("annual_income", 78000)),
+        float(body.get("credit_utilization", 0.18)),
+        float(body.get("debt_to_income_ratio", 0.22)),
+        float(body.get("months_employed", 72)),
+        float(body.get("credit_score", 745)),
     ]
     envelope, proof = _run_prediction(request.app.state, features)
     decision_id = envelope["record"]["decision_id"]
@@ -243,12 +244,19 @@ def api_predict(request: Request, body: dict, background_tasks: BackgroundTasks)
 def form_predict(
     request: Request,
     background_tasks: BackgroundTasks,
-    sepal_length: float = Form(5.1),
-    sepal_width: float = Form(3.5),
-    petal_length: float = Form(1.4),
-    petal_width: float = Form(0.2),
+    annual_income: float = Form(78000),
+    credit_utilization: float = Form(0.18),
+    debt_to_income_ratio: float = Form(0.22),
+    months_employed: float = Form(72),
+    credit_score: float = Form(745),
 ):
-    features = [sepal_length, sepal_width, petal_length, petal_width]
+    features = [
+        annual_income,
+        credit_utilization,
+        debt_to_income_ratio,
+        months_employed,
+        credit_score,
+    ]
     envelope, proof = _run_prediction(request.app.state, features)
     decision_id = envelope["record"]["decision_id"]
     if request.app.state.anchor.enabled:

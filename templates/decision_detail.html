@@ -177,8 +177,8 @@
                 <a id="verify-btn" href="/ui/decisions/{{ envelope.record.decision_id }}?verify=true" class="btn btn-primary btn-sm" data-loading-text="Verifying..." {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>Verify with ar.io</a>
                 <a href="/api/export/{{ envelope.record.decision_id }}" class="btn btn-outline btn-sm">Download Proof</a>
                 {% if not envelope.get('tampered') %}
-                <form action="/tamper/{{ envelope.record.decision_id }}" method="POST" style="display:inline;" onsubmit="return confirm('This will permanently modify this record locally. The Arweave copy is unaffected. Continue?')">
-                    <button type="submit" class="btn btn-danger-outline btn-sm" data-loading-text="Tampering...">Tamper</button>
+                <form action="/tamper/{{ envelope.record.decision_id }}" method="POST" style="display:inline;" onsubmit="return confirm('This changes the locally-stored record to simulate what happens when internal logs are lost, rotated, or silently edited. The permanent copy on Arweave is unaffected. Continue?')">
+                    <button type="submit" class="btn btn-danger-outline btn-sm" data-loading-text="Simulating...">Simulate lost/changed record</button>
                 </form>
                 {% endif %}
             </div>
@@ -186,7 +186,7 @@
 
         {% if envelope.get('tampered') %}
         <div class="alert alert-danger">
-            This record has been tampered with locally. The permanent copy on ar.io is unaffected.
+            This local record no longer matches what was originally signed — the same failure mode as logs being deleted, rotated, or silently overwritten in production. The permanent copy on Arweave is unaffected, and the re-verification below shows a third party would still catch the discrepancy.
         </div>
         {% endif %}
 
@@ -227,6 +227,9 @@
             <div class="section">
                 <div class="section-header">ar.io Verification</div>
                 <div class="section-body">
+                    <div style="font-size:0.78rem;color:var(--muted);line-height:1.5;margin-bottom:0.75rem;">
+                        Independent checks on the proof record. These verify that <em>what was anchored</em> is intact on the Arweave network — they do <strong>not</strong> speak to whether the decision itself was correct.
+                    </div>
                     <div class="verify-row">
                         <span>Hash Integrity</span>
                         {% if v %}
@@ -290,9 +293,9 @@
                         <strong>Overall</strong>
                         {% if v %}
                             {% if not v.hash_valid and v.permanent_copy_found and v.hash_match %}
-                                <strong class="cross">TAMPERED</strong>
+                                <strong class="cross" title="The local copy no longer matches the proof that was signed — the Arweave-anchored version is still intact.">LOCAL COPY CHANGED</strong>
                             {% elif v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
-                                <strong class="check">VERIFIED</strong>
+                                <strong class="check" title="Proof blob confirmed on Arweave. This is integrity of the record, not correctness of the decision.">PROOF CONFIRMED</strong>
                             {% elif v.hash_valid and v.signature_valid and not v.permanent_copy_found %}
                                 <span class="badge badge-yellow">Pending</span>
                             {% else %}

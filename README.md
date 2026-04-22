@@ -366,10 +366,12 @@ Decision records are serialized to deterministic canonical JSON (sorted keys, co
 The proof is uploaded to Arweave permanent storage via ar.io Turbo. The upload returns a signed receipt with a millisecond-precision timestamp — an independent attestation of when the proof was submitted. Once confirmed on Arweave, the data is immutable and publicly accessible.
 
 ### ar.io Verify — Independent Attestation
-When verification is requested, ar.io Verify independently fetches the Arweave data, recomputes hashes, checks signatures where available, and produces a signed attestation. Verification levels:
-- **Level 1** — Data found on the network, verification in progress
-- **Level 2** — Data hash confirmed, signature not yet available
-- **Level 3** — Digital signature verified, full authenticity confirmed
+When verification is requested, ar.io Verify independently fetches the Arweave data, recomputes hashes, checks signatures where available, and produces a signed attestation **of the proof blob on the Arweave network**. Verification levels:
+- **Level 1** — data confirmed in the Arweave mempool
+- **Level 2** — data bundled into a block and confirmed
+- **Level 3** — data finalized (one or more block confirmations deep)
+
+These levels describe integrity of the anchored record, not the correctness of the underlying ML decision. Semantic verification (whether *this model* produced *this output* on *this input*) is a separate problem and is on the roadmap, not in v0.1.
 
 ### Auditor Verification
 An auditor can independently verify any proof with standard cryptographic tools:

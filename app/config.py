@@ -19,7 +19,7 @@ class Settings:
 
     # MLflow
     mlflow_tracking_uri: str = "mlruns"
-    mlflow_model_name: str = "iris-classifier"
+    mlflow_model_name: str = "credit-scorer"
 
     # AR.IO
     ario_gateway_host: str = "turbo-gateway.com"

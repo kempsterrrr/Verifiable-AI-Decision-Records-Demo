@@ -383,6 +383,12 @@ def get_decision(request: Request, decision_id: str):
     envelope = request.app.state.store.get_by_id(decision_id)
     if not envelope:
         return JSONResponse({"error": "Decision not found"}, status_code=404)
+    # Attach a live turbo_status so the polling UI can update the badge
+    # as the proof progresses from Uploading → Confirmed → Permanent without
+    # requiring a page reload.
+    envelope = dict(envelope)
+    if envelope.get("arweave_tx_id"):
+        envelope["turbo_status"] = request.app.state.anchor.check_status(envelope["arweave_tx_id"])
     return envelope
 
 
@@ -441,6 +447,9 @@ def get_lifecycle_event(request: Request, event_id: str):
     envelope = request.app.state.lifecycle_store.get_by_event_id(event_id)
     if not envelope:
         return JSONResponse({"error": "Lifecycle event not found"}, status_code=404)
+    envelope = dict(envelope)
+    if envelope.get("arweave_tx_id"):
+        envelope["turbo_status"] = request.app.state.anchor.check_status(envelope["arweave_tx_id"])
     return envelope
 
 

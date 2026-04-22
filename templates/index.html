@@ -217,11 +217,16 @@
         </div>
 
         {% if records %}
-        {# Compute status counts #}
+        {# Compute status counts. Every tampered record counts as "failed"
+           regardless of whether its last_verification dict happens to have
+           been populated — the tamper flag itself is the authoritative
+           signal and survives regardless of when the tamper happened. #}
         {% set ns = namespace(verified=0, anchored=0, failed=0, local=0, anchoring=0) %}
         {% for env in records %}
             {% set v = env.get('last_verification') %}
-            {% if v and v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
+            {% if env.get('tampered') %}
+                {% set ns.failed = ns.failed + 1 %}
+            {% elif v and v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
                 {% set ns.verified = ns.verified + 1 %}
             {% elif v and not (v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match) %}
                 {% set ns.failed = ns.failed + 1 %}
@@ -365,7 +370,9 @@
             <tbody>
                 {% for env in records|reverse %}
                 {% set v = env.get('last_verification') %}
-                {% if v and v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
+                {% if env.get('tampered') %}
+                    {% set row_status = 'failed' %}
+                {% elif v and v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
                     {% set row_status = 'verified' %}
                 {% elif v and not (v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match) %}
                     {% set row_status = 'failed' %}

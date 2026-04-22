@@ -203,7 +203,14 @@
                                 <span>Hash Match <span class="{{ 'check' if tv.hash_match else 'cross' }}">{{ 'PASS' if tv.hash_match else 'FAIL' }}</span></span>
                                 {% endif %}
                                 {% if tv.attestation_level %}
-                                <span>Attestation <span class="check">Level {{ tv.attestation_level }}</span></span>
+                                <span>Attestation
+                                    <span class="check" title="ar.io Verify Level {{ tv.attestation_level }}">
+                                        {% if tv.attestation_level == 3 %}Permanently finalized
+                                        {% elif tv.attestation_level == 2 %}Confirmed on ar.io
+                                        {% elif tv.attestation_level == 1 %}Accepted into mempool
+                                        {% else %}Level {{ tv.attestation_level }}{% endif %}
+                                    </span>
+                                </span>
                                 {% endif %}
                             {% endif %}
                         </div>
@@ -307,7 +314,14 @@
                                 <span>Hash Match <span class="{{ 'check' if rv.hash_match else 'cross' }}">{{ 'PASS' if rv.hash_match else 'FAIL' }}</span></span>
                                 {% endif %}
                                 {% if rv.attestation_level %}
-                                <span>Attestation <span class="check">Level {{ rv.attestation_level }}</span></span>
+                                <span>Attestation
+                                    <span class="check" title="ar.io Verify Level {{ rv.attestation_level }}">
+                                        {% if rv.attestation_level == 3 %}Permanently finalized
+                                        {% elif rv.attestation_level == 2 %}Confirmed on ar.io
+                                        {% elif rv.attestation_level == 1 %}Accepted into mempool
+                                        {% else %}Level {{ rv.attestation_level }}{% endif %}
+                                    </span>
+                                </span>
                                 {% endif %}
                             {% endif %}
                         </div>

@@ -275,11 +275,14 @@
                         {% if v and v.attestation_level %}
                             <span>
                                 {% if v.attestation_level == 3 %}
-                                    <span class="badge badge-green"><span class="badge-dot"></span> Level 3</span>
+                                    <span class="badge badge-green" title="ar.io Verify Level 3 — the proof is finalized deep in the Arweave network, one or more block confirmations past the bundle."><span class="badge-dot"></span> Permanently finalized</span>
+                                    <span style="margin-left:0.4rem;font-size:0.72rem;color:var(--muted);">Level 3</span>
                                 {% elif v.attestation_level == 2 %}
-                                    <span class="badge badge-yellow"><span class="badge-dot"></span> Level 2</span>
+                                    <span class="badge badge-yellow" title="ar.io Verify Level 2 — the proof bundle is confirmed on the Arweave network but not yet deeply finalized."><span class="badge-dot"></span> Confirmed on ar.io</span>
+                                    <span style="margin-left:0.4rem;font-size:0.72rem;color:var(--muted);">Level 2</span>
                                 {% elif v.attestation_level == 1 %}
-                                    <span class="badge badge-yellow"><span class="badge-dot"></span> Level 1</span>
+                                    <span class="badge badge-yellow" title="ar.io Verify Level 1 — the proof has been accepted into the mempool but has not yet been bundled into a block."><span class="badge-dot"></span> Accepted into mempool</span>
+                                    <span style="margin-left:0.4rem;font-size:0.72rem;color:var(--muted);">Level 1</span>
                                 {% endif %}
                             </span>
                         {% elif v %}
@@ -403,17 +406,15 @@
                         </div>
                         <div class="kv-row">
                             <span class="kv-key">Status</span>
-                            <span class="kv-value">
+                            <span class="kv-value" id="turbo-status-badge">
                                 {% if turbo_status and turbo_status.status == 'FINALIZED' %}
-                                    <span class="badge badge-green"><span class="badge-dot"></span> Permanent</span>
-                                {% elif turbo_status and turbo_status.status == 'CONFIRMED' and turbo_status.info == 'pending' %}
-                                    <span class="badge badge-yellow"><span class="badge-dot"></span> Bundled</span>
+                                    <span class="badge badge-green" title="The proof is permanently stored on the Arweave network and cannot be changed."><span class="badge-dot"></span> Permanent on ar.io</span>
                                 {% elif turbo_status and turbo_status.status == 'CONFIRMED' %}
-                                    <span class="badge badge-yellow"><span class="badge-dot"></span> Confirmed</span>
+                                    <span class="badge badge-yellow" title="ar.io has received and confirmed the proof. It will become permanent once block confirmations accumulate."><span class="badge-dot"></span> Confirmed on ar.io</span>
                                 {% elif turbo_status and turbo_status.status == 'NOT_FOUND' %}
-                                    <span class="badge badge-yellow"><span class="badge-dot"></span> Uploading</span>
+                                    <span class="badge badge-yellow" title="The proof has been submitted but ar.io has not yet indexed it."><span class="badge-dot badge-dot-pulse"></span> Uploading to ar.io…</span>
                                 {% else %}
-                                    <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
+                                    <span class="badge badge-yellow" title="Proof received by ar.io."><span class="badge-dot"></span> Anchored</span>
                                 {% endif %}
                             </span>
                         </div>
@@ -549,31 +550,63 @@
     {% if arweave_enabled %}
     <script>
     (function() {
-        // Single polling loop that populates TWO async things:
+        // Unified polling loop covering THREE async things:
         //   1. The Arweave TX + gateway URL (arrives ~1-2s after prediction).
-        //   2. The upload receipt (arrives in the same envelope, shown
-        //      as a sub-section of the anchoring card).
-        // Stops once both are present, or after ~45s in case Turbo is slow.
+        //   2. The upload receipt (arrives in the same envelope shortly after).
+        //   3. The Turbo status, which progresses NOT_FOUND → CONFIRMED →
+        //      FINALIZED over seconds-to-minutes as the network settles.
+        // Stops once Turbo reports FINALIZED, or after a hard 5-minute cap
+        // so we're not polling forever on a stuck proof.
         const decisionId = "{{ envelope.record.decision_id }}";
-        const haveTxInitially = {{ 'true' if envelope.arweave_tx_id else 'false' }};
-        const haveReceiptInitially = {{ 'true' if envelope.turbo_receipt else 'false' }};
-
-        if (haveTxInitially && haveReceiptInitially) return;
-
-        let haveTx = haveTxInitially;
-        let haveReceipt = haveReceiptInitially;
+        let haveTx = {{ 'true' if envelope.arweave_tx_id else 'false' }};
+        let haveReceipt = {{ 'true' if envelope.turbo_receipt else 'false' }};
+        let lastStatus = null;
         let attempts = 0;
-        const maxAttempts = 18;  // 18 × 2.5s = 45s
+        const maxAttempts = 120;  // 120 × 2.5s = 5 minutes
+
+        const STATUS_COPY = {
+            FINALIZED: {
+                cls: 'badge-green',
+                dot: 'badge-dot',
+                text: 'Permanent on ar.io',
+                title: 'The proof is permanently stored on the Arweave network and cannot be changed.',
+            },
+            CONFIRMED: {
+                cls: 'badge-yellow',
+                dot: 'badge-dot',
+                text: 'Confirmed on ar.io',
+                title: 'ar.io has received and confirmed the proof. It will become permanent once block confirmations accumulate.',
+            },
+            NOT_FOUND: {
+                cls: 'badge-yellow',
+                dot: 'badge-dot badge-dot-pulse',
+                text: 'Uploading to ar.io…',
+                title: 'The proof has been submitted but ar.io has not yet indexed it.',
+            },
+        };
+        function statusCopy(s) {
+            return STATUS_COPY[s] || {
+                cls: 'badge-yellow',
+                dot: 'badge-dot',
+                text: 'Anchored',
+                title: 'Proof received by ar.io.',
+            };
+        }
 
         function renderAnchoringTop(data) {
+            // First render after TX arrives. Includes a placeholder status
+            // badge that later polls will overwrite via updateStatusBadge.
             const body = document.getElementById("anchoring-body");
             if (!body) return;
+            const s = statusCopy((data.turbo_status || {}).status);
             body.innerHTML =
                 '<div class="kv">' +
                 '<div class="kv-row"><span class="kv-key">Transaction</span>' +
                 '<span class="kv-value"><a href="' + data.arweave_url + '" target="_blank"><span class="mono mono-sm">' + data.arweave_tx_id + '</span></a></span></div>' +
                 '<div class="kv-row"><span class="kv-key">Status</span>' +
-                '<span class="kv-value"><span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span></span></div>' +
+                '<span class="kv-value" id="turbo-status-badge">' +
+                '<span class="badge ' + s.cls + '" title="' + s.title + '"><span class="' + s.dot + '"></span> ' + s.text + '</span>' +
+                '</span></div>' +
                 '</div>' +
                 '<div id="anchoring-receipt" style="margin-top:1rem;padding-top:0.9rem;border-top:1px solid var(--border);">' +
                 '<div style="font-size:0.72rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.1rem;">Upload receipt</div>' +
@@ -582,6 +615,13 @@
                 '</div>';
             const verifyBtn = document.getElementById("verify-btn");
             if (verifyBtn) verifyBtn.style.display = "";
+        }
+
+        function updateStatusBadge(turboStatus) {
+            const el = document.getElementById("turbo-status-badge");
+            if (!el) return;
+            const s = statusCopy((turboStatus || {}).status);
+            el.innerHTML = '<span class="badge ' + s.cls + '" title="' + s.title + '"><span class="' + s.dot + '"></span> ' + s.text + '</span>';
         }
 
         function renderReceipt(receipt) {
@@ -614,7 +654,7 @@
 
         const poll = setInterval(function() {
             attempts += 1;
-            if (attempts > maxAttempts || (haveTx && haveReceipt)) {
+            if (attempts > maxAttempts || lastStatus === 'FINALIZED') {
                 clearInterval(poll);
                 return;
             }
@@ -628,6 +668,11 @@
                     if (!haveReceipt && data.turbo_receipt) {
                         haveReceipt = true;
                         renderReceipt(data.turbo_receipt);
+                    }
+                    const newStatus = (data.turbo_status || {}).status || null;
+                    if (haveTx && newStatus !== lastStatus) {
+                        lastStatus = newStatus;
+                        updateStatusBadge(data.turbo_status);
                     }
                 })
                 .catch(function() {});

@@ -26,6 +26,29 @@ class ArtifactAccessError(RuntimeError):
     """
 
 
+def _logged_model_paths(run_data) -> list[str]:
+    """Return the artifact paths of every model logged in this run.
+
+    MLflow writes a ``mlflow.log-model.history`` tag whose value is a JSON list
+    describing each ``mlflow.<flavor>.log_model`` call in the run. Reading this
+    tag lets ``anchor()`` hash whatever the user actually logged, rather than
+    silently defaulting to ``"model"`` and skipping the hash when the caller
+    used a different name.
+    """
+    history_json = run_data.data.tags.get("mlflow.log-model.history")
+    if not history_json:
+        return []
+    try:
+        history = json.loads(history_json)
+    except (ValueError, TypeError):
+        return []
+    paths = []
+    for entry in history:
+        if isinstance(entry, dict) and entry.get("artifact_path"):
+            paths.append(entry["artifact_path"])
+    return paths
+
+
 def parse_runs_uri(source: str | None) -> tuple[str | None, str | None]:
     """Parse a ``runs:/<run_id>/<artifact_path>`` URI.
 
@@ -84,22 +107,39 @@ def artifact_checksums(client_or_run_id, run_id: str | None = None, artifact_pat
 def anchor(
     proof_engine: ProofEngine | None = None,
     arweave: ArweaveAnchor | None = None,
-    artifact_path: str = "model",
+    artifact_path: str | None = None,
 ) -> dict:
     """Create a verifiable proof of the current training run.
 
     Must be called inside an active ``mlflow.start_run()`` block, after
-    artifacts have been logged.  Signs a proof envelope, optionally uploads
+    artifacts have been logged. Signs a proof envelope, optionally uploads
     to Arweave, and writes rich tags + artifacts to the run.
 
     Args:
         proof_engine: Optional override for the signing engine.
         arweave: Optional override for the Arweave anchor client.
         artifact_path: The MLflow artifact subdirectory that was logged
-            (e.g. ``"model"``, ``"sklearn-model"``). Defaults to ``"model"`` —
-            the standard path used by ``mlflow.<flavor>.log_model`` when no
-            path is passed. Pass the real path here if the user logged under
-            a custom name so the anchored hash matches the registered model.
+            (e.g. ``"model"``, ``"sklearn-model"``). When ``None`` (the
+            default), the path is auto-resolved from MLflow's
+            ``mlflow.log-model.history`` tag — which records exactly what
+            was logged — so callers who used a custom path no longer need
+            to re-specify it. Falls back to ``"model"`` if no model was
+            logged. Pass explicitly to hash a non-model subdirectory, or
+            to pick one path when multiple models were logged.
+
+    Returns:
+        A dict with keys:
+
+        - ``proof`` — the signed proof envelope
+        - ``anchor_result`` — Turbo upload result (``None`` if disabled/failed)
+        - ``tags`` — the MLflow tags written on the run
+        - ``artifact_path`` — the path actually used for hashing
+        - ``artifact_status`` — one of ``"hashed"`` (artifacts hashed
+          successfully), ``"no_artifacts"`` (no files found at the path),
+          or ``"hash_failed"`` (download/read error; details in
+          ``artifact_error``)
+        - ``artifact_error`` — the error message when
+          ``artifact_status == "hash_failed"``, otherwise ``None``
     """
     active = mlflow.active_run()
     if active is None:
@@ -117,16 +157,38 @@ def anchor(
             os.environ.get("ARIO_MLFLOW_GATEWAY_HOST", "turbo-gateway.com"),
         )
 
+    # Auto-resolve the artifact path from the run's logged-model history when
+    # the caller did not specify one. This replaces the old hardcoded default
+    # of "model", which silently minted proofs with no artifact hash when the
+    # caller logged under a different name.
+    resolved_path = artifact_path
+    if resolved_path is None:
+        logged_paths = _logged_model_paths(run_data)
+        if len(logged_paths) == 1:
+            resolved_path = logged_paths[0]
+        elif len(logged_paths) > 1:
+            logger.warning(
+                f"Run {run_id} logged {len(logged_paths)} models: {logged_paths}. "
+                f"Hashing first; pass artifact_path explicitly to choose another."
+            )
+            resolved_path = logged_paths[0]
+        else:
+            resolved_path = "model"
+
     params = dict(run_data.data.params)
     metrics = {k: round(v, 6) if isinstance(v, float) else v for k, v in run_data.data.metrics.items()}
+    artifact_status = "no_artifacts"
+    artifact_error: str | None = None
     try:
-        checksums = artifact_checksums(run_id, artifact_path=artifact_path)
+        checksums = artifact_checksums(run_id, artifact_path=resolved_path)
+        artifact_status = "hashed" if checksums else "no_artifacts"
     except ArtifactAccessError as e:
-        # Record-keeping only: we cannot know the real hash, so we anchor the
-        # run's params/metrics but omit the artifact hash rather than
-        # fabricate one from an empty tree.
+        # Artifact download/read failed. Anchor params/metrics as a record of
+        # the run, but flag the status so callers can surface the failure.
         logger.warning(f"Skipping artifact_hash in proof for run {run_id}: {e}")
         checksums = {}
+        artifact_status = "hash_failed"
+        artifact_error = str(e)
     art_hash = hash_data(canonical_json(checksums)) if checksums else None
 
     record = {
@@ -155,6 +217,9 @@ def anchor(
     if anchor_result:
         tags["ario.training_tx"] = anchor_result["tx_id"]
         tags["ario.arweave_url"] = anchor_result["url"]
+    wallet_mode = getattr(arweave, "wallet_mode", None)
+    if wallet_mode:
+        tags["ario.wallet_mode"] = wallet_mode
 
     for key, value in tags.items():
         client.set_tag(run_id, key, value)
@@ -173,12 +238,26 @@ def anchor(
                 json.dump(anchor_result["receipt"], f, indent=2)
 
         # verification.html — human-readable report
-        html_content = generate_verification_html(proof, anchor_result, artifact_hash=art_hash)
+        html_content = generate_verification_html(
+            proof, anchor_result,
+            artifact_hash=art_hash,
+            wallet_mode=wallet_mode,
+        )
         with open(os.path.join(ario_dir, "verification.html"), "w") as f:
             f.write(html_content)
 
         mlflow.log_artifacts(ario_dir, "ario")
 
-    logger.info(f"Run {run_id} anchored: status={tags['ario.verify_status']}")
+    logger.info(
+        f"Run {run_id} anchored: status={tags['ario.verify_status']}, "
+        f"artifacts={artifact_status} (path={resolved_path!r})"
+    )
 
-    return {"proof": proof, "anchor_result": anchor_result, "tags": tags}
+    return {
+        "proof": proof,
+        "anchor_result": anchor_result,
+        "tags": tags,
+        "artifact_path": resolved_path,
+        "artifact_status": artifact_status,
+        "artifact_error": artifact_error,
+    }

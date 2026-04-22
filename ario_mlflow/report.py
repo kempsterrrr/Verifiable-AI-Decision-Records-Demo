@@ -12,6 +12,7 @@ def generate_verification_html(
     verification: dict | None = None,
     cli_verify_cmd: str | None = None,
     verify_base_url: str | None = None,
+    wallet_mode: str | None = None,
 ) -> str:
     """Generate an HTML report for the MLflow artifact viewer.
 
@@ -29,6 +30,10 @@ def generate_verification_html(
         verify_base_url: Base URL for the ar.io Verify dashboard (tx_id is
             appended). Falls back to ``ARIO_MLFLOW_ARIO_VERIFY_URL`` or the
             public vilenarios.com endpoint.
+        wallet_mode: One of ``"user-configured"``, ``"persistent"``, or
+            ``"ephemeral"`` — rendered as a small transparency note so
+            readers can tell whether the proof was signed with a
+            production-quality wallet or a demo-default one.
     """
     record = proof.get("record", {})
     event_type = record.get("event_type", "unknown")
@@ -57,6 +62,27 @@ def generate_verification_html(
     previous_hash = proof.get("previous_hash", "")
     signature = proof.get("signature", "")
     public_key = proof.get("public_key", "")
+
+    # Wallet-mode notice — only shown when the plugin ran on an auto-generated
+    # wallet, so readers can tell at a glance that this is a demo-default
+    # signer (not a caller-configured production wallet).
+    wallet_notice = ""
+    if wallet_mode == "persistent":
+        wallet_notice = (
+            '<div style="background:#fef9c3;border:1px solid #fde047;border-radius:6px;'
+            'padding:10px 14px;margin-bottom:16px;font-size:13px;color:#713f12;">'
+            "Signed with the plugin's auto-generated wallet "
+            "(<code>~/.ario-mlflow/wallet.json</code>). Set "
+            "<code>ARIO_MLFLOW_ARWEAVE_WALLET</code> to sign with your own wallet.</div>"
+        )
+    elif wallet_mode == "ephemeral":
+        wallet_notice = (
+            '<div style="background:#fee2e2;border:1px solid #fecaca;border-radius:6px;'
+            'padding:10px 14px;margin-bottom:16px;font-size:13px;color:#7f1d1d;">'
+            "Signed with an <strong>in-memory, ephemeral</strong> wallet. "
+            "The signing address will rotate on restart. Configure "
+            "<code>ARIO_MLFLOW_ARWEAVE_WALLET</code> for stable provenance.</div>"
+        )
 
     # Artifact integrity rows
     integrity_row = ""
@@ -150,6 +176,8 @@ def generate_verification_html(
 <div class="container">
   <h1>ar.io Verification Report</h1>
   <div class="subtitle">{html.escape(event_type)} &mdash; {html.escape(timestamp)}</div>
+
+  {wallet_notice}
 
   <table>
     {_row("Status", _badge(status_label, status_color))}

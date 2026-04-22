@@ -307,9 +307,9 @@
                 <span class="sys-dot {{ 'sys-dot-on' if arweave_enabled else 'sys-dot-off' }}"></span>
                 Arweave
             </div>
-            <div class="sys-status">
+            <div class="sys-status" title="{{ 'ar.io Verify service is reachable — third-party attestations available' if ario_verify_enabled else 'ar.io Verify service is offline — only local + Arweave verification available' }}">
                 <span class="sys-dot {{ 'sys-dot-on' if ario_verify_enabled else 'sys-dot-off' }}"></span>
-                ar.io Verify
+                ar.io Verify{% if not ario_verify_enabled %} (offline){% endif %}
             </div>
         </div>
     </div>

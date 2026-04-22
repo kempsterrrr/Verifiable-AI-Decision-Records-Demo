@@ -3,6 +3,7 @@ import os
 import threading
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks, FastAPI, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -541,6 +542,21 @@ def tamper_decision(request: Request, decision_id: str):
     original_hash = envelope["record"]["output_hash"]
     envelope["record"]["output_hash"] = "TAMPERED_" + original_hash[:50]
     envelope["tampered"] = True
+
+    # Re-run local verification so any UI that keys off `last_verification`
+    # (the predictions-page stat cards, the detail page's verification section)
+    # immediately reflects the tamper. The Arweave side of last_verification,
+    # if previously checked, is still accurate and kept — the permanent copy
+    # IS still on the network and matches the ORIGINAL record, even though
+    # the local copy no longer does.
+    local = request.app.state.proof_engine.verify_local(envelope)
+    previous = envelope.get("last_verification") or {}
+    envelope["last_verification"] = {
+        **previous,
+        "hash_valid": local["hash_valid"],
+        "signature_valid": local["signature_valid"],
+        "verified_at": datetime.now(timezone.utc).isoformat(),
+    }
 
     request.app.state.store.update(decision_id, envelope)
 

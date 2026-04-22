@@ -458,19 +458,77 @@ def export_decision(request: Request, decision_id: str):
     )
 
 
-@app.get("/api/chain-integrity")
-def chain_integrity(request: Request):
-    """Verify the previous_hash chain is unbroken across all records."""
-    records = request.app.state.store.list_all()
-    if not records:
-        return {"total": 0, "intact": True, "broken_at": None}
+def compute_chain_integrity(records: list) -> dict:
+    """Pure function: evaluate link + content integrity for a list of envelopes.
 
+    Two concepts are checked independently because a tamper of any single
+    record breaks only one of them at a time:
+
+    1. **Link integrity** — each record's ``previous_hash`` matches the
+       prior record's ``record_hash``. Breaks if a record is deleted or
+       reordered.
+    2. **Content integrity** — each record's ``record`` field still hashes
+       to its own ``record_hash``. Breaks when a field inside the record
+       is modified after signing (what the ``/tamper`` button does).
+
+    The legacy ``intact`` / ``broken_at`` fields are preserved for any
+    old clients and reflect whichever check fails first (link, then
+    content).
+    """
+    from ario_mlflow.proof import canonical_json, hash_data
+
+    if not records:
+        return {
+            "total": 0,
+            "link_intact": True,
+            "content_intact": True,
+            "broken_link_at": None,
+            "changed_records": [],
+            "intact": True,
+            "broken_at": None,
+        }
+
+    broken_link_at = None
     for i, rec in enumerate(records):
         expected = records[i - 1]["record_hash"] if i > 0 else "GENESIS"
         if rec.get("previous_hash") != expected:
-            return {"total": len(records), "intact": False, "broken_at": i, "decision_id": rec["record"]["decision_id"]}
+            broken_link_at = i
+            break
 
-    return {"total": len(records), "intact": True, "broken_at": None}
+    changed_records = []
+    for i, rec in enumerate(records):
+        record_field = rec.get("record") or {}
+        computed = hash_data(canonical_json(record_field))
+        if computed != rec.get("record_hash"):
+            changed_records.append({
+                "index": i,
+                "decision_id": record_field.get("decision_id"),
+                "reason": "content hash mismatch",
+            })
+
+    link_intact = broken_link_at is None
+    content_intact = not changed_records
+    intact = link_intact and content_intact
+    # Legacy broken_at: first broken-link index if any, else first changed record.
+    broken_at = broken_link_at if broken_link_at is not None else (
+        changed_records[0]["index"] if changed_records else None
+    )
+
+    return {
+        "total": len(records),
+        "link_intact": link_intact,
+        "content_intact": content_intact,
+        "broken_link_at": broken_link_at,
+        "changed_records": changed_records,
+        "intact": intact,
+        "broken_at": broken_at,
+    }
+
+
+@app.get("/api/chain-integrity")
+def chain_integrity(request: Request):
+    """Verify link + content integrity across all stored decision records."""
+    return compute_chain_integrity(request.app.state.store.list_all())
 
 
 @app.post("/tamper/{decision_id}")

@@ -255,9 +255,14 @@
         </div>
 
         <!-- Chain Integrity -->
-        <div id="chain-integrity" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 1.25rem; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 1rem; font-size: 0.8rem; color: var(--muted);">
-            <span>Hash Chain:</span>
-            <span id="chain-status">checking...</span>
+        <div id="chain-integrity" style="padding: 0.6rem 1.25rem; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 1rem; font-size: 0.8rem; color: var(--muted);">
+            <div style="display:flex;align-items:center;gap:0.5rem;">
+                <span>Hash chain:</span>
+                <span id="chain-status">checking...</span>
+            </div>
+            <div style="font-size:0.72rem;margin-top:0.3rem;line-height:1.5;">
+                Each record commits to the previous record's hash and to its own content. Change one and both checks reveal it.
+            </div>
         </div>
         {% endif %}
 
@@ -467,18 +472,37 @@
             row.classList.toggle('hidden', !show);
         });
     }
-    // Chain integrity check
+    // Chain integrity check — distinguishes link failures from content-level
+    // tamper (where a record's content stops matching its own record_hash).
     (function() {
         const el = document.getElementById('chain-status');
         if (!el) return;
         fetch('/api/chain-integrity')
             .then(r => r.json())
             .then(data => {
-                if (data.intact) {
-                    el.innerHTML = '<span style="color: var(--green); font-weight: 600;">' + data.total + ' records, unbroken</span>';
-                } else {
-                    el.innerHTML = '<span style="color: var(--red); font-weight: 600;">BROKEN at record #' + data.broken_at + '</span>';
+                if (data.link_intact && data.content_intact) {
+                    el.innerHTML = '<span style="color: var(--green); font-weight: 600;">' + data.total + ' records · unbroken · content intact</span>';
+                    return;
                 }
+
+                const parts = [];
+                if (!data.link_intact && data.broken_link_at !== null) {
+                    parts.push('link broken at record #' + data.broken_link_at);
+                }
+                const changed = data.changed_records || [];
+                if (changed.length > 0) {
+                    const label = changed.length === 1 ? '1 record changed' : (changed.length + ' records changed');
+                    // Link the first (and most recent) changed record
+                    const first = changed[0];
+                    const shortId = first.decision_id ? first.decision_id.slice(0, 8) + '…' : '#' + first.index;
+                    const href = first.decision_id ? '/ui/decisions/' + first.decision_id : '#';
+                    parts.push(
+                        label + ' (<a href="' + href + '" style="color:inherit;text-decoration:underline;">decision ' + shortId + '</a>)'
+                    );
+                }
+                const summary = parts.join(' · ') || 'broken';
+                el.innerHTML = '<span style="color: var(--red); font-weight: 600;">' +
+                    data.total + ' records · ' + summary + '</span>';
             })
             .catch(() => { el.textContent = 'unavailable'; });
     })();

@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}{{ model_name }}/v{{ version }} — Chain of Custody{% endblock %}
+{% block title %}{{ model_name }}/v{{ version }} — Model Lineage{% endblock %}
 {% block max_width %}900px{% endblock %}
 {% block nav_lineage %}active{% endblock %}
 {% block lineage_url %}/ui/models/{{ model_name }}/{{ version }}{% endblock %}
@@ -123,8 +123,8 @@
 {% block content %}
         <div class="page-header">
             <div>
-                <h1>Chain of Custody</h1>
-                <p>{{ model_name }} / v{{ version }}</p>
+                <h1>Model Lineage</h1>
+                <p>{{ model_name }} / v{{ version }} — a cryptographically verifiable audit trail of every training run, model version, and prediction.</p>
             </div>
             <a href="/ui/models/{{ model_name }}/{{ version }}?verify=true" class="btn btn-primary btn-sm" id="verify-all-btn" data-loading-text="Verifying...">Verify All</a>
         </div>

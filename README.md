@@ -9,7 +9,7 @@ This project provides **verifiable provenance for the entire ML lifecycle** — 
 1. **Training provenance** — params, metrics, and artifact hashes are captured and anchored when a model is trained
 2. **Registration provenance** — model registration events are signed and anchored with a link back to the training proof
 3. **Prediction records** — every inference creates a decision record with full model lineage
-4. **Chain of custody** — an unbroken, verifiable chain from training → registration → predictions
+4. **Model lineage** — a cryptographically verifiable audit trail from training → registration → predictions
 
 Each record is:
 
@@ -127,22 +127,22 @@ Without a wallet, the app runs in **local proof mode** — hashing, signing, and
 
 ### 1. Train a Model
 
-The landing page (`/`) shows the Models page. Click **Train & Anchor** to train a new model. Watch the four-step progress: training → registering → anchoring training proof → anchoring registration proof. After completion, the app automatically redirects to the chain of custody page.
+The landing page (`/`) shows the Models page. Click **Train & Anchor** to train a new model. Watch the four-step progress: training → registering → anchoring training proof → anchoring registration proof. After completion, the app automatically redirects to the model lineage page.
 
-### 2. View the Chain of Custody
+### 2. View the Model Lineage
 
-The chain of custody page shows the proof chain forming in real time: Training Run → Model Registration → Predictions. Each node shows its verification status and Arweave transaction ID.
+The model lineage page shows the proof chain forming in real time: Training Run → Model Registration → Predictions. Each node shows its verification status and Arweave transaction ID. Compliance readers can think of this as a cryptographically verifiable audit trail.
 
 ### 3. Make a Prediction
 
-Navigate to **Predictions** and submit the form with iris flower measurements. The response is instant — the detail page shows "Anchoring..." with a pulsing indicator, then auto-updates when the Arweave upload completes (~1-2s).
+Navigate to **Predictions** and submit the form with applicant features (income, credit score, etc.). The response is instant — the detail page shows "Anchoring..." with a pulsing indicator, then auto-updates when the Arweave upload completes (~1-2s).
 
 ### 4. View the Decision Record
 
 Click a decision ID to see the full record:
 - **Prediction** — class, probabilities with visual bars, features used
 - **ar.io Verification** — three-level verification status (hash, signature, permanent copy, attestation)
-- **Model lineage** — MLflow run ID, version, artifact URI, with link to chain of custody
+- **Model lineage** — MLflow run ID, version, artifact URI, with link to the full lineage view
 - **Proof layer** — record hash, chain link, Ed25519 signature
 - **Arweave anchoring** — transaction ID, status (Anchoring → Anchored → Confirmed → Permanent)
 - **Turbo upload receipt** — millisecond timestamp, wallet owner, signed receipt
@@ -165,7 +165,7 @@ Click **Tamper** to modify the local record's output hash, then **Verify with ar
 | Models (landing page) | `/` | Model versions, train new models, activate versions |
 | Predictions | `/ui/predictions` | Prediction records, stats, prediction form, model provenance card, version filter |
 | Decision detail | `/ui/decisions/{id}` | Full decision record with three-level verification |
-| Chain of custody | `/ui/models/{name}/{version}` | Training → Registration → Predictions chain |
+| Model lineage | `/ui/models/{name}/{version}` | Training → Registration → Predictions chain |
 | Training run detail | `/ui/runs/{run_id}` | Training params, metrics, artifact hashes, verification |
 
 ## API Reference
@@ -296,7 +296,7 @@ ario-mlflow verify model fraud-detector/3
 # Verify an individual inference trace
 ario-mlflow verify trace <trace_id>
 
-# Full chain of custody audit
+# Full model lineage audit (training → registration → promotion)
 ario-mlflow audit fraud-detector/3
 ```
 

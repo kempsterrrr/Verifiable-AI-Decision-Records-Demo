@@ -325,12 +325,12 @@
                 setStepActive('step-anchor-reg');
                 return pollAnchor(data.registration_event_id, 'step-anchor-reg');
             }).then(() => {
-                result.innerHTML = 'Model v' + data.model_version + ' trained (accuracy: ' + data.accuracy.toFixed(4) + ') and anchored to Arweave. Redirecting to chain of custody...';
+                result.innerHTML = 'Model v' + data.model_version + ' trained (accuracy: ' + data.accuracy.toFixed(4) + ') and anchored to Arweave. Redirecting to model lineage...';
                 result.classList.add('show');
                 btn.textContent = 'Start Training';
                 btn.disabled = false;
                 btn.style.opacity = '1';
-                // Redirect to chain of custody page
+                // Redirect to model lineage page
                 setTimeout(() => {
                     window.location.href = '/ui/models/' + data.model_name + '/' + data.model_version;
                 }, 2000);

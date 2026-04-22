@@ -267,7 +267,7 @@ def cmd_verify_trace(args):
 
 
 def cmd_audit(args):
-    """Audit full chain of custody for a model version."""
+    """Audit the full lineage (training → registration → promotion) for a model version."""
     proof_engine, anchor, ario_client = _get_components()
     client = mlflow.tracking.MlflowClient()
 
@@ -275,7 +275,7 @@ def cmd_audit(args):
     name = parts[0]
     version = parts[1] if len(parts) > 1 else "1"
 
-    print(f"Auditing chain of custody: {name}/v{version}")
+    print(f"Auditing model lineage: {name}/v{version}")
     print("=" * 50)
 
     mv = client.get_model_version(name, version)
@@ -380,7 +380,7 @@ def build_parser() -> argparse.ArgumentParser:
     trace_parser.add_argument("trace_id", help="MLflow trace ID")
 
     # audit
-    audit_parser = subparsers.add_parser("audit", help="Audit full chain of custody")
+    audit_parser = subparsers.add_parser("audit", help="Audit full model lineage (training → registration → promotion)")
     audit_parser.add_argument("model", help="Model name/version (e.g. fraud-detector/3)")
 
     return parser

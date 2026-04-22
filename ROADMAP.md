@@ -69,7 +69,6 @@ Grouped by theme. Each item notes which audience (see *Audiences* below) it most
 | Item | What | Why | Serves |
 |---|---|---|---|
 | Demo persistence | Use a Railway volume or small Postgres so `data/records.json` survives restarts | Today every Railway dyno restart wipes the records table. Fine for the core "this works" demo, bad for anyone returning to a URL they bookmarked. | All |
-| Vocabulary pass | Replace "chain of custody" with persona-matched terms across the UI (compliance: *controls / evidence / attestations*; auditors: *scope / opinion / exceptions*; ML engineers: *runs / reproducibility*) | Our current vocabulary is blockchain-adjacent jargon that no persona uses natively. | All |
 | MLflow UI mount alongside FastAPI on Railway | A reverse-proxied MLflow UI on the same Railway service at `/mlflow/*` so technical evaluators see the native MLflow UI | The current implementation shows the live MLflow tags on the run detail page, which covers the "prove it's not a facade" signal. Running an actual MLflow server alongside uvicorn is a separate infra lift (subprocess management, `--static-prefix`, proxying). | P1, P4 |
 
 ## Audiences
@@ -107,4 +106,5 @@ Archive section is below — empty for now.
 
 ## Archive
 
-_Nothing archived yet._
+### Vocabulary pass — done 2026-04-22
+"Chain of custody" is replaced by "Model lineage" (primary) with "audit trail" as a secondary phrase for GRC-leaning readers. Decision was informed by a short desk audit of ML (MLflow, W&B, Databricks, ClearML), GRC (Vanta, Drata, OneTrust), audit (Splunk, Datadog, CloudTrail), and AI-governance (Brundage et al., METR, Apollo) vocabulary: no surveyed tool uses "chain of custody" as a primary label; "lineage" dominates the ML world and "audit trail" is the cross-audience workhorse. See branch `phase3/harden-plugin-broaden-demo`.

@@ -391,9 +391,9 @@
                 </div>
             </div>
 
-            <!-- Arweave anchoring (TX + Turbo upload receipt together) -->
+            <!-- ar.io anchoring (TX + upload receipt together) -->
             <div class="section" id="anchoring-section">
-                <div class="section-header">Arweave anchoring</div>
+                <div class="section-header">ar.io anchoring</div>
                 <div class="section-body" id="anchoring-body">
                     {% if envelope.arweave_tx_id %}
                     <div class="kv">
@@ -420,8 +420,8 @@
                     </div>
 
                     <div id="anchoring-receipt" style="margin-top:1rem;padding-top:0.9rem;border-top:1px solid var(--border);">
-                        <div style="font-size:0.72rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.1rem;">Turbo upload receipt</div>
-                        <div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.6rem;">Independent timestamp witness — Turbo's signature of what it received, when.</div>
+                        <div style="font-size:0.72rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.1rem;">Upload receipt</div>
+                        <div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.6rem;">Independent timestamp witness — ar.io's signature of what it received, when.</div>
                         <div class="kv" id="receipt-kv">
                             {% if envelope.turbo_receipt %}
                                 {% if envelope.turbo_receipt.timestamp %}
@@ -551,7 +551,7 @@
     (function() {
         // Single polling loop that populates TWO async things:
         //   1. The Arweave TX + gateway URL (arrives ~1-2s after prediction).
-        //   2. The Turbo upload receipt (arrives in the same envelope, shown
+        //   2. The upload receipt (arrives in the same envelope, shown
         //      as a sub-section of the anchoring card).
         // Stops once both are present, or after ~45s in case Turbo is slow.
         const decisionId = "{{ envelope.record.decision_id }}";
@@ -576,8 +576,8 @@
                 '<span class="kv-value"><span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span></span></div>' +
                 '</div>' +
                 '<div id="anchoring-receipt" style="margin-top:1rem;padding-top:0.9rem;border-top:1px solid var(--border);">' +
-                '<div style="font-size:0.72rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.1rem;">Turbo upload receipt</div>' +
-                '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.6rem;">Independent timestamp witness — Turbo’s signature of what it received, when.</div>' +
+                '<div style="font-size:0.72rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.1rem;">Upload receipt</div>' +
+                '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.6rem;">Independent timestamp witness — ar.io’s signature of what it received, when.</div>' +
                 '<div class="kv" id="receipt-kv"><div class="kv-row" id="receipt-placeholder" style="color:var(--muted);font-size:0.82rem;">Waiting for receipt — will populate automatically.</div></div>' +
                 '</div>';
             const verifyBtn = document.getElementById("verify-btn");

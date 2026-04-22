@@ -144,8 +144,8 @@ Click a decision ID to see the full record:
 - **ar.io Verification** — three-level verification status (hash, signature, permanent copy, attestation)
 - **Model lineage** — MLflow run ID, version, artifact URI, with link to the full lineage view
 - **Proof layer** — record hash, chain link, Ed25519 signature
-- **Arweave anchoring** — transaction ID, status (Anchoring → Anchored → Confirmed → Permanent)
-- **Turbo upload receipt** — millisecond timestamp, wallet owner, signed receipt
+- **ar.io anchoring** — transaction ID, status (Anchoring → Anchored → Confirmed → Permanent)
+- **Upload receipt** — ar.io's timestamp witness: millisecond timestamp, wallet owner, signed receipt
 
 ### 5. Verify a Record
 

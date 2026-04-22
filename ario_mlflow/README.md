@@ -115,6 +115,14 @@ On model versions (`ArioMlflowClient`):
 - `ario.artifact_verified` — `true` / `false` from re-hashing at registration
 - `ario.registration_tx`, `ario.promotion_tx`, `ario.arweave_url`
 
+After running `ario-mlflow verify …` (training run or model version):
+
+- `ario.verify_status` → `verified`
+- `ario.attestation_level` — `1`, `2`, or `3` (see levels section below)
+- `ario.report_url` — link to the ar.io Verify dashboard for this proof
+- `ario.attested_by`, `ario.attested_at` — gateway operator and timestamp,
+  only present when the operator has configured a signing wallet
+
 On `@mlflow.trace` spans emitted by `VerifiedModel.predict()`:
 
 - `ario.decision_id`, `ario.model_name`, `ario.model_version`, `ario.run_id`
@@ -128,7 +136,7 @@ On `@mlflow.trace` spans emitted by `VerifiedModel.predict()`:
 ario-mlflow verify run <run_id>                  # verify training proof
 ario-mlflow verify model <name>/<version>        # verify registration proof
 ario-mlflow verify trace <trace_id>              # verify an inference proof
-ario-mlflow audit <name>/<version>               # full chain-of-custody check
+ario-mlflow audit <name>/<version>               # full model-lineage audit
 ```
 
 All `verify` commands check the proof locally (re-hash + Ed25519 signature),
@@ -138,16 +146,31 @@ MLflow tags and the HTML report is regenerated.
 
 ## What the attestation levels actually mean
 
-`ario-mlflow verify` reports an ar.io attestation level. It is a statement
-about **the proof blob on the Arweave network**, not about the correctness of
-the ML decision:
+`ario-mlflow verify` reports an ar.io attestation level. The levels describe
+**how much of the proof has been independently verified**, not network-
+confirmation depth:
 
-- **Level 1** — data confirmed in the Arweave mempool.
-- **Level 2** — data bundled into a block and confirmed.
-- **Level 3** — data finalized (one or more block confirmations deep).
+- **Level 1 — Finalized on Arweave.** The proof was found in a confirmed block
+  on the Arweave network at a specific block height and timestamp. On Arweave,
+  a confirmed block means permanent storage.
+- **Level 2 — Content integrity confirmed.** ar.io re-downloaded the raw proof
+  and recomputed its SHA-256 fingerprint. The bytes match the gateway's digest.
+  Cryptographic signature verification still pending.
+- **Level 3 — Cryptographically verified.** The digital signature on the proof
+  has been independently verified against the original signer's public key.
+  This is a mathematical proof, not a trust claim.
 
-Semantic verification (whether this model produced this decision on this input)
-is on the roadmap, not in v0.1.
+**Operator attestation.** When an ar.io gateway operator has configured a
+signing wallet, the verification result is itself signed with that operator's
+wallet and `ario.attested_by` / `ario.attested_at` are written back to your
+MLflow tags. This is an independent statement from a known ar.io operator that
+they personally verified the proof — separate from and additional to the level
+above. The operator signature is standard RSA-PSS SHA-256 over canonical JSON,
+so any third party can verify it with the operator's public key.
+
+These levels and attestations cover integrity and authenticity of the anchored
+record. Semantic verification (whether this model produced this decision on
+this input) is on the roadmap, not in v0.1.
 
 ## Tests
 

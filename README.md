@@ -366,10 +366,13 @@ Decision records are serialized to deterministic canonical JSON (sorted keys, co
 The proof is uploaded to Arweave permanent storage via ar.io Turbo. The upload returns a signed receipt with a millisecond-precision timestamp — an independent attestation of when the proof was submitted. Once confirmed on Arweave, the data is immutable and publicly accessible.
 
 ### ar.io Verify — Independent Attestation
-When verification is requested, ar.io Verify independently fetches the Arweave data, recomputes hashes, checks signatures where available, and produces a signed attestation **of the proof blob on the Arweave network**. Verification levels:
-- **Level 1** — data confirmed in the Arweave mempool
-- **Level 2** — data bundled into a block and confirmed
-- **Level 3** — data finalized (one or more block confirmations deep)
+When verification is requested, ar.io Verify independently fetches the Arweave data, recomputes hashes, and checks signatures. The three levels describe **how much of the proof has been independently verified**, not network-confirmation depth:
+
+- **Level 1 — Finalized on Arweave.** The record was found in a confirmed block on the Arweave network at a specific block height and timestamp. On Arweave, a confirmed block is permanent storage. Content and signature verification still to come.
+- **Level 2 — Content integrity confirmed.** ar.io re-downloaded the raw record and recomputed its SHA-256 fingerprint. The bytes match the gateway's digest, so the content is intact. Cryptographic signature verification still pending.
+- **Level 3 — Cryptographically verified.** The digital signature on the record has been independently verified using the original signer's public key (RSA-PSS / Ed25519 / ECDSA, depending on wallet type). This is a mathematical proof, not a trust claim: the record is authentic and attributable to the stated signer.
+
+**Operator attestation.** When an ar.io gateway operator configures a signing wallet, the verification result is also signed with that operator's wallet. This creates an attestation — an independent statement from a known operator on the ar.io network that they personally verified the record. You'll see "Attested by [operator]" in the Verification section when the operator signing this deployment is attesting. The attestation is itself verifiable: it's standard RSA-PSS SHA-256 over the canonical JSON payload, checkable against the operator's public key.
 
 These levels describe integrity of the anchored record, not the correctness of the underlying ML decision. Semantic verification (whether *this model* produced *this output* on *this input*) is a separate problem and is on the roadmap, not in v0.1.
 

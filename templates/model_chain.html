@@ -203,14 +203,17 @@
                                 <span>Hash Match <span class="{{ 'check' if tv.hash_match else 'cross' }}">{{ 'PASS' if tv.hash_match else 'FAIL' }}</span></span>
                                 {% endif %}
                                 {% if tv.attestation_level %}
-                                <span>Attestation
-                                    <span class="check" title="ar.io Verify Level {{ tv.attestation_level }}">
-                                        {% if tv.attestation_level == 3 %}Permanently finalized
-                                        {% elif tv.attestation_level == 2 %}Confirmed on ar.io
-                                        {% elif tv.attestation_level == 1 %}Accepted into mempool
+                                <span title="ar.io Verify Level {{ tv.attestation_level }}">Attestation
+                                    <span class="check">
+                                        {% if tv.attestation_level == 3 %}Cryptographically verified
+                                        {% elif tv.attestation_level == 2 %}Content integrity confirmed
+                                        {% elif tv.attestation_level == 1 %}Finalized on Arweave
                                         {% else %}Level {{ tv.attestation_level }}{% endif %}
                                     </span>
                                 </span>
+                                {% endif %}
+                                {% if tv.attested_by %}
+                                <span title="An ar.io gateway operator ran the verification above and cryptographically signed the result with their wallet.">Attested by <strong>{{ tv.attested_by }}</strong></span>
                                 {% endif %}
                             {% endif %}
                         </div>
@@ -314,14 +317,17 @@
                                 <span>Hash Match <span class="{{ 'check' if rv.hash_match else 'cross' }}">{{ 'PASS' if rv.hash_match else 'FAIL' }}</span></span>
                                 {% endif %}
                                 {% if rv.attestation_level %}
-                                <span>Attestation
-                                    <span class="check" title="ar.io Verify Level {{ rv.attestation_level }}">
-                                        {% if rv.attestation_level == 3 %}Permanently finalized
-                                        {% elif rv.attestation_level == 2 %}Confirmed on ar.io
-                                        {% elif rv.attestation_level == 1 %}Accepted into mempool
+                                <span title="ar.io Verify Level {{ rv.attestation_level }}">Attestation
+                                    <span class="check">
+                                        {% if rv.attestation_level == 3 %}Cryptographically verified
+                                        {% elif rv.attestation_level == 2 %}Content integrity confirmed
+                                        {% elif rv.attestation_level == 1 %}Finalized on Arweave
                                         {% else %}Level {{ rv.attestation_level }}{% endif %}
                                     </span>
                                 </span>
+                                {% endif %}
+                                {% if rv.attested_by %}
+                                <span title="An ar.io gateway operator ran the verification above and cryptographically signed the result with their wallet.">Attested by <strong>{{ rv.attested_by }}</strong></span>
                                 {% endif %}
                             {% endif %}
                         </div>

@@ -159,17 +159,17 @@
                         {% if v and v.attestation_level %}
                             {% if v.attestation_level == 3 %}
                                 <span>
-                                    <span class="badge badge-green" title="ar.io Verify Level 3 — the proof is finalized deep in the Arweave network, one or more block confirmations past the bundle."><span class="badge-dot"></span> Permanently finalized</span>
+                                    <span class="badge badge-green" title="ar.io Verify Level 3 — digital signature independently verified using the original signer's public key. Mathematical proof, not a trust claim."><span class="badge-dot"></span> Cryptographically verified</span>
                                     <span style="margin-left:0.4rem;font-size:0.72rem;color:var(--muted);">Level 3</span>
                                 </span>
                             {% elif v.attestation_level == 2 %}
                                 <span>
-                                    <span class="badge badge-yellow" title="ar.io Verify Level 2 — the proof bundle is confirmed on the Arweave network but not yet deeply finalized."><span class="badge-dot"></span> Confirmed on ar.io</span>
+                                    <span class="badge badge-yellow" title="ar.io Verify Level 2 — ar.io re-downloaded the raw record and recomputed its SHA-256 fingerprint. Bytes match the gateway's digest. Signature verification still pending."><span class="badge-dot"></span> Content integrity confirmed</span>
                                     <span style="margin-left:0.4rem;font-size:0.72rem;color:var(--muted);">Level 2</span>
                                 </span>
                             {% elif v.attestation_level == 1 %}
                                 <span>
-                                    <span class="badge badge-yellow" title="ar.io Verify Level 1 — the proof has been accepted into the mempool but has not yet been bundled into a block."><span class="badge-dot"></span> Accepted into mempool</span>
+                                    <span class="badge badge-yellow" title="ar.io Verify Level 1 — record found in a confirmed block on Arweave at a specific block height and timestamp. On Arweave, a confirmed block is permanent storage. Content and signature verification still to come."><span class="badge-dot"></span> Finalized on Arweave</span>
                                     <span style="margin-left:0.4rem;font-size:0.72rem;color:var(--muted);">Level 1</span>
                                 </span>
                             {% endif %}
@@ -179,6 +179,19 @@
                             <span class="unchecked">Not checked</span>
                         {% endif %}
                     </div>
+
+                    {% if v and v.attested_by %}
+                    <div class="verify-row" title="An ar.io gateway operator ran the verification above and cryptographically signed the result with their wallet. Independent statement on the ar.io network, separate from the verification itself.">
+                        <span>Attested by</span>
+                        <span>
+                            <strong>{{ v.attested_by }}</strong>
+                            <span style="margin-left:0.35rem;font-size:0.72rem;color:var(--muted);">independent ar.io operator</span>
+                            {% if v.attested_at %}
+                                <div style="font-size:0.72rem;color:var(--muted);margin-top:0.15rem;">{{ v.attested_at[:19] }}Z</div>
+                            {% endif %}
+                        </span>
+                    </div>
+                    {% endif %}
 
                     <div class="verify-row verify-divider">
                         <strong>Overall</strong>

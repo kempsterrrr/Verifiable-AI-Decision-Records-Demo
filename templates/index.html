@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
 {% block title %}Verifiable AI Decision Records{% endblock %}
-{% block nav_predictions %}active{% endblock %}
+{% block nav_decisions %}active{% endblock %}
 {% block lineage_url %}/ui/models/{{ model_info.model_name }}/{{ model_info.model_version }}{% endblock %}
 
 {% block styles %}
@@ -211,7 +211,7 @@
 {% block content %}
         <div class="page-header">
             <div>
-                <h1>Decision Records</h1>
+                <h1>Decisions</h1>
                 <p>Every credit-decision below has a signed proof anchored on Arweave via ar.io — verifiable by any third party, without trusting this app.</p>
             </div>
         </div>

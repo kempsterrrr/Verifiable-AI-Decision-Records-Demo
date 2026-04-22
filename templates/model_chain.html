@@ -351,7 +351,7 @@
                 </div>
             </div>
 
-            <!-- Predictions Node -->
+            <!-- Decisions Node -->
             <div class="chain-node">
                 {% if prediction_count > 0 and verified_count == prediction_count %}
                     <div class="chain-dot chain-dot-green"></div>
@@ -362,7 +362,7 @@
                 {% endif %}
                 <div class="chain-card">
                     <div class="chain-card-header">
-                        <h3>Predictions</h3>
+                        <h3>Decisions</h3>
                         {% if prediction_count > 0 %}
                             <span class="badge badge-yellow"><span class="badge-dot"></span> {{ prediction_count }} records</span>
                         {% else %}
@@ -386,12 +386,12 @@
                             </div>
                         </div>
                         {% else %}
-                        <p style="color: var(--muted); font-size: 0.85rem;">No predictions recorded yet. Use the prediction form on the dashboard to get started.</p>
+                        <p style="color: var(--muted); font-size: 0.85rem;">No decisions recorded yet. Use the prediction form on the Decisions page to get started.</p>
                         {% endif %}
                     </div>
                     {% if prediction_count > 0 %}
                     <div class="chain-card-footer">
-                        <a href="/ui/predictions">View all predictions &rarr;</a>
+                        <a href="/ui/decisions">View all decisions &rarr;</a>
                     </div>
                     {% endif %}
                 </div>

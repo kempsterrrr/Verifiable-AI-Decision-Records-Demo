@@ -55,8 +55,14 @@ def _verify_envelope(app, envelope):
     return result, local
 
 
-@router.get("/ui/predictions", response_class=HTMLResponse)
-def predictions(request: Request):
+@router.get("/ui/predictions")
+def predictions_redirect():
+    """Permanent redirect from the old URL. Bookmarks keep working."""
+    return RedirectResponse("/ui/decisions", status_code=301)
+
+
+@router.get("/ui/decisions", response_class=HTMLResponse)
+def decisions(request: Request):
     app = request.app
     records = app.state.store.list_all()
     model_info = app.state.model_info

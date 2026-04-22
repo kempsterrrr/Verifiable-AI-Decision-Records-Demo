@@ -131,11 +131,11 @@ The landing page (`/`) shows the Models page. Click **Train & Anchor** to train 
 
 ### 2. View the Model Lineage
 
-The model lineage page shows the proof chain forming in real time: Training Run → Model Registration → Predictions. Each node shows its verification status and Arweave transaction ID. Compliance readers can think of this as a cryptographically verifiable audit trail.
+The model lineage page shows the proof chain forming in real time: Training Run → Model Registration → Decisions. Each node shows its verification status and Arweave transaction ID. Compliance readers can think of this as a cryptographically verifiable audit trail.
 
 ### 3. Make a Prediction
 
-Navigate to **Predictions** and submit the form with applicant features (income, credit score, etc.). The response is instant — the detail page shows "Anchoring..." with a pulsing indicator, then auto-updates when the Arweave upload completes (~1-2s).
+Navigate to **Decisions** and submit the form with applicant features (income, credit score, etc.). The response is instant — the detail page shows "Anchoring..." with a pulsing indicator, then auto-updates when the Arweave upload completes (~1-2s).
 
 ### 4. View the Decision Record
 
@@ -163,9 +163,9 @@ Click **Tamper** to modify the local record's output hash, then **Verify with ar
 | Page | URL | Description |
 |---|---|---|
 | Models (landing page) | `/` | Model versions, train new models, activate versions |
-| Predictions | `/ui/predictions` | Prediction records, stats, prediction form, model provenance card, version filter |
+| Decisions | `/ui/decisions` | Decision records, stats, prediction form, model provenance card, version filter (`/ui/predictions` 301-redirects here for bookmarks) |
 | Decision detail | `/ui/decisions/{id}` | Full decision record with three-level verification |
-| Model lineage | `/ui/models/{name}/{version}` | Training → Registration → Predictions chain |
+| Model lineage | `/ui/models/{name}/{version}` | Training → Registration → Decisions chain |
 | Training run detail | `/ui/runs/{run_id}` | Training params, metrics, artifact hashes, verification |
 
 ## API Reference

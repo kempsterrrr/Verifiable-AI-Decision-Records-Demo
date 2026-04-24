@@ -767,7 +767,9 @@
 
         const poll = setInterval(function() {
             attempts += 1;
-            if (attempts > maxAttempts || lastStatus === 'FINALIZED') {
+            // Keep polling until we actually have the Turbo receipt — the
+            // upstream can return FINALIZED before the receipt surfaces.
+            if (attempts > maxAttempts || (lastStatus === 'FINALIZED' && haveReceipt)) {
                 clearInterval(poll);
                 return;
             }

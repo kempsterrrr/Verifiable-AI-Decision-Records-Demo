@@ -128,13 +128,34 @@ def train_and_register_with_params(
         }
 
 
+class _IncompatibleSchemaError(Exception):
+    """Raised when the registered model expects a different feature shape."""
+
+
+def _assert_credit_schema(model) -> None:
+    """Fail fast if the loaded model doesn't match the 5-feature credit schema.
+
+    Protects against a stale Iris-era model (or any other shape) being
+    registered under ``model_name``: the app would otherwise boot fine
+    and crash on the first prediction with a shape-mismatch.
+    """
+    expected = len(FEATURE_NAMES)
+    actual = getattr(model, "n_features_in_", None)
+    if actual is not None and actual != expected:
+        raise _IncompatibleSchemaError(
+            f"registered model expects {actual} features; "
+            f"credit-scorer needs {expected} ({FEATURE_NAMES})"
+        )
+
+
 def load_model(tracking_uri: str, model_name: str) -> dict:
-    """Load the latest model from MLflow. Auto-trains if none found."""
+    """Load the latest model from MLflow. Auto-trains if none found or schema stale."""
     mlflow.set_tracking_uri(tracking_uri)
 
     model_uri = f"models:/{model_name}/latest"
     try:
         model = mlflow.sklearn.load_model(model_uri)
+        _assert_credit_schema(model)
         client = mlflow.tracking.MlflowClient()
         versions = client.search_model_versions(f"name='{model_name}'")
         latest = max(versions, key=lambda v: int(v.version))
@@ -146,9 +167,13 @@ def load_model(tracking_uri: str, model_name: str) -> dict:
             "artifact_uri": f"models:/{model_name}/{latest.version}",
         }
     except Exception as e:
-        logger.info(f"No model found ({e}), training new model...")
+        if isinstance(e, _IncompatibleSchemaError):
+            logger.warning(f"Incompatible registered model for {model_name}: {e}. Re-training.")
+        else:
+            logger.info(f"No model found ({e}), training new model...")
         info = train_and_register(tracking_uri, model_name)
         model = mlflow.sklearn.load_model(model_uri)
+        _assert_credit_schema(model)
         return {
             "model": model,
             "model_name": info["model_name"],

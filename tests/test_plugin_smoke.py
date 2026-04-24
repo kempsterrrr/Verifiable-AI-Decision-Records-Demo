@@ -814,8 +814,6 @@ def test_chain_integrity_reports_content_tamper_even_when_link_is_intact():
     so the chain links still resolve but the content no longer hashes to
     its committed digest.
     """
-    import sys, os
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     from app.main import compute_chain_integrity
 
     r1 = _make_signed_record({"decision_id": "a", "output_hash": "h-a"}, "GENESIS")
@@ -849,8 +847,6 @@ def test_chain_integrity_reports_content_tamper_even_when_link_is_intact():
 
 
 def test_chain_integrity_empty_store_is_intact():
-    import sys, os
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     from app.main import compute_chain_integrity
 
     result = compute_chain_integrity([])

@@ -228,7 +228,7 @@
                 {% set ns.failed = ns.failed + 1 %}
             {% elif v and v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
                 {% set ns.verified = ns.verified + 1 %}
-            {% elif v and not (v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match) %}
+            {% elif v and (not v.hash_valid or not v.signature_valid or (v.permanent_copy_found and not v.hash_match)) %}
                 {% set ns.failed = ns.failed + 1 %}
             {% elif env.arweave_tx_id %}
                 {% set ns.anchored = ns.anchored + 1 %}
@@ -374,7 +374,7 @@
                     {% set row_status = 'failed' %}
                 {% elif v and v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
                     {% set row_status = 'verified' %}
-                {% elif v and not (v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match) %}
+                {% elif v and (not v.hash_valid or not v.signature_valid or (v.permanent_copy_found and not v.hash_match)) %}
                     {% set row_status = 'failed' %}
                 {% elif env.arweave_tx_id %}
                     {% set row_status = 'anchored' %}

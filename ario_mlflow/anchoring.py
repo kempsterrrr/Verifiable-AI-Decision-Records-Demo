@@ -167,11 +167,11 @@ def anchor(
         if len(logged_paths) == 1:
             resolved_path = logged_paths[0]
         elif len(logged_paths) > 1:
-            logger.warning(
-                f"Run {run_id} logged {len(logged_paths)} models: {logged_paths}. "
-                f"Hashing first; pass artifact_path explicitly to choose another."
+            raise ValueError(
+                f"Run {run_id} logged multiple model artifact paths "
+                f"({logged_paths}); pass artifact_path explicitly so the "
+                f"anchored hash matches the intended model."
             )
-            resolved_path = logged_paths[0]
         else:
             resolved_path = "model"
 

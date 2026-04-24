@@ -323,7 +323,7 @@ class ArioMlflowClient(MlflowClient):
             }
 
             proof = self._proof_engine.create_proof(record, registration_tx or "GENESIS")
-            result = self._anchor.upload_proof(proof)
+            result = self._anchor.upload_proof(proof) if self._anchor.enabled else None
 
             if result:
                 self.set_model_version_tag(model_name, version, "ario.promotion_tx", result["tx_id"])
@@ -331,6 +331,15 @@ class ArioMlflowClient(MlflowClient):
                 self._record_status(
                     "promotion", model_name, version,
                     status="anchored", tx_id=result["tx_id"],
+                )
+            elif not self._anchor.enabled:
+                logger.info(
+                    f"Promotion {model_name}/v{version} ({from_stage}->{to_stage}) "
+                    "signed (anchoring disabled)"
+                )
+                self._record_status(
+                    "promotion", model_name, version,
+                    status="signed",
                 )
             else:
                 self._record_status(

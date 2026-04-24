@@ -356,12 +356,26 @@ class VerifiedModel:
             else:
                 result.proof_status = "failed"
                 result.anchor_error = "upload returned no result"
+                if trace_id:
+                    try:
+                        mlflow.set_trace_tag(trace_id, "ario.proof_status", "failed")
+                    except Exception as trace_error:
+                        logger.debug(
+                            f"Could not update trace {trace_id} with failed status: {trace_error}"
+                        )
                 logger.error(
                     f"Prediction anchoring failed for {result.decision_id}: upload returned no result"
                 )
         except Exception as e:
             result.proof_status = "failed"
             result.anchor_error = str(e)
+            if trace_id:
+                try:
+                    mlflow.set_trace_tag(trace_id, "ario.proof_status", "failed")
+                except Exception as trace_error:
+                    logger.debug(
+                        f"Could not update trace {trace_id} with failed status: {trace_error}"
+                    )
             logger.error(f"Prediction anchoring failed for {result.decision_id}: {e}")
         finally:
             # Always release wait_for_anchor() callers, whatever the outcome.

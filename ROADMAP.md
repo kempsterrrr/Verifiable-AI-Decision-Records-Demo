@@ -4,7 +4,7 @@ This document tracks what we're building next and what we've explicitly parked. 
 
 ## Where we are today
 
-The `ario-mlflow` plugin and the Railway-hosted demo are an **early-stage proof of a verifiable-provenance pipeline** — not a production compliance product. Core primitives (hash, sign, anchor to Arweave via ar.io, verify) are in place and end-to-end working. The plugin installs, the demo runs, all 31 smoke tests pass.
+The `ario-mlflow` plugin and the Railway-hosted demo are an **early-stage proof of a verifiable-provenance pipeline** — not a production compliance product. Core primitives (hash, sign, anchor to Arweave via ar.io, verify) are in place and end-to-end working. The plugin installs, the demo runs, all 33 smoke tests pass.
 
 The goal of the current phase was *not* to build more features. It was to:
 

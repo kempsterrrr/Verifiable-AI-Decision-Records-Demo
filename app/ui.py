@@ -76,7 +76,13 @@ def decisions(request: Request):
     training_status = "none"
     if training_env:
         tv = training_env.get("last_verification")
-        if tv and tv.get("hash_valid") and tv.get("permanent_copy_found") and tv.get("hash_match"):
+        if (
+            tv
+            and tv.get("hash_valid")
+            and tv.get("signature_valid")
+            and tv.get("permanent_copy_found")
+            and tv.get("hash_match")
+        ):
             training_status = "verified"
         elif training_env.get("arweave_tx_id"):
             training_status = "anchored"
@@ -86,7 +92,13 @@ def decisions(request: Request):
     registration_status = "none"
     if registration_env:
         rv = registration_env.get("last_verification")
-        if rv and rv.get("hash_valid") and rv.get("permanent_copy_found") and rv.get("hash_match"):
+        if (
+            rv
+            and rv.get("hash_valid")
+            and rv.get("signature_valid")
+            and rv.get("permanent_copy_found")
+            and rv.get("hash_match")
+        ):
             registration_status = "verified"
         elif registration_env.get("arweave_tx_id"):
             registration_status = "anchored"
@@ -138,7 +150,13 @@ def model_registry(request: Request):
             if not env:
                 return "none"
             v = env.get("last_verification")
-            if v and v.get("hash_valid") and v.get("permanent_copy_found") and v.get("hash_match"):
+            if (
+                v
+                and v.get("hash_valid")
+                and v.get("signature_valid")
+                and v.get("permanent_copy_found")
+                and v.get("hash_match")
+            ):
                 return "verified"
             if env.get("arweave_tx_id"):
                 return "anchored"
@@ -343,8 +361,11 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
     anchored_count = sum(1 for p in model_predictions if p.get("arweave_tx_id"))
     verified_count = sum(
         1 for p in model_predictions
-        if p.get("last_verification", {}).get("hash_valid")
-        and p.get("last_verification", {}).get("permanent_copy_found")
+        if (lv := p.get("last_verification"))
+        and lv.get("hash_valid")
+        and lv.get("signature_valid")
+        and lv.get("permanent_copy_found")
+        and lv.get("hash_match")
     )
 
     # Turbo status for each

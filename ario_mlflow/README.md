@@ -84,7 +84,9 @@ to execute user code):
 from ario_mlflow import VerifiedModel
 
 vm = VerifiedModel("models:/credit-scorer/1")  # raises IntegrityError on hash mismatch
-result = vm.predict([45000, 0.35, 720, 0.22])
+# Features, in order: annual_income, credit_utilization, debt_to_income_ratio,
+# months_employed, credit_score.
+result = vm.predict([78000, 0.18, 0.22, 72, 745])
 print(result.decision_id, result.proof_status)  # "anchoring" → "anchored"
 
 # Wait for the background anchor if you want the TX synchronously:
@@ -178,7 +180,7 @@ this input) is on the roadmap, not in v0.1.
 python -m pytest tests/test_plugin_smoke.py
 ```
 
-31 smoke tests, no network required.
+33 smoke tests, no network required.
 
 ## Related docs
 

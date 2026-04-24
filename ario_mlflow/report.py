@@ -3,6 +3,8 @@
 import html
 import os
 
+from .arweave import WALLET_MODE_EPHEMERAL, WALLET_MODE_PERSISTENT
+
 
 def generate_verification_html(
     proof: dict,
@@ -67,7 +69,7 @@ def generate_verification_html(
     # wallet, so readers can tell at a glance that this is a demo-default
     # signer (not a caller-configured production wallet).
     wallet_notice = ""
-    if wallet_mode == "persistent":
+    if wallet_mode == WALLET_MODE_PERSISTENT:
         wallet_notice = (
             '<div style="background:#fef9c3;border:1px solid #fde047;border-radius:6px;'
             'padding:10px 14px;margin-bottom:16px;font-size:13px;color:#713f12;">'
@@ -75,7 +77,7 @@ def generate_verification_html(
             "(<code>~/.ario-mlflow/wallet.json</code>). Set "
             "<code>ARIO_MLFLOW_ARWEAVE_WALLET</code> to sign with your own wallet.</div>"
         )
-    elif wallet_mode == "ephemeral":
+    elif wallet_mode == WALLET_MODE_EPHEMERAL:
         wallet_notice = (
             '<div style="background:#fee2e2;border:1px solid #fecaca;border-radius:6px;'
             'padding:10px 14px;margin-bottom:16px;font-size:13px;color:#7f1d1d;">'

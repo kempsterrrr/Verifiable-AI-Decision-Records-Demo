@@ -404,7 +404,7 @@
                     </div>
                     <div style="margin-top:0.75rem;padding:0.6rem 0.75rem;background:var(--surface);border-radius:6px;font-size:0.78rem;color:var(--muted);line-height:1.5;">
                         To see this in the native MLflow UI, run locally:<br>
-                        <code style="display:inline-block;margin-top:0.3rem;font-size:0.75rem;">mlflow ui --backend-store-uri {{ mlflow_tracking_dir }}</code>
+                        <code style="display:inline-block;margin-top:0.3rem;font-size:0.75rem;">mlflow ui --backend-store-uri {{ mlflow_tracking_uri }}</code>
                     </div>
                     {% else %}
                     <div style="color: var(--muted); font-size: 0.85rem;">No MLflow tags found on this run (tracking store unreachable or run removed).</div>

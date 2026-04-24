@@ -163,7 +163,10 @@ def anchor(
     # caller logged under a different name.
     resolved_path = artifact_path
     if resolved_path is None:
-        logged_paths = _logged_model_paths(run_data)
+        # Dedupe while preserving order — a run can legitimately log the
+        # same artifact path twice (e.g. re-log overwrites), which is
+        # still unambiguous and shouldn't trip the fail-fast guard.
+        logged_paths = list(dict.fromkeys(_logged_model_paths(run_data)))
         if len(logged_paths) == 1:
             resolved_path = logged_paths[0]
         elif len(logged_paths) > 1:
@@ -249,7 +252,7 @@ def anchor(
         mlflow.log_artifacts(ario_dir, "ario")
 
     logger.info(
-        f"Run {run_id} anchored: status={tags['ario.verify_status']}, "
+        f"Run {run_id} anchor complete: status={tags['ario.verify_status']}, "
         f"artifacts={artifact_status} (path={resolved_path!r})"
     )
 

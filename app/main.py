@@ -219,14 +219,19 @@ def _run_prediction(app_state, features: list[float]) -> tuple[dict, dict]:
 
 # --- API Endpoints ---
 
+FEATURE_DEFAULTS: dict[str, float] = {
+    "annual_income": 78000,
+    "credit_utilization": 0.18,
+    "debt_to_income_ratio": 0.22,
+    "months_employed": 72,
+    "credit_score": 745,
+}
+
+
 @app.post("/predict")
 def api_predict(request: Request, body: dict, background_tasks: BackgroundTasks):
     features = [
-        float(body.get("annual_income", 78000)),
-        float(body.get("credit_utilization", 0.18)),
-        float(body.get("debt_to_income_ratio", 0.22)),
-        float(body.get("months_employed", 72)),
-        float(body.get("credit_score", 745)),
+        float(body.get(name, FEATURE_DEFAULTS[name])) for name in FEATURE_NAMES
     ]
     envelope, proof = _run_prediction(request.app.state, features)
     decision_id = envelope["record"]["decision_id"]
@@ -245,19 +250,20 @@ def api_predict(request: Request, body: dict, background_tasks: BackgroundTasks)
 def form_predict(
     request: Request,
     background_tasks: BackgroundTasks,
-    annual_income: float = Form(78000),
-    credit_utilization: float = Form(0.18),
-    debt_to_income_ratio: float = Form(0.22),
-    months_employed: float = Form(72),
-    credit_score: float = Form(745),
+    annual_income: float = Form(FEATURE_DEFAULTS["annual_income"]),
+    credit_utilization: float = Form(FEATURE_DEFAULTS["credit_utilization"]),
+    debt_to_income_ratio: float = Form(FEATURE_DEFAULTS["debt_to_income_ratio"]),
+    months_employed: float = Form(FEATURE_DEFAULTS["months_employed"]),
+    credit_score: float = Form(FEATURE_DEFAULTS["credit_score"]),
 ):
-    features = [
-        annual_income,
-        credit_utilization,
-        debt_to_income_ratio,
-        months_employed,
-        credit_score,
-    ]
+    form_values = {
+        "annual_income": annual_income,
+        "credit_utilization": credit_utilization,
+        "debt_to_income_ratio": debt_to_income_ratio,
+        "months_employed": months_employed,
+        "credit_score": credit_score,
+    }
+    features = [float(form_values[name]) for name in FEATURE_NAMES]
     envelope, proof = _run_prediction(request.app.state, features)
     decision_id = envelope["record"]["decision_id"]
     if request.app.state.anchor.enabled:
@@ -349,7 +355,7 @@ def activate_model(request: Request, model_name: str, version: str):
 
     model_uri = f"models:/{model_name}/{version}"
     try:
-        model = mlflow.pyfunc.load_model(model_uri)
+        model = mlflow.sklearn.load_model(model_uri)
     except Exception as e:
         return JSONResponse({"error": f"Could not load model: {e}"}, status_code=404)
 

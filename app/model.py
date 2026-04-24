@@ -134,7 +134,7 @@ def load_model(tracking_uri: str, model_name: str) -> dict:
 
     model_uri = f"models:/{model_name}/latest"
     try:
-        model = mlflow.pyfunc.load_model(model_uri)
+        model = mlflow.sklearn.load_model(model_uri)
         client = mlflow.tracking.MlflowClient()
         versions = client.search_model_versions(f"name='{model_name}'")
         latest = max(versions, key=lambda v: int(v.version))
@@ -148,7 +148,7 @@ def load_model(tracking_uri: str, model_name: str) -> dict:
     except Exception as e:
         logger.info(f"No model found ({e}), training new model...")
         info = train_and_register(tracking_uri, model_name)
-        model = mlflow.pyfunc.load_model(model_uri)
+        model = mlflow.sklearn.load_model(model_uri)
         return {
             "model": model,
             "model_name": info["model_name"],
@@ -162,23 +162,17 @@ def predict(model, features: list[float]) -> dict:
     """Run prediction and return structured result.
 
     ``features`` is an ordered list matching :data:`FEATURE_NAMES`.
+    Expects ``model`` to be the native scikit-learn estimator loaded via
+    ``mlflow.sklearn.load_model``, which exposes ``predict`` and
+    ``predict_proba`` directly — no pyfunc internal digging required.
     """
     input_array = np.array([features])
-
-    # Dig through to the underlying sklearn pipeline for predict_proba —
-    # pyfunc's .predict only returns the chosen class, which makes for a
-    # boring demo. The try/except tolerates older MLflow layouts.
-    sklearn_model = None
-    try:
-        sklearn_model = model._model_impl.sklearn_model
-    except AttributeError:
-        pass
 
     pred = model.predict(input_array)
     class_idx = int(pred[0]) if isinstance(pred[0], (int, np.integer)) else int(np.argmax(pred[0]))
 
-    if sklearn_model and hasattr(sklearn_model, "predict_proba"):
-        probs = sklearn_model.predict_proba(input_array)[0]
+    if hasattr(model, "predict_proba"):
+        probs = model.predict_proba(input_array)[0]
         probabilities = {
             CLASS_NAMES[i]: round(float(p), 6) for i, p in enumerate(probs)
         }

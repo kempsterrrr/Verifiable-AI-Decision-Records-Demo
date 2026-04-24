@@ -88,9 +88,7 @@
                 <div class="page-id">{{ envelope.record.run_id }}</div>
             </div>
             <div class="page-actions">
-                {% if envelope.arweave_tx_id %}
-                <a href="/ui/runs/{{ envelope.record.run_id }}?verify=true" class="btn btn-primary btn-sm" data-loading-text="Verifying...">Verify with ar.io</a>
-                {% endif %}
+                <a id="verify-btn" href="/ui/runs/{{ envelope.record.run_id }}?verify=true" class="btn btn-primary btn-sm" data-loading-text="Verifying..." {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>Verify with ar.io</a>
             </div>
         </div>
 
@@ -554,6 +552,9 @@
 
             receipt.append(title, subtitle, receiptKv);
             body.appendChild(receipt);
+
+            const verifyBtn = document.getElementById("verify-btn");
+            if (verifyBtn) verifyBtn.style.display = "";
         }
 
         function updateStatusBadge(turboStatus) {

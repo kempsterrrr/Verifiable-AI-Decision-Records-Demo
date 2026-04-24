@@ -1,3 +1,4 @@
+import logging
 import os
 from datetime import datetime, timezone
 
@@ -7,6 +8,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from ario_mlflow.proof import canonical_json, hash_data
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
@@ -296,7 +299,12 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
         client = _mlflow.tracking.MlflowClient()
         run = client.get_run(run_id)
         mlflow_tags = dict(run.data.tags)
-    except Exception:
+    except Exception as e:
+        # Log and degrade to an empty tag set so the page still renders,
+        # but don't let a tracking-store outage masquerade as "tagless run".
+        logger.warning(
+            "MLflow live-tag lookup failed for run %s: %s", run_id, e
+        )
         mlflow_tags = {}
 
     ario_tags = {k: v for k, v in sorted(mlflow_tags.items()) if k.startswith("ario.")}

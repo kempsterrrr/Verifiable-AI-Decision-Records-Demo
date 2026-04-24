@@ -606,26 +606,111 @@
             };
         }
 
+        // All render functions below build DOM via createElement + textContent /
+        // setAttribute rather than innerHTML concatenation. External strings
+        // (arweave_url, arweave_tx_id, receipt.*) never reach the HTML parser.
+
+        function safeHttpUrl(url) {
+            if (!url) return null;
+            try {
+                const u = new URL(url);
+                return (u.protocol === "http:" || u.protocol === "https:") ? u.href : null;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function makeStatusBadge(turboStatus) {
+            const s = statusCopy((turboStatus || {}).status);
+            const badge = document.createElement("span");
+            badge.className = "badge " + s.cls;
+            badge.title = s.title;
+            const dot = document.createElement("span");
+            dot.className = s.dot;
+            badge.appendChild(dot);
+            badge.appendChild(document.createTextNode(" " + s.text));
+            return badge;
+        }
+
         function renderAnchoringTop(data) {
             // First render after TX arrives. Includes a placeholder status
             // badge that later polls will overwrite via updateStatusBadge.
             const body = document.getElementById("anchoring-body");
             if (!body) return;
-            const s = statusCopy((data.turbo_status || {}).status);
-            body.innerHTML =
-                '<div class="kv">' +
-                '<div class="kv-row"><span class="kv-key">Transaction</span>' +
-                '<span class="kv-value"><a href="' + data.arweave_url + '" target="_blank"><span class="mono mono-sm">' + data.arweave_tx_id + '</span></a></span></div>' +
-                '<div class="kv-row"><span class="kv-key">Status</span>' +
-                '<span class="kv-value" id="turbo-status-badge">' +
-                '<span class="badge ' + s.cls + '" title="' + s.title + '"><span class="' + s.dot + '"></span> ' + s.text + '</span>' +
-                '</span></div>' +
-                '</div>' +
-                '<div id="anchoring-receipt" style="margin-top:1rem;padding-top:0.9rem;border-top:1px solid var(--border);">' +
-                '<div style="font-size:0.72rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.1rem;">Upload receipt</div>' +
-                '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.6rem;">Independent timestamp witness — ar.io’s signature of what it received, when.</div>' +
-                '<div class="kv" id="receipt-kv"><div class="kv-row" id="receipt-placeholder" style="color:var(--muted);font-size:0.82rem;">Waiting for receipt — will populate automatically.</div></div>' +
-                '</div>';
+            body.replaceChildren();
+
+            // Transaction row — anchor tag with validated URL + text-only TX id.
+            const safeUrl = safeHttpUrl(data.arweave_url);
+            const txSpan = document.createElement("span");
+            txSpan.className = "mono mono-sm";
+            txSpan.textContent = data.arweave_tx_id || "";
+            let txValue;
+            if (safeUrl) {
+                const a = document.createElement("a");
+                a.setAttribute("href", safeUrl);
+                a.setAttribute("target", "_blank");
+                a.setAttribute("rel", "noopener noreferrer");
+                a.appendChild(txSpan);
+                txValue = a;
+            } else {
+                txValue = txSpan;
+            }
+
+            const kv = document.createElement("div");
+            kv.className = "kv";
+
+            const txRow = document.createElement("div");
+            txRow.className = "kv-row";
+            const txKey = document.createElement("span");
+            txKey.className = "kv-key";
+            txKey.textContent = "Transaction";
+            const txValueWrap = document.createElement("span");
+            txValueWrap.className = "kv-value";
+            txValueWrap.appendChild(txValue);
+            txRow.append(txKey, txValueWrap);
+            kv.appendChild(txRow);
+
+            const statusRow = document.createElement("div");
+            statusRow.className = "kv-row";
+            const statusKey = document.createElement("span");
+            statusKey.className = "kv-key";
+            statusKey.textContent = "Status";
+            const statusValue = document.createElement("span");
+            statusValue.className = "kv-value";
+            statusValue.id = "turbo-status-badge";
+            statusValue.appendChild(makeStatusBadge(data.turbo_status));
+            statusRow.append(statusKey, statusValue);
+            kv.appendChild(statusRow);
+
+            body.appendChild(kv);
+
+            // Receipt section — static skeleton; renderReceipt() fills rows.
+            const receipt = document.createElement("div");
+            receipt.id = "anchoring-receipt";
+            receipt.style.cssText = "margin-top:1rem;padding-top:0.9rem;border-top:1px solid var(--border);";
+
+            const title = document.createElement("div");
+            title.style.cssText = "font-size:0.72rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.1rem;";
+            title.textContent = "Upload receipt";
+
+            const subtitle = document.createElement("div");
+            subtitle.style.cssText = "font-size:0.75rem;color:var(--muted);margin-bottom:0.6rem;";
+            subtitle.textContent = "Independent timestamp witness — ar.io’s signature of what it received, when.";
+
+            const receiptKv = document.createElement("div");
+            receiptKv.className = "kv";
+            receiptKv.id = "receipt-kv";
+
+            const waiting = document.createElement("div");
+            waiting.className = "kv-row";
+            waiting.id = "receipt-placeholder";
+            waiting.style.cssText = "color:var(--muted);font-size:0.82rem;";
+            waiting.textContent = "Waiting for receipt — will populate automatically.";
+            receiptKv.appendChild(waiting);
+
+            receipt.append(title, subtitle, receiptKv);
+            body.appendChild(receipt);
+
             const verifyBtn = document.getElementById("verify-btn");
             if (verifyBtn) verifyBtn.style.display = "";
         }
@@ -633,36 +718,51 @@
         function updateStatusBadge(turboStatus) {
             const el = document.getElementById("turbo-status-badge");
             if (!el) return;
-            const s = statusCopy((turboStatus || {}).status);
-            el.innerHTML = '<span class="badge ' + s.cls + '" title="' + s.title + '"><span class="' + s.dot + '"></span> ' + s.text + '</span>';
+            el.replaceChildren(makeStatusBadge(turboStatus));
+        }
+
+        function makeReceiptRow(keyText, valueText, extraClass) {
+            const row = document.createElement("div");
+            row.className = "kv-row";
+            const key = document.createElement("span");
+            key.className = "kv-key";
+            key.textContent = keyText;
+            const value = document.createElement("span");
+            value.className = "kv-value" + (extraClass ? " " + extraClass : "");
+            value.textContent = valueText;
+            row.append(key, value);
+            return row;
         }
 
         function renderReceipt(receipt) {
             const kv = document.getElementById("receipt-kv");
             if (!kv) return;
-            const rows = [];
+            kv.replaceChildren();
+
             if (receipt.timestamp != null) {
-                rows.push('<div class="kv-row"><span class="kv-key">Timestamp</span>' +
-                    '<span class="kv-value mono">' + receipt.timestamp + ' ms</span></div>');
+                kv.appendChild(makeReceiptRow("Timestamp", receipt.timestamp + " ms", "mono"));
             }
             if (receipt.owner) {
-                rows.push('<div class="kv-row"><span class="kv-key">Owner</span>' +
-                    '<span class="kv-value mono mono-sm">' + receipt.owner + '</span></div>');
+                kv.appendChild(makeReceiptRow("Owner", String(receipt.owner), "mono mono-sm"));
             }
             if (receipt.version) {
-                rows.push('<div class="kv-row"><span class="kv-key">Version</span>' +
-                    '<span class="kv-value">' + receipt.version + '</span></div>');
+                kv.appendChild(makeReceiptRow("Version", String(receipt.version)));
             }
             if (receipt.deadlineHeight) {
-                rows.push('<div class="kv-row"><span class="kv-key">Deadline</span>' +
-                    '<span class="kv-value mono">' + receipt.deadlineHeight + '</span></div>');
+                kv.appendChild(makeReceiptRow("Deadline", String(receipt.deadlineHeight), "mono"));
             }
             if (receipt.signature) {
-                const sig = String(receipt.signature);
-                rows.push('<div class="kv-row"><span class="kv-key">Signature</span>' +
-                    '<span class="kv-value mono mono-sm">' + sig.substring(0, 64) + '...</span></div>');
+                const sig = String(receipt.signature).substring(0, 64) + "...";
+                kv.appendChild(makeReceiptRow("Signature", sig, "mono mono-sm"));
             }
-            kv.innerHTML = rows.join('') || '<div class="kv-row" style="color:var(--muted);font-size:0.82rem;">Receipt returned no fields.</div>';
+
+            if (!kv.firstChild) {
+                const empty = document.createElement("div");
+                empty.className = "kv-row";
+                empty.style.cssText = "color:var(--muted);font-size:0.82rem;";
+                empty.textContent = "Receipt returned no fields.";
+                kv.appendChild(empty);
+            }
         }
 
         const poll = setInterval(function() {

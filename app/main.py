@@ -345,7 +345,7 @@ def activate_model(request: Request, model_name: str, version: str):
     """Switch the active model to a specific version."""
     import mlflow
     settings = request.app.state.settings
-    mlflow.set_tracking_uri(os.path.abspath(settings.mlflow_tracking_uri))
+    mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
 
     model_uri = f"models:/{model_name}/{version}"
     try:

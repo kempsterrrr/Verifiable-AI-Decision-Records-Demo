@@ -77,7 +77,7 @@ def train_and_register_with_params(
     random_state: int = 42,
 ) -> dict:
     """Train the credit classifier with configurable params and register it."""
-    mlflow.set_tracking_uri(os.path.abspath(tracking_uri))
+    mlflow.set_tracking_uri(tracking_uri)
 
     X, y = _generate_credit_data(n_samples=800, random_state=random_state)
     X_train, X_test, y_train, y_test = train_test_split(
@@ -130,7 +130,7 @@ def train_and_register_with_params(
 
 def load_model(tracking_uri: str, model_name: str) -> dict:
     """Load the latest model from MLflow. Auto-trains if none found."""
-    mlflow.set_tracking_uri(os.path.abspath(tracking_uri))
+    mlflow.set_tracking_uri(tracking_uri)
 
     model_uri = f"models:/{model_name}/latest"
     try:

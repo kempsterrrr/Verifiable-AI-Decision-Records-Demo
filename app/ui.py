@@ -129,7 +129,7 @@ def model_registry(request: Request):
     model_name = settings.mlflow_model_name
     active_version = app.state.model_info["model_version"]
 
-    mlflow.set_tracking_uri(os.path.abspath(settings.mlflow_tracking_uri))
+    mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
     client = mlflow.tracking.MlflowClient()
 
     versions = client.search_model_versions(f"name='{model_name}'")
@@ -292,7 +292,7 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
     try:
         import mlflow as _mlflow
         settings = app.state.settings
-        _mlflow.set_tracking_uri(os.path.abspath(settings.mlflow_tracking_uri))
+        _mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
         client = _mlflow.tracking.MlflowClient()
         run = client.get_run(run_id)
         mlflow_tags = dict(run.data.tags)

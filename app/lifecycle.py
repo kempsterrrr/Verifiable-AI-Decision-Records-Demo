@@ -13,7 +13,7 @@ from ario_mlflow.proof import canonical_json, hash_data
 
 def _artifact_checksums(tracking_uri: str, run_id: str) -> dict[str, str]:
     """Compute SHA-256 checksums of all artifacts in an MLflow run."""
-    mlflow.set_tracking_uri(os.path.abspath(tracking_uri))
+    mlflow.set_tracking_uri(tracking_uri)
     client = mlflow.tracking.MlflowClient()
     local_path = client.download_artifacts(run_id, "")
     checksums = {}
@@ -33,7 +33,7 @@ def build_training_record(
     model_version: str,
 ) -> dict:
     """Build a proof record for a completed training run."""
-    mlflow.set_tracking_uri(os.path.abspath(tracking_uri))
+    mlflow.set_tracking_uri(tracking_uri)
     client = mlflow.tracking.MlflowClient()
     run = client.get_run(run_id)
 
@@ -64,7 +64,7 @@ def build_registration_record(
     training_tx: str | None = None,
 ) -> dict:
     """Build a proof record for a model registration event."""
-    mlflow.set_tracking_uri(os.path.abspath(tracking_uri))
+    mlflow.set_tracking_uri(tracking_uri)
     client = mlflow.tracking.MlflowClient()
 
     versions = client.search_model_versions(f"name='{model_name}'")

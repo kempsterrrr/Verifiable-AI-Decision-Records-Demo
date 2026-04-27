@@ -358,3 +358,78 @@ class ArioMlflowClient(MlflowClient):
         finally:
             if done_event is not None:
                 done_event.set()
+
+    def lifecycle_for_model(self, name: str, version: str | None = None) -> list[dict]:
+        """Reconstruct the verifiable lifecycle chain for a model from MLflow tags.
+
+        Returns events in oldest-first order. Each event is a dict with keys:
+
+        - ``event_type``: one of ``"dataset_anchored"``, ``"training_complete"``,
+          ``"model_registered"``, ``"stage_transition"``.
+        - ``tx_id``: the Arweave tx for this event (None if not anchored).
+        - ``previous_tx``: the tx of the prior link, for chain verification.
+        - ``run_id``: source MLflow run id (for training and earlier links).
+        - ``model_version``: model version (for registration and later links).
+
+        Args:
+            name: Registered model name.
+            version: Specific model version to walk. When ``None``, walks the
+                latest version.
+        """
+        if version is None:
+            versions = self.search_model_versions(f"name='{name}'")
+            if not versions:
+                return []
+            version = max(versions, key=lambda v: int(v.version)).version
+
+        mv = self.get_model_version(name, str(version))
+        events: list[dict] = []
+
+        run_id = mv.run_id
+        run_tags: dict[str, str] = {}
+        if run_id:
+            try:
+                run = self.get_run(run_id)
+                run_tags = dict(run.data.tags)
+            except Exception as e:
+                logger.warning(f"Could not load source run {run_id} for {name}/v{version}: {e}")
+
+        dataset_tx = run_tags.get("ario.dataset_tx")
+        training_tx = run_tags.get("ario.training_tx")
+        registration_tx = mv.tags.get("ario.registration_tx") if mv.tags else None
+        promotion_tx = mv.tags.get("ario.promotion_tx") if mv.tags else None
+
+        if dataset_tx:
+            events.append({
+                "event_type": "dataset_anchored",
+                "tx_id": dataset_tx,
+                "previous_tx": None,
+                "run_id": run_id,
+                "model_version": None,
+            })
+        if training_tx:
+            events.append({
+                "event_type": "training_complete",
+                "tx_id": training_tx,
+                "previous_tx": dataset_tx,
+                "run_id": run_id,
+                "model_version": None,
+            })
+        if registration_tx:
+            events.append({
+                "event_type": "model_registered",
+                "tx_id": registration_tx,
+                "previous_tx": training_tx,
+                "run_id": run_id,
+                "model_version": str(version),
+            })
+        if promotion_tx:
+            events.append({
+                "event_type": "stage_transition",
+                "tx_id": promotion_tx,
+                "previous_tx": registration_tx,
+                "run_id": run_id,
+                "model_version": str(version),
+            })
+
+        return events

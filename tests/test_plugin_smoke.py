@@ -1067,3 +1067,64 @@ def test_verified_model_falls_back_to_genesis_when_no_chain_tags(monkeypatch, tm
 
     vm = VerifiedModel("models:/orphan/1", proof_engine=pe, anchor=arweave)
     assert vm._last_hash == "GENESIS"
+
+
+# --- lifecycle_for_model (Task 4) ------------------------------------------
+
+
+def test_lifecycle_for_model_returns_chained_events(monkeypatch, tmp_path):
+    """Returns chain in oldest-first order with tx pointers."""
+    import mlflow
+    from ario_mlflow.client import ArioMlflowClient
+
+    monkeypatch.delenv("ARIO_MLFLOW_SIGNING_KEY", raising=False)
+    mlflow.set_tracking_uri(f"file://{tmp_path}/mlruns")
+    mlflow.set_experiment("test")
+
+    with mlflow.start_run() as run:
+        mlflow.set_tag("ario.dataset_tx", "DATASET_TX")
+        mlflow.set_tag("ario.training_tx", "TRAINING_TX")
+        mlflow.set_tag("ario.artifact_hash", "ARTIFACT_HASH")
+        run_id = run.info.run_id
+
+    client = ArioMlflowClient(tracking_uri=f"file://{tmp_path}/mlruns")
+
+    # Defuse the background anchor thread so the test stays offline.
+    monkeypatch.setattr(
+        "ario_mlflow.client.ArioMlflowClient._anchor_registration",
+        lambda self, *a, **kw: kw.get("done_event").set() if kw.get("done_event") else None,
+    )
+
+    # Register the model name first (required before creating a version).
+    client.create_registered_model("credit")
+
+    # Register a model version with anchored tags. We bypass the auto-anchor
+    # path (no Arweave) and set tags manually to keep the test offline.
+    mv = client.create_model_version(
+        name="credit",
+        source=f"runs:/{run_id}/model",
+        run_id=run_id,
+    )
+    client.set_model_version_tag("credit", mv.version, "ario.registration_tx", "REG_TX")
+    client.set_model_version_tag("credit", mv.version, "ario.promotion_tx", "PROMO_TX")
+
+    chain = client.lifecycle_for_model("credit", version=mv.version)
+
+    event_types = [e["event_type"] for e in chain]
+    tx_ids = [e["tx_id"] for e in chain]
+    previous_txs = [e["previous_tx"] for e in chain]
+
+    assert event_types == ["dataset_anchored", "training_complete", "model_registered", "stage_transition"]
+    assert tx_ids == ["DATASET_TX", "TRAINING_TX", "REG_TX", "PROMO_TX"]
+    assert previous_txs == [None, "DATASET_TX", "TRAINING_TX", "REG_TX"]
+
+
+def test_lifecycle_for_model_returns_empty_when_no_versions(tmp_path, monkeypatch):
+    """Unknown models return an empty list, not an error."""
+    import mlflow
+    from ario_mlflow.client import ArioMlflowClient
+
+    monkeypatch.delenv("ARIO_MLFLOW_SIGNING_KEY", raising=False)
+    mlflow.set_tracking_uri(f"file://{tmp_path}/mlruns")
+    client = ArioMlflowClient(tracking_uri=f"file://{tmp_path}/mlruns")
+    assert client.lifecycle_for_model("does-not-exist") == []

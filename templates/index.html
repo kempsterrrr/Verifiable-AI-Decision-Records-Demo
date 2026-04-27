@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
 {% block title %}Verifiable AI Decision Records{% endblock %}
-{% block nav_predictions %}active{% endblock %}
+{% block nav_decisions %}active{% endblock %}
 {% block lineage_url %}/ui/models/{{ model_info.model_name }}/{{ model_info.model_version }}{% endblock %}
 
 {% block styles %}
@@ -211,19 +211,24 @@
 {% block content %}
         <div class="page-header">
             <div>
-                <h1>Decision Records</h1>
-                <p>Tamper-evident AI audit trail anchored to Arweave</p>
+                <h1>Decisions</h1>
+                <p>Every credit-decision below has a signed proof anchored on Arweave via ar.io — verifiable by any third party, without trusting this app.</p>
             </div>
         </div>
 
         {% if records %}
-        {# Compute status counts #}
+        {# Compute status counts. Every tampered record counts as "failed"
+           regardless of whether its last_verification dict happens to have
+           been populated — the tamper flag itself is the authoritative
+           signal and survives regardless of when the tamper happened. #}
         {% set ns = namespace(verified=0, anchored=0, failed=0, local=0, anchoring=0) %}
         {% for env in records %}
             {% set v = env.get('last_verification') %}
-            {% if v and v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
+            {% if env.get('tampered') %}
+                {% set ns.failed = ns.failed + 1 %}
+            {% elif v and v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
                 {% set ns.verified = ns.verified + 1 %}
-            {% elif v and not (v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match) %}
+            {% elif v and (not v.hash_valid or not v.signature_valid or (v.permanent_copy_found and not v.hash_match)) %}
                 {% set ns.failed = ns.failed + 1 %}
             {% elif env.arweave_tx_id %}
                 {% set ns.anchored = ns.anchored + 1 %}
@@ -255,9 +260,14 @@
         </div>
 
         <!-- Chain Integrity -->
-        <div id="chain-integrity" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 1.25rem; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 1rem; font-size: 0.8rem; color: var(--muted);">
-            <span>Hash Chain:</span>
-            <span id="chain-status">checking...</span>
+        <div id="chain-integrity" style="padding: 0.6rem 1.25rem; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 1rem; font-size: 0.8rem; color: var(--muted);">
+            <div style="display:flex;align-items:center;gap:0.5rem;">
+                <span>Hash chain:</span>
+                <span id="chain-status">checking...</span>
+            </div>
+            <div style="font-size:0.72rem;margin-top:0.3rem;line-height:1.5;">
+                Each record is hashed and its hash is linked into the next. A content change breaks the record's own hash. Rewriting the chain to hide it leaves a permanent divergence from the ar.io-anchored copy.
+            </div>
         </div>
         {% endif %}
 
@@ -296,20 +306,24 @@
         <!-- Prediction form (always shown) -->
         <form action="/predict-form" method="POST" class="predict-form">
             <div class="form-group">
-                <label>Sepal Length</label>
-                <input type="number" name="sepal_length" value="5.1" step="0.1" required>
+                <label>Annual Income (USD)</label>
+                <input type="number" name="annual_income" value="78000" step="1000" min="0" required>
             </div>
             <div class="form-group">
-                <label>Sepal Width</label>
-                <input type="number" name="sepal_width" value="3.5" step="0.1" required>
+                <label>Credit Utilization (0–1)</label>
+                <input type="number" name="credit_utilization" value="0.18" step="0.01" min="0" max="1" required>
             </div>
             <div class="form-group">
-                <label>Petal Length</label>
-                <input type="number" name="petal_length" value="1.4" step="0.1" required>
+                <label>Debt-to-Income (0–1)</label>
+                <input type="number" name="debt_to_income_ratio" value="0.22" step="0.01" min="0" max="1" required>
             </div>
             <div class="form-group">
-                <label>Petal Width</label>
-                <input type="number" name="petal_width" value="0.2" step="0.1" required>
+                <label>Months Employed</label>
+                <input type="number" name="months_employed" value="72" step="1" min="0" required>
+            </div>
+            <div class="form-group">
+                <label>Credit Score (300–850)</label>
+                <input type="number" name="credit_score" value="745" step="1" min="300" max="850" required>
             </div>
             <button type="submit" class="btn btn-primary" data-loading-text="Predicting...">Predict &amp; Record</button>
         </form>
@@ -356,9 +370,11 @@
             <tbody>
                 {% for env in records|reverse %}
                 {% set v = env.get('last_verification') %}
-                {% if v and v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
+                {% if env.get('tampered') %}
+                    {% set row_status = 'failed' %}
+                {% elif v and v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
                     {% set row_status = 'verified' %}
-                {% elif v and not (v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match) %}
+                {% elif v and (not v.hash_valid or not v.signature_valid or (v.permanent_copy_found and not v.hash_match)) %}
                     {% set row_status = 'failed' %}
                 {% elif env.arweave_tx_id %}
                     {% set row_status = 'anchored' %}
@@ -463,18 +479,42 @@
             row.classList.toggle('hidden', !show);
         });
     }
-    // Chain integrity check
+    // Chain integrity check — distinguishes link failures from content-level
+    // tamper (where a record's content stops matching its own record_hash).
     (function() {
         const el = document.getElementById('chain-status');
         if (!el) return;
         fetch('/api/chain-integrity')
             .then(r => r.json())
             .then(data => {
-                if (data.intact) {
-                    el.innerHTML = '<span style="color: var(--green); font-weight: 600;">' + data.total + ' records, unbroken</span>';
-                } else {
-                    el.innerHTML = '<span style="color: var(--red); font-weight: 600;">BROKEN at record #' + data.broken_at + '</span>';
+                if (data.link_intact && data.content_intact) {
+                    el.innerHTML = '<span style="color: var(--green); font-weight: 600;">' + data.total + ' records · unbroken · content intact</span>';
+                    return;
                 }
+
+                const parts = [];
+                if (!data.link_intact && data.broken_link_at !== null) {
+                    parts.push('link broken at record #' + data.broken_link_at);
+                }
+                const changed = data.changed_records || [];
+                if (changed.length > 0) {
+                    // Show up to 3 decision IDs as individual links — more than that
+                    // gets truncated with a count suffix rather than one arbitrary pick.
+                    const MAX_LINKS = 3;
+                    const shown = changed.slice(0, MAX_LINKS);
+                    const rest = Math.max(0, changed.length - MAX_LINKS);
+                    const links = shown.map(function(c) {
+                        const shortId = c.decision_id ? c.decision_id.slice(0, 8) + '…' : '#' + c.index;
+                        const href = c.decision_id ? '/ui/decisions/' + c.decision_id : '#';
+                        return '<a href="' + href + '" style="color:inherit;text-decoration:underline;">decision ' + shortId + '</a>';
+                    }).join(', ');
+                    const label = changed.length === 1 ? '1 record changed' : (changed.length + ' records changed');
+                    const suffix = rest > 0 ? ', and ' + rest + ' more' : '';
+                    parts.push(label + ' (' + links + suffix + ')');
+                }
+                const summary = parts.join(' · ') || 'broken';
+                el.innerHTML = '<span style="color: var(--red); font-weight: 600;">' +
+                    data.total + ' records · ' + summary + '</span>';
             })
             .catch(() => { el.textContent = 'unavailable'; });
     })();

@@ -787,3 +787,75 @@ def test_ario_client_skips_registration_anchor_on_get_run_failure(monkeypatch, c
     assert not captured.get("set_tag_called")
     warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
     assert any("Skipping registration anchoring" in m for m in warnings), warnings
+
+
+# --- chain-integrity endpoint ---------------------------------------------
+
+
+def _make_signed_record(payload: dict, previous_hash: str) -> dict:
+    """Build an envelope matching the store's shape for chain-integrity tests."""
+    from ario_mlflow.proof import canonical_json, hash_data
+    record_hash = hash_data(canonical_json(payload))
+    return {
+        "record": payload,
+        "record_hash": record_hash,
+        "previous_hash": previous_hash,
+        "signature": "stub",
+        "public_key": "stub",
+    }
+
+
+def test_chain_integrity_reports_content_tamper_even_when_link_is_intact():
+    """Tampering with `record.output_hash` leaves link_intact==True but must
+    flip content_intact to False and surface the changed record.
+
+    This is the behaviour the demo's /tamper button exercises: it modifies
+    a field inside the record without touching record_hash or previous_hash,
+    so the chain links still resolve but the content no longer hashes to
+    its committed digest.
+    """
+    from app.main import compute_chain_integrity
+
+    r1 = _make_signed_record({"decision_id": "a", "output_hash": "h-a"}, "GENESIS")
+    r2 = _make_signed_record({"decision_id": "b", "output_hash": "h-b"}, r1["record_hash"])
+    r3 = _make_signed_record({"decision_id": "c", "output_hash": "h-c"}, r2["record_hash"])
+
+    # Happy path first — everything intact.
+    clean = compute_chain_integrity([r1, r2, r3])
+    assert clean["intact"] is True
+    assert clean["link_intact"] is True
+    assert clean["content_intact"] is True
+    assert clean["changed_records"] == []
+    assert clean["broken_at"] is None
+
+    # Tamper with r2's inner record (simulates the /tamper button on decision b).
+    r2["record"]["output_hash"] = "TAMPERED"
+
+    tampered = compute_chain_integrity([r1, r2, r3])
+    assert tampered["link_intact"] is True, (
+        "Link integrity should still be True — tampering didn't touch previous_hash/record_hash"
+    )
+    assert tampered["content_intact"] is False, (
+        "Content integrity must flip False when a record's content stops matching its record_hash"
+    )
+    assert tampered["intact"] is False
+    assert tampered["changed_records"] == [
+        {"index": 1, "decision_id": "b", "reason": "content hash mismatch"}
+    ]
+    # Legacy broken_at falls back to the first changed record when no link break.
+    assert tampered["broken_at"] == 1
+
+
+def test_chain_integrity_empty_store_is_intact():
+    from app.main import compute_chain_integrity
+
+    result = compute_chain_integrity([])
+    assert result == {
+        "total": 0,
+        "link_intact": True,
+        "content_intact": True,
+        "broken_link_at": None,
+        "changed_records": [],
+        "intact": True,
+        "broken_at": None,
+    }

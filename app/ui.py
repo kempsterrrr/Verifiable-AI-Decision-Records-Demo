@@ -1,3 +1,4 @@
+import logging
 import os
 from datetime import datetime, timezone
 
@@ -7,6 +8,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from ario_mlflow.proof import canonical_json, hash_data
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
@@ -19,6 +22,25 @@ def _common_context(app):
         "arweave_enabled": app.state.anchor.enabled if app.state.anchor else False,
         "ario_verify_enabled": app.state.ario_verify.enabled if app.state.ario_verify else False,
     }
+
+
+def _is_fully_verified(verification: dict | None) -> bool:
+    """Full-verification gate shared by lifecycle status and aggregates.
+
+    Treats a record as verified only when the local hash matches, the
+    signature is valid, the permanent copy was found on Arweave, and
+    the on-chain hash matches our local record hash. Missing any one
+    (including still-propagating ``permanent_copy_found``) means the
+    record is not yet verified — not that it failed.
+    """
+    if not verification:
+        return False
+    return bool(
+        verification.get("hash_valid")
+        and verification.get("signature_valid")
+        and verification.get("permanent_copy_found")
+        and verification.get("hash_match")
+    )
 
 
 def _verify_envelope(app, envelope):
@@ -55,8 +77,14 @@ def _verify_envelope(app, envelope):
     return result, local
 
 
-@router.get("/ui/predictions", response_class=HTMLResponse)
-def predictions(request: Request):
+@router.get("/ui/predictions")
+def predictions_redirect():
+    """Permanent redirect from the old URL. Bookmarks keep working."""
+    return RedirectResponse("/ui/decisions", status_code=301)
+
+
+@router.get("/ui/decisions", response_class=HTMLResponse)
+def decisions(request: Request):
     app = request.app
     records = app.state.store.list_all()
     model_info = app.state.model_info
@@ -69,8 +97,7 @@ def predictions(request: Request):
 
     training_status = "none"
     if training_env:
-        tv = training_env.get("last_verification")
-        if tv and tv.get("hash_valid") and tv.get("permanent_copy_found") and tv.get("hash_match"):
+        if _is_fully_verified(training_env.get("last_verification")):
             training_status = "verified"
         elif training_env.get("arweave_tx_id"):
             training_status = "anchored"
@@ -79,8 +106,7 @@ def predictions(request: Request):
 
     registration_status = "none"
     if registration_env:
-        rv = registration_env.get("last_verification")
-        if rv and rv.get("hash_valid") and rv.get("permanent_copy_found") and rv.get("hash_match"):
+        if _is_fully_verified(registration_env.get("last_verification")):
             registration_status = "verified"
         elif registration_env.get("arweave_tx_id"):
             registration_status = "anchored"
@@ -106,7 +132,7 @@ def model_registry(request: Request):
     model_name = settings.mlflow_model_name
     active_version = app.state.model_info["model_version"]
 
-    mlflow.set_tracking_uri(os.path.abspath(settings.mlflow_tracking_uri))
+    mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
     client = mlflow.tracking.MlflowClient()
 
     versions = client.search_model_versions(f"name='{model_name}'")
@@ -131,8 +157,7 @@ def model_registry(request: Request):
         def _status(env):
             if not env:
                 return "none"
-            v = env.get("last_verification")
-            if v and v.get("hash_valid") and v.get("permanent_copy_found") and v.get("hash_match"):
+            if _is_fully_verified(env.get("last_verification")):
                 return "verified"
             if env.get("arweave_tx_id"):
                 return "anchored"
@@ -164,6 +189,17 @@ def model_registry(request: Request):
 @router.get("/ui/registry")
 def registry_redirect():
     return RedirectResponse("/", status_code=301)
+
+
+@router.get("/ui/who-this-is-for", response_class=HTMLResponse)
+def who_this_is_for(request: Request):
+    """Four-persona framing page so visitors find a doorway matched to their context."""
+    app = request.app
+    return templates.TemplateResponse(
+        request,
+        "who_this_is_for.html",
+        _common_context(app),
+    )
 
 
 @router.get("/ui/decisions/{decision_id}", response_class=HTMLResponse)
@@ -251,6 +287,28 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
     if envelope.get("arweave_tx_id"):
         turbo_status = app.state.anchor.check_status(envelope["arweave_tx_id"])
 
+    # Fetch the live MLflow tags directly from the tracking store so evaluators
+    # can confirm the ario.* tags are really on the run (not synthesised by the
+    # demo UI). This is the closest thing to "View in MLflow UI" we can offer
+    # without running a second server alongside uvicorn on Railway.
+    mlflow_tags: dict[str, str] = {}
+    try:
+        import mlflow as _mlflow
+        settings = app.state.settings
+        _mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+        client = _mlflow.tracking.MlflowClient()
+        run = client.get_run(run_id)
+        mlflow_tags = dict(run.data.tags)
+    except Exception as e:
+        # Log and degrade to an empty tag set so the page still renders,
+        # but don't let a tracking-store outage masquerade as "tagless run".
+        logger.warning(
+            "MLflow live-tag lookup failed for run %s: %s", run_id, e
+        )
+        mlflow_tags = {}
+
+    ario_tags = {k: v for k, v in sorted(mlflow_tags.items()) if k.startswith("ario.")}
+
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -259,6 +317,13 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
             "envelope": envelope,
             "local_verification": local,
             "turbo_status": turbo_status,
+            "mlflow_ario_tags": ario_tags,
+            # Pass the configured URI verbatim — evaluators run the
+            # suggested command from the repo root, where relative
+            # tracking URIs like "mlruns" resolve. Exposing the server's
+            # absolute path (e.g. "/app/mlruns" on Railway) leaks
+            # deployment detail and isn't useful to the reader.
+            "mlflow_tracking_uri": app.state.settings.mlflow_tracking_uri,
         },
     )
 
@@ -306,8 +371,7 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
     anchored_count = sum(1 for p in model_predictions if p.get("arweave_tx_id"))
     verified_count = sum(
         1 for p in model_predictions
-        if p.get("last_verification", {}).get("hash_valid")
-        and p.get("last_verification", {}).get("permanent_copy_found")
+        if not p.get("tampered") and _is_fully_verified(p.get("last_verification"))
     )
 
     # Turbo status for each

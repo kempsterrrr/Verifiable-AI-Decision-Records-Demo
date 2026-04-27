@@ -19,10 +19,14 @@ class Settings:
 
     # MLflow
     mlflow_tracking_uri: str = "mlruns"
-    mlflow_model_name: str = "iris-classifier"
+    mlflow_model_name: str = "credit-scorer"
 
     # AR.IO
     ario_gateway_host: str = "turbo-gateway.com"
+    # Public ar.io Verify instance operated by an ar.io gateway (vilenarios).
+    # Reachability is tested at startup via /health; the topbar shows an offline
+    # indicator when the service isn't responding. Override with
+    # VAIDR_ARIO_VERIFY_URL to point at a different attestation endpoint.
     ario_verify_url: str = "https://vilenarios.com/local/verify"
 
     @property

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train and register the iris classifier in MLflow."""
+"""Train and register the demo credit-decision classifier in MLflow."""
 import os
 import sys
 

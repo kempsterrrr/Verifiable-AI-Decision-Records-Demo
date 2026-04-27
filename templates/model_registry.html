@@ -177,9 +177,9 @@
 
         <!-- Context Banner -->
         <div class="context-banner">
-            <h2>Can you prove your AI decisions haven't been tampered with?</h2>
-            <p>Train a model, make a prediction, then tamper with the record — and watch independent verification catch it. Every proof is permanently stored and verifiable by any third party. No trust in us required.</p>
-            <a href="https://calendly.com/placeholder/verifiable-ai" target="_blank" class="context-cta">Book a 20-minute walkthrough &rarr;</a>
+            <h2>How would you prove, 18 months from now, which model made a specific decision?</h2>
+            <p>Train a model below, make a prediction, then try to break the audit trail — either by changing the local record directly, or by imagining that MLflow runs get deleted, models get silently retrained, or institutional memory is lost. Because every proof is anchored on Arweave via ar.io, a third party can verify what actually happened without trusting this app or any records it stores locally.</p>
+            <a href="https://github.com/kempsterrrr/Verifiable-AI-Decision-Records-Demo/blob/main/ario_mlflow/README.md" target="_blank" rel="noopener" class="context-cta">Read the plugin README &rarr;</a>
         </div>
 
         <!-- Hero Training Section -->
@@ -325,12 +325,12 @@
                 setStepActive('step-anchor-reg');
                 return pollAnchor(data.registration_event_id, 'step-anchor-reg');
             }).then(() => {
-                result.innerHTML = 'Model v' + data.model_version + ' trained (accuracy: ' + data.accuracy.toFixed(4) + ') and anchored to Arweave. Redirecting to chain of custody...';
+                result.innerHTML = 'Model v' + data.model_version + ' trained (accuracy: ' + data.accuracy.toFixed(4) + ') and anchored to Arweave. Redirecting to model lineage...';
                 result.classList.add('show');
                 btn.textContent = 'Start Training';
                 btn.disabled = false;
                 btn.style.opacity = '1';
-                // Redirect to chain of custody page
+                // Redirect to model lineage page
                 setTimeout(() => {
                     window.location.href = '/ui/models/' + data.model_name + '/' + data.model_version;
                 }, 2000);

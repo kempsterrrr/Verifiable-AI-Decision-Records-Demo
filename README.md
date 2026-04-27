@@ -9,7 +9,7 @@ This project provides **verifiable provenance for the entire ML lifecycle** — 
 1. **Training provenance** — params, metrics, and artifact hashes are captured and anchored when a model is trained
 2. **Registration provenance** — model registration events are signed and anchored with a link back to the training proof
 3. **Prediction records** — every inference creates a decision record with full model lineage
-4. **Chain of custody** — an unbroken, verifiable chain from training → registration → predictions
+4. **Model lineage** — a cryptographically verifiable audit trail from training → registration → predictions
 
 Each record is:
 
@@ -127,25 +127,25 @@ Without a wallet, the app runs in **local proof mode** — hashing, signing, and
 
 ### 1. Train a Model
 
-The landing page (`/`) shows the Models page. Click **Train & Anchor** to train a new model. Watch the four-step progress: training → registering → anchoring training proof → anchoring registration proof. After completion, the app automatically redirects to the chain of custody page.
+The landing page (`/`) shows the Models page. Click **Train & Anchor** to train a new model. Watch the four-step progress: training → registering → anchoring training proof → anchoring registration proof. After completion, the app automatically redirects to the model lineage page.
 
-### 2. View the Chain of Custody
+### 2. View the Model Lineage
 
-The chain of custody page shows the proof chain forming in real time: Training Run → Model Registration → Predictions. Each node shows its verification status and Arweave transaction ID.
+The model lineage page shows the proof chain forming in real time: Training Run → Model Registration → Decisions. Each node shows its verification status and Arweave transaction ID. Compliance readers can think of this as a cryptographically verifiable audit trail.
 
 ### 3. Make a Prediction
 
-Navigate to **Predictions** and submit the form with iris flower measurements. The response is instant — the detail page shows "Anchoring..." with a pulsing indicator, then auto-updates when the Arweave upload completes (~1-2s).
+Navigate to **Decisions** and submit the form with applicant features (income, credit score, etc.). The response is instant — the detail page shows "Anchoring..." with a pulsing indicator, then auto-updates when the Arweave upload completes (~1-2s).
 
 ### 4. View the Decision Record
 
 Click a decision ID to see the full record:
 - **Prediction** — class, probabilities with visual bars, features used
 - **ar.io Verification** — three-level verification status (hash, signature, permanent copy, attestation)
-- **Model lineage** — MLflow run ID, version, artifact URI, with link to chain of custody
+- **Model lineage** — MLflow run ID, version, artifact URI, with link to the full lineage view
 - **Proof layer** — record hash, chain link, Ed25519 signature
-- **Arweave anchoring** — transaction ID, status (Anchoring → Anchored → Confirmed → Permanent)
-- **Turbo upload receipt** — millisecond timestamp, wallet owner, signed receipt
+- **ar.io anchoring** — transaction ID, status (Anchoring → Anchored → Confirmed → Permanent)
+- **Upload receipt** — ar.io's timestamp witness: millisecond timestamp, wallet owner, signed receipt
 
 ### 5. Verify a Record
 
@@ -163,9 +163,9 @@ Click **Tamper** to modify the local record's output hash, then **Verify with ar
 | Page | URL | Description |
 |---|---|---|
 | Models (landing page) | `/` | Model versions, train new models, activate versions |
-| Predictions | `/ui/predictions` | Prediction records, stats, prediction form, model provenance card, version filter |
+| Decisions | `/ui/decisions` | Decision records, stats, prediction form, model provenance card, version filter (`/ui/predictions` 301-redirects here for bookmarks) |
 | Decision detail | `/ui/decisions/{id}` | Full decision record with three-level verification |
-| Chain of custody | `/ui/models/{name}/{version}` | Training → Registration → Predictions chain |
+| Model lineage | `/ui/models/{name}/{version}` | Training → Registration → Decisions chain |
 | Training run detail | `/ui/runs/{run_id}` | Training params, metrics, artifact hashes, verification |
 
 ## API Reference
@@ -296,7 +296,7 @@ ario-mlflow verify model fraud-detector/3
 # Verify an individual inference trace
 ario-mlflow verify trace <trace_id>
 
-# Full chain of custody audit
+# Full model lineage audit (training → registration → promotion)
 ario-mlflow audit fraud-detector/3
 ```
 
@@ -366,10 +366,15 @@ Decision records are serialized to deterministic canonical JSON (sorted keys, co
 The proof is uploaded to Arweave permanent storage via ar.io Turbo. The upload returns a signed receipt with a millisecond-precision timestamp — an independent attestation of when the proof was submitted. Once confirmed on Arweave, the data is immutable and publicly accessible.
 
 ### ar.io Verify — Independent Attestation
-When verification is requested, ar.io Verify independently fetches the Arweave data, recomputes hashes, checks signatures where available, and produces a signed attestation. Verification levels:
-- **Level 1** — Data found on the network, verification in progress
-- **Level 2** — Data hash confirmed, signature not yet available
-- **Level 3** — Digital signature verified, full authenticity confirmed
+When verification is requested, ar.io Verify independently fetches the Arweave data, recomputes hashes, and checks signatures. The three levels describe **how much of the proof has been independently verified**, not network-confirmation depth:
+
+- **Level 1 — Finalized on Arweave.** The record was found in a confirmed block on the Arweave network at a specific block height and timestamp. On Arweave, a confirmed block is permanent storage. Content and signature verification still to come.
+- **Level 2 — Content integrity confirmed.** ar.io re-downloaded the raw record and recomputed its SHA-256 fingerprint. The bytes match the gateway's digest, so the content is intact. Cryptographic signature verification still pending.
+- **Level 3 — Cryptographically verified.** The digital signature on the record has been independently verified using the original signer's public key (RSA-PSS / Ed25519 / ECDSA, depending on wallet type). This is a mathematical proof, not a trust claim: the record is authentic and attributable to the stated signer.
+
+**Operator attestation.** When an ar.io gateway operator configures a signing wallet, the verification result is also signed with that operator's wallet. This creates an attestation — an independent statement from a known operator on the ar.io network that they personally verified the record. You'll see "Attested by [operator]" in the Verification section when the operator signing this deployment is attesting. The attestation is itself verifiable: it's standard RSA-PSS SHA-256 over the canonical JSON payload, checkable against the operator's public key.
+
+These levels describe integrity of the anchored record, not the correctness of the underlying ML decision. Semantic verification (whether *this model* produced *this output* on *this input*) is a separate problem and is on the roadmap, not in v0.1.
 
 ### Auditor Verification
 An auditor can independently verify any proof with standard cryptographic tools:

@@ -9,3 +9,6 @@ __pycache__/
 .venv/
 .agents/
 *.egg-info/
+.DS_Store
+*.plugin
+frontier-ai-auditing-authors.md

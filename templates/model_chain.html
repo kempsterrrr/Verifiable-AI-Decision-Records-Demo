@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}{{ model_name }}/v{{ version }} — Chain of Custody{% endblock %}
+{% block title %}{{ model_name }}/v{{ version }} — Model Lineage{% endblock %}
 {% block max_width %}900px{% endblock %}
 {% block nav_lineage %}active{% endblock %}
 {% block lineage_url %}/ui/models/{{ model_name }}/{{ version }}{% endblock %}
@@ -123,8 +123,8 @@
 {% block content %}
         <div class="page-header">
             <div>
-                <h1>Chain of Custody</h1>
-                <p>{{ model_name }} / v{{ version }}</p>
+                <h1>Model Lineage</h1>
+                <p>{{ model_name }} / v{{ version }} — a cryptographically verifiable audit trail of every training run, model version, and prediction.</p>
             </div>
             <a href="/ui/models/{{ model_name }}/{{ version }}?verify=true" class="btn btn-primary btn-sm" id="verify-all-btn" data-loading-text="Verifying...">Verify All</a>
         </div>
@@ -203,7 +203,17 @@
                                 <span>Hash Match <span class="{{ 'check' if tv.hash_match else 'cross' }}">{{ 'PASS' if tv.hash_match else 'FAIL' }}</span></span>
                                 {% endif %}
                                 {% if tv.attestation_level %}
-                                <span>Attestation <span class="check">Level {{ tv.attestation_level }}</span></span>
+                                <span title="ar.io Verify Level {{ tv.attestation_level }}">Attestation
+                                    <span class="check">
+                                        {% if tv.attestation_level == 3 %}Cryptographically verified
+                                        {% elif tv.attestation_level == 2 %}Content integrity confirmed
+                                        {% elif tv.attestation_level == 1 %}Finalized on Arweave
+                                        {% else %}Level {{ tv.attestation_level }}{% endif %}
+                                    </span>
+                                </span>
+                                {% endif %}
+                                {% if tv.attested_by %}
+                                <span title="An ar.io gateway operator ran the verification above and cryptographically signed the result with their wallet.">Attested by <strong>{{ tv.attested_by }}</strong></span>
                                 {% endif %}
                             {% endif %}
                         </div>
@@ -307,7 +317,17 @@
                                 <span>Hash Match <span class="{{ 'check' if rv.hash_match else 'cross' }}">{{ 'PASS' if rv.hash_match else 'FAIL' }}</span></span>
                                 {% endif %}
                                 {% if rv.attestation_level %}
-                                <span>Attestation <span class="check">Level {{ rv.attestation_level }}</span></span>
+                                <span title="ar.io Verify Level {{ rv.attestation_level }}">Attestation
+                                    <span class="check">
+                                        {% if rv.attestation_level == 3 %}Cryptographically verified
+                                        {% elif rv.attestation_level == 2 %}Content integrity confirmed
+                                        {% elif rv.attestation_level == 1 %}Finalized on Arweave
+                                        {% else %}Level {{ rv.attestation_level }}{% endif %}
+                                    </span>
+                                </span>
+                                {% endif %}
+                                {% if rv.attested_by %}
+                                <span title="An ar.io gateway operator ran the verification above and cryptographically signed the result with their wallet.">Attested by <strong>{{ rv.attested_by }}</strong></span>
                                 {% endif %}
                             {% endif %}
                         </div>
@@ -331,7 +351,7 @@
                 </div>
             </div>
 
-            <!-- Predictions Node -->
+            <!-- Decisions Node -->
             <div class="chain-node">
                 {% if prediction_count > 0 and verified_count == prediction_count %}
                     <div class="chain-dot chain-dot-green"></div>
@@ -342,7 +362,7 @@
                 {% endif %}
                 <div class="chain-card">
                     <div class="chain-card-header">
-                        <h3>Predictions</h3>
+                        <h3>Decisions</h3>
                         {% if prediction_count > 0 %}
                             <span class="badge badge-yellow"><span class="badge-dot"></span> {{ prediction_count }} records</span>
                         {% else %}
@@ -366,12 +386,12 @@
                             </div>
                         </div>
                         {% else %}
-                        <p style="color: var(--muted); font-size: 0.85rem;">No predictions recorded yet. Use the prediction form on the dashboard to get started.</p>
+                        <p style="color: var(--muted); font-size: 0.85rem;">No decisions recorded yet. Use the prediction form on the Decisions page to get started.</p>
                         {% endif %}
                     </div>
                     {% if prediction_count > 0 %}
                     <div class="chain-card-footer">
-                        <a href="/ui/predictions">View all predictions &rarr;</a>
+                        <a href="/ui/decisions">View all decisions &rarr;</a>
                     </div>
                     {% endif %}
                 </div>

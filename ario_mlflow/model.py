@@ -4,7 +4,7 @@ import logging
 import os
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from time import time
 from typing import Any
@@ -76,12 +76,52 @@ def _resolve_model_version(client, model_uri: str):
 
 @dataclass
 class VerifiedPrediction:
-    """Result of a verified prediction."""
+    """Result of a verified prediction, including background anchoring status.
+
+    Fields:
+        prediction: The model's output (whatever ``pyfunc.predict`` returned).
+        decision_id: UUID4 string uniquely identifying this prediction. Mirrors
+            the ``ario.decision_id`` trace tag written on the MLflow trace.
+        proof_status: One of:
+            - ``"disabled"`` — anchoring is off (no wallet / no Turbo client).
+            - ``"anchoring"`` — background upload in progress.
+            - ``"anchored"`` — uploaded successfully; ``tx_id`` is set.
+            - ``"failed"`` — upload raised; ``anchor_error`` is set.
+        record: The canonical decision record that was signed. ``None`` only
+            in exotic failure cases.
+        tx_id: Arweave transaction ID, populated after a successful anchor.
+        anchor_error: Stringified exception from the background anchor when
+            ``proof_status == "failed"``. ``None`` otherwise.
+
+    Use :meth:`wait_for_anchor` to block until the background thread
+    finishes. The underlying :class:`threading.Event` is hidden from
+    ``repr()`` and equality so it behaves like plain data otherwise.
+    """
     prediction: Any
     decision_id: str
-    proof_status: str  # "anchoring" | "anchored" | "disabled"
+    proof_status: str  # "anchoring" | "anchored" | "disabled" | "failed"
     record: dict | None = None
     tx_id: str | None = None
+    anchor_error: str | None = None
+    _anchor_done: threading.Event = field(
+        default_factory=threading.Event, repr=False, compare=False
+    )
+
+    def wait_for_anchor(self, timeout: float | None = None) -> bool:
+        """Block until the background anchor completes or the timeout expires.
+
+        Args:
+            timeout: Maximum seconds to wait. ``None`` waits forever.
+
+        Returns:
+            ``True`` if the background anchor finished (check ``proof_status``,
+            ``tx_id``, and ``anchor_error`` for outcome). ``False`` if the
+            timeout expired while still ``"anchoring"``.
+
+        When anchoring is disabled (``proof_status == "disabled"``) the event
+        is already set and this returns ``True`` immediately.
+        """
+        return self._anchor_done.wait(timeout=timeout)
 
 
 class VerifiedModel:
@@ -93,6 +133,34 @@ class VerifiedModel:
         proof_engine: ProofEngine | None = None,
         anchor: ArweaveAnchor | None = None,
     ):
+        """Load an MLflow model and verify its artifacts against the anchored hash.
+
+        Resolves ``model_uri`` through the MLflow registry, re-hashes the
+        model artifacts, and compares the result to the ``ario.artifact_hash``
+        tag from the source training run. The integrity check runs **before**
+        :func:`mlflow.pyfunc.load_model`, so a tampered artifact is rejected
+        before any user code (``PythonModel`` subclasses, custom loaders) can
+        execute.
+
+        Args:
+            model_uri: A ``models:/`` URI in any of these forms:
+
+                - ``models:/<name>/<version>`` — numeric version.
+                - ``models:/<name>@<alias>`` — registry alias.
+                - ``models:/<name>/<stage>`` — legacy stage URI (MLflow's
+                  ``search_model_versions`` is used; deprecated in 2.9+).
+            proof_engine: Override for the signing engine. Defaults to a
+                :class:`ProofEngine` using the process-local Ed25519 key.
+            anchor: Override for the Arweave anchor client. Defaults to an
+                :class:`ArweaveAnchor` configured from the
+                ``ARIO_MLFLOW_ARWEAVE_WALLET`` /
+                ``ARIO_MLFLOW_GATEWAY_HOST`` env vars.
+
+        Raises:
+            IntegrityError: If the re-hashed artifacts do not match the
+                ``ario.artifact_hash`` anchored at training time. The underlying
+                pyfunc model is never loaded in this case.
+        """
         self._model_uri = model_uri
         self._proof_engine = proof_engine or ProofEngine()
         self._anchor = anchor or ArweaveAnchor(
@@ -166,7 +234,32 @@ class VerifiedModel:
 
     @mlflow.trace(name="VerifiedModel.predict")
     def predict(self, input_data) -> VerifiedPrediction:
-        """Run inference, create cryptographic proof, and log an MLflow trace."""
+        """Run inference, sign a decision record, and anchor it asynchronously.
+
+        Args:
+            input_data: A dict of named features, a list/tuple of positional
+                features, or any array-like the underlying pyfunc model
+                accepts. Dicts and single-row lists are wrapped into a
+                2-D array (``[[values]]``) before passing to the model.
+
+        Returns:
+            A :class:`VerifiedPrediction`. ``prediction`` is whatever the
+            wrapped model returned. The Arweave upload runs in a background
+            thread; callers that need the ``tx_id`` immediately should call
+            :meth:`VerifiedPrediction.wait_for_anchor` before reading it.
+
+        Side effects:
+            - An ``@mlflow.trace`` span is emitted with ``ario.*`` tags
+              linking the trace to the proof: ``decision_id``, ``model_name``,
+              ``model_version``, ``input_hash``, ``output_hash``,
+              ``record_hash``, ``proof_status``, and ``artifact_verified``
+              (when known). After a successful background anchor the trace
+              is updated with ``ario.arweave_tx`` / ``ario.arweave_url``.
+            - If the :class:`ArweaveAnchor` is enabled, the proof is
+              uploaded to Arweave in a daemon thread. Upload errors are
+              captured on the returned object (``proof_status="failed"`` +
+              ``anchor_error``), not raised to the caller.
+        """
         decision_id = str(uuid.uuid4())
         start = time()
 
@@ -211,6 +304,10 @@ class VerifiedModel:
             proof_status="disabled" if not self._anchor.enabled else "anchoring",
             record=record,
         )
+        if not self._anchor.enabled:
+            # Nothing will mark this done in the background, so callers
+            # waiting on wait_for_anchor() get an immediate True.
+            result._anchor_done.set()
 
         # Tag the MLflow trace with proof metadata — links trace to proof.
         # Best-effort: tracing backends can fail (network, backend down); we
@@ -256,5 +353,30 @@ class VerifiedModel:
                         # Trace may have been flushed by the backend already.
                         logger.debug(f"Could not update trace {trace_id} with anchor tags: {e}")
                 logger.info(f"Prediction {result.decision_id} anchored: tx={anchor_result['tx_id']}")
+            else:
+                result.proof_status = "failed"
+                result.anchor_error = "upload returned no result"
+                if trace_id:
+                    try:
+                        mlflow.set_trace_tag(trace_id, "ario.proof_status", "failed")
+                    except Exception as trace_error:
+                        logger.debug(
+                            f"Could not update trace {trace_id} with failed status: {trace_error}"
+                        )
+                logger.error(
+                    f"Prediction anchoring failed for {result.decision_id}: upload returned no result"
+                )
         except Exception as e:
+            result.proof_status = "failed"
+            result.anchor_error = str(e)
+            if trace_id:
+                try:
+                    mlflow.set_trace_tag(trace_id, "ario.proof_status", "failed")
+                except Exception as trace_error:
+                    logger.debug(
+                        f"Could not update trace {trace_id} with failed status: {trace_error}"
+                    )
             logger.error(f"Prediction anchoring failed for {result.decision_id}: {e}")
+        finally:
+            # Always release wait_for_anchor() callers, whatever the outcome.
+            result._anchor_done.set()

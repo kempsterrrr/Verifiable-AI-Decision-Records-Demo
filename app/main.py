@@ -3,6 +3,7 @@ import os
 import threading
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks, FastAPI, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -218,13 +219,19 @@ def _run_prediction(app_state, features: list[float]) -> tuple[dict, dict]:
 
 # --- API Endpoints ---
 
+FEATURE_DEFAULTS: dict[str, float] = {
+    "annual_income": 78000,
+    "credit_utilization": 0.18,
+    "debt_to_income_ratio": 0.22,
+    "months_employed": 72,
+    "credit_score": 745,
+}
+
+
 @app.post("/predict")
 def api_predict(request: Request, body: dict, background_tasks: BackgroundTasks):
     features = [
-        float(body.get("sepal_length", 5.1)),
-        float(body.get("sepal_width", 3.5)),
-        float(body.get("petal_length", 1.4)),
-        float(body.get("petal_width", 0.2)),
+        float(body.get(name, FEATURE_DEFAULTS[name])) for name in FEATURE_NAMES
     ]
     envelope, proof = _run_prediction(request.app.state, features)
     decision_id = envelope["record"]["decision_id"]
@@ -243,12 +250,20 @@ def api_predict(request: Request, body: dict, background_tasks: BackgroundTasks)
 def form_predict(
     request: Request,
     background_tasks: BackgroundTasks,
-    sepal_length: float = Form(5.1),
-    sepal_width: float = Form(3.5),
-    petal_length: float = Form(1.4),
-    petal_width: float = Form(0.2),
+    annual_income: float = Form(FEATURE_DEFAULTS["annual_income"]),
+    credit_utilization: float = Form(FEATURE_DEFAULTS["credit_utilization"]),
+    debt_to_income_ratio: float = Form(FEATURE_DEFAULTS["debt_to_income_ratio"]),
+    months_employed: float = Form(FEATURE_DEFAULTS["months_employed"]),
+    credit_score: float = Form(FEATURE_DEFAULTS["credit_score"]),
 ):
-    features = [sepal_length, sepal_width, petal_length, petal_width]
+    form_values = {
+        "annual_income": annual_income,
+        "credit_utilization": credit_utilization,
+        "debt_to_income_ratio": debt_to_income_ratio,
+        "months_employed": months_employed,
+        "credit_score": credit_score,
+    }
+    features = [float(form_values[name]) for name in FEATURE_NAMES]
     envelope, proof = _run_prediction(request.app.state, features)
     decision_id = envelope["record"]["decision_id"]
     if request.app.state.anchor.enabled:
@@ -336,11 +351,11 @@ def activate_model(request: Request, model_name: str, version: str):
     """Switch the active model to a specific version."""
     import mlflow
     settings = request.app.state.settings
-    mlflow.set_tracking_uri(os.path.abspath(settings.mlflow_tracking_uri))
+    mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
 
     model_uri = f"models:/{model_name}/{version}"
     try:
-        model = mlflow.pyfunc.load_model(model_uri)
+        model = mlflow.sklearn.load_model(model_uri)
     except Exception as e:
         return JSONResponse({"error": f"Could not load model: {e}"}, status_code=404)
 
@@ -374,6 +389,12 @@ def get_decision(request: Request, decision_id: str):
     envelope = request.app.state.store.get_by_id(decision_id)
     if not envelope:
         return JSONResponse({"error": "Decision not found"}, status_code=404)
+    # Attach a live turbo_status so the polling UI can update the badge
+    # as the proof progresses from Uploading → Confirmed → Permanent without
+    # requiring a page reload.
+    envelope = dict(envelope)
+    if envelope.get("arweave_tx_id"):
+        envelope["turbo_status"] = request.app.state.anchor.check_status(envelope["arweave_tx_id"])
     return envelope
 
 
@@ -432,6 +453,9 @@ def get_lifecycle_event(request: Request, event_id: str):
     envelope = request.app.state.lifecycle_store.get_by_event_id(event_id)
     if not envelope:
         return JSONResponse({"error": "Lifecycle event not found"}, status_code=404)
+    envelope = dict(envelope)
+    if envelope.get("arweave_tx_id"):
+        envelope["turbo_status"] = request.app.state.anchor.check_status(envelope["arweave_tx_id"])
     return envelope
 
 
@@ -450,19 +474,77 @@ def export_decision(request: Request, decision_id: str):
     )
 
 
-@app.get("/api/chain-integrity")
-def chain_integrity(request: Request):
-    """Verify the previous_hash chain is unbroken across all records."""
-    records = request.app.state.store.list_all()
-    if not records:
-        return {"total": 0, "intact": True, "broken_at": None}
+def compute_chain_integrity(records: list) -> dict:
+    """Pure function: evaluate link + content integrity for a list of envelopes.
 
+    Two concepts are checked independently because a tamper of any single
+    record breaks only one of them at a time:
+
+    1. **Link integrity** — each record's ``previous_hash`` matches the
+       prior record's ``record_hash``. Breaks if a record is deleted or
+       reordered.
+    2. **Content integrity** — each record's ``record`` field still hashes
+       to its own ``record_hash``. Breaks when a field inside the record
+       is modified after signing (what the ``/tamper`` button does).
+
+    The legacy ``intact`` / ``broken_at`` fields are preserved for any
+    old clients and reflect whichever check fails first (link, then
+    content).
+    """
+    from ario_mlflow.proof import canonical_json, hash_data
+
+    if not records:
+        return {
+            "total": 0,
+            "link_intact": True,
+            "content_intact": True,
+            "broken_link_at": None,
+            "changed_records": [],
+            "intact": True,
+            "broken_at": None,
+        }
+
+    broken_link_at = None
     for i, rec in enumerate(records):
         expected = records[i - 1]["record_hash"] if i > 0 else "GENESIS"
         if rec.get("previous_hash") != expected:
-            return {"total": len(records), "intact": False, "broken_at": i, "decision_id": rec["record"]["decision_id"]}
+            broken_link_at = i
+            break
 
-    return {"total": len(records), "intact": True, "broken_at": None}
+    changed_records = []
+    for i, rec in enumerate(records):
+        record_field = rec.get("record") or {}
+        computed = hash_data(canonical_json(record_field))
+        if computed != rec.get("record_hash"):
+            changed_records.append({
+                "index": i,
+                "decision_id": record_field.get("decision_id"),
+                "reason": "content hash mismatch",
+            })
+
+    link_intact = broken_link_at is None
+    content_intact = not changed_records
+    intact = link_intact and content_intact
+    # Legacy broken_at: first broken-link index if any, else first changed record.
+    broken_at = broken_link_at if broken_link_at is not None else (
+        changed_records[0]["index"] if changed_records else None
+    )
+
+    return {
+        "total": len(records),
+        "link_intact": link_intact,
+        "content_intact": content_intact,
+        "broken_link_at": broken_link_at,
+        "changed_records": changed_records,
+        "intact": intact,
+        "broken_at": broken_at,
+    }
+
+
+@app.get("/api/chain-integrity")
+def chain_integrity(request: Request):
+    """Verify link + content integrity across all stored decision records."""
+    return compute_chain_integrity(request.app.state.store.list_all())
 
 
 @app.post("/tamper/{decision_id}")
@@ -475,6 +557,21 @@ def tamper_decision(request: Request, decision_id: str):
     original_hash = envelope["record"]["output_hash"]
     envelope["record"]["output_hash"] = "TAMPERED_" + original_hash[:50]
     envelope["tampered"] = True
+
+    # Re-run local verification so any UI that keys off `last_verification`
+    # (the predictions-page stat cards, the detail page's verification section)
+    # immediately reflects the tamper. The Arweave side of last_verification,
+    # if previously checked, is still accurate and kept — the permanent copy
+    # IS still on the network and matches the ORIGINAL record, even though
+    # the local copy no longer does.
+    local = request.app.state.proof_engine.verify_local(envelope)
+    previous = envelope.get("last_verification") or {}
+    envelope["last_verification"] = {
+        **previous,
+        "hash_valid": local["hash_valid"],
+        "signature_valid": local["signature_valid"],
+        "verified_at": datetime.now(timezone.utc).isoformat(),
+    }
 
     request.app.state.store.update(decision_id, envelope)
 

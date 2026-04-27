@@ -10,6 +10,21 @@ from ario_mlflow.proof import canonical_json
 
 logger = logging.getLogger(__name__)
 
+# Where the plugin keeps its auto-generated wallet so the same address is
+# reused across sessions. Matches the pattern used by proof.py for signing
+# keys (~/.ario-mlflow/keys/).
+DEFAULT_WALLET_PATH = os.path.expanduser("~/.ario-mlflow/wallet.json")
+
+# The three wallet_mode values exposed in logs / tags / reports:
+#   user-configured — loaded from a caller-supplied wallet path.
+#   persistent      — auto-generated at DEFAULT_WALLET_PATH and reused across runs.
+#   ephemeral       — in-memory only (filesystem not writable); rotates every restart.
+WALLET_MODE_USER = "user-configured"
+WALLET_MODE_PERSISTENT = "persistent"
+WALLET_MODE_EPHEMERAL = "ephemeral"
+
+_REQUIRED_JWK_FIELDS = {"kty", "n", "e", "d", "p", "q", "dp", "dq", "qi"}
+
 
 class ArweaveAnchor:
     """Upload proof payloads to Arweave via Turbo SDK."""
@@ -17,6 +32,7 @@ class ArweaveAnchor:
     def __init__(self, wallet_path: str | None = None, gateway_host: str = "turbo-gateway.com"):
         self.gateway_host = gateway_host
         self.enabled = False
+        self.wallet_mode: str | None = None
         self._signer = None
         self._upload_url = None
         self._token = None
@@ -26,32 +42,92 @@ class ArweaveAnchor:
         try:
             from turbo_sdk import ArweaveSigner, Turbo
 
-            jwk = None
-            required_jwk_fields = {"kty", "n", "e", "d", "p", "q", "dp", "dq", "qi"}
-            if wallet_path and os.path.exists(wallet_path):
-                try:
-                    with open(wallet_path) as f:
-                        jwk = json.load(f)
-                    if not isinstance(jwk, dict) or not required_jwk_fields.issubset(jwk):
-                        raise ValueError("wallet file is not a complete RSA JWK")
-                    logger.info(f"Using Arweave wallet from {wallet_path}")
-                except (OSError, json.JSONDecodeError, ValueError) as e:
-                    logger.warning(
-                        f"Invalid Arweave wallet at {wallet_path}: {e}; generating a fresh in-memory wallet"
-                    )
-                    jwk = None
-            if jwk is None:
-                jwk = self._generate_wallet()
-                logger.info("Auto-generated in-memory Arweave wallet for anchoring")
+            jwk, mode = self._load_or_create_wallet(wallet_path)
 
             self._signer = ArweaveSigner(jwk)
             turbo = Turbo(self._signer)
             self._upload_url = turbo.upload_url
             self._token = turbo.token
             self.enabled = True
-            logger.info(f"Arweave anchoring enabled (wallet: {self._signer.get_wallet_address()})")
+            self.wallet_mode = mode
+
+            address = self._signer.get_wallet_address()
+            if mode == WALLET_MODE_USER:
+                logger.info(f"Arweave anchoring enabled (wallet: {address}, mode=user-configured)")
+            elif mode == WALLET_MODE_PERSISTENT:
+                logger.info(
+                    f"Arweave anchoring enabled (wallet: {address}, mode=persistent, "
+                    f"path={DEFAULT_WALLET_PATH}) — set ARIO_MLFLOW_ARWEAVE_WALLET to use your own"
+                )
+            else:
+                logger.warning(
+                    f"Arweave anchoring enabled (wallet: {address}, mode=ephemeral) — "
+                    f"wallet is in-memory only and will rotate on restart. "
+                    f"Persistent wallet path {DEFAULT_WALLET_PATH} was not writable."
+                )
         except Exception as e:
             logger.warning(f"Failed to initialize Arweave anchor: {e}")
+
+    @classmethod
+    def _load_or_create_wallet(cls, wallet_path: str) -> tuple[dict, str]:
+        """Return ``(jwk, mode)`` for the wallet to use.
+
+        Resolution order:
+
+        1. Caller-supplied ``wallet_path`` (or ``ARIO_MLFLOW_ARWEAVE_WALLET``)
+           — validate and use if well-formed; otherwise log a warning and
+           fall through to (2).
+        2. ``DEFAULT_WALLET_PATH`` — if it already exists, reuse it; if it
+           doesn't, generate a new wallet and persist it there.
+        3. If step (2)'s filesystem write fails, fall back to a pure
+           in-memory wallet (``ephemeral`` mode).
+        """
+        if wallet_path and os.path.exists(wallet_path):
+            try:
+                with open(wallet_path) as f:
+                    jwk = json.load(f)
+                if not isinstance(jwk, dict) or not _REQUIRED_JWK_FIELDS.issubset(jwk):
+                    raise ValueError("wallet file is not a complete RSA JWK")
+                return jwk, WALLET_MODE_USER
+            except (OSError, json.JSONDecodeError, ValueError) as e:
+                logger.warning(
+                    f"Invalid Arweave wallet at {wallet_path}: {e}; "
+                    f"falling back to auto-generated wallet"
+                )
+
+        # No user-configured wallet (or it was invalid). Try to reuse or
+        # create a persistent one.
+        if os.path.exists(DEFAULT_WALLET_PATH):
+            try:
+                with open(DEFAULT_WALLET_PATH) as f:
+                    jwk = json.load(f)
+                if isinstance(jwk, dict) and _REQUIRED_JWK_FIELDS.issubset(jwk):
+                    return jwk, WALLET_MODE_PERSISTENT
+                logger.warning(
+                    f"Persistent wallet at {DEFAULT_WALLET_PATH} is malformed; regenerating"
+                )
+            except (OSError, json.JSONDecodeError) as e:
+                logger.warning(
+                    f"Could not read persistent wallet at {DEFAULT_WALLET_PATH}: {e}; regenerating"
+                )
+
+        jwk = cls._generate_wallet()
+        try:
+            os.makedirs(os.path.dirname(DEFAULT_WALLET_PATH), exist_ok=True)
+            with open(DEFAULT_WALLET_PATH, "w") as f:
+                json.dump(jwk, f)
+            os.chmod(DEFAULT_WALLET_PATH, 0o600)
+            logger.info(
+                f"Auto-generated Arweave wallet at {DEFAULT_WALLET_PATH} — "
+                f"back this up or set ARIO_MLFLOW_ARWEAVE_WALLET for production use"
+            )
+            return jwk, WALLET_MODE_PERSISTENT
+        except OSError as e:
+            logger.warning(
+                f"Could not persist auto-generated wallet to {DEFAULT_WALLET_PATH}: {e}; "
+                f"using in-memory wallet for this session only"
+            )
+            return jwk, WALLET_MODE_EPHEMERAL
 
     @staticmethod
     def _generate_wallet() -> dict:

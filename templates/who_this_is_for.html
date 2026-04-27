@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+
+{% block title %}Who this is for — Verifiable AI{% endblock %}
+
+{% block styles %}
+    .wtif-intro {
+        max-width: 820px;
+        margin-bottom: 2.5rem;
+    }
+    .wtif-intro p {
+        font-size: 0.95rem;
+        color: var(--muted);
+        line-height: 1.7;
+    }
+    .persona-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 1rem;
+    }
+    .persona-card {
+        background: #fff;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 1.25rem 1.4rem;
+        display: flex;
+        flex-direction: column;
+    }
+    .persona-role {
+        font-family: 'Besley', serif;
+        font-weight: 800;
+        font-size: 1.05rem;
+        color: var(--black);
+        margin-bottom: 0.35rem;
+    }
+    .persona-who {
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        margin-bottom: 0.85rem;
+    }
+    .persona-question {
+        font-size: 0.88rem;
+        color: var(--black);
+        line-height: 1.6;
+        margin-bottom: 1rem;
+        font-style: italic;
+    }
+    .persona-answer {
+        font-size: 0.85rem;
+        color: var(--muted);
+        line-height: 1.6;
+        margin-bottom: 1rem;
+    }
+    .persona-link {
+        margin-top: auto;
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: var(--primary);
+        text-decoration: none;
+    }
+    .persona-link:hover { text-decoration: underline; }
+    .wtif-disclaimer {
+        margin-top: 2.5rem;
+        padding: 1rem 1.25rem;
+        background: #f9fafb;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        font-size: 0.82rem;
+        color: var(--muted);
+        line-height: 1.6;
+    }
+{% endblock %}
+
+{% block content %}
+    <div class="page-header">
+        <div>
+            <h1>Who this is for</h1>
+            <p>Four audiences asking different versions of the same question — "can anyone independently verify what our AI actually did?"</p>
+        </div>
+    </div>
+
+    <div class="wtif-intro">
+        <p>
+            This is an early-stage demo of <code>ario-mlflow</code>, a plugin that anchors signed proofs of training runs, model registrations, and every individual inference to Arweave via ar.io. Four kinds of people come to this demo for four different reasons — the cards below are each of their doorways in.
+        </p>
+    </div>
+
+    <div class="persona-grid">
+
+        <div class="persona-card">
+            <div class="persona-who">ML engineer in a regulated industry</div>
+            <div class="persona-role">"Which model made this decision 14 months ago?"</div>
+            <div class="persona-question">
+                "The regulator just asked about a specific credit decision from Q2 last year. The MLflow run was pruned. I can't reconstruct it."
+            </div>
+            <div class="persona-answer">
+                Call <code>ario_mlflow.anchor()</code> once inside your training loop and every run mints a signed proof on Arweave. Even if your MLflow server is gone, any third party can fetch the proof and verify exactly what ran.
+            </div>
+            <a href="https://github.com/kempsterrrr/Verifiable-AI-Decision-Records-Demo/blob/main/ario_mlflow/README.md" target="_blank" rel="noopener" class="persona-link">Read the plugin README &rarr;</a>
+        </div>
+
+        <div class="persona-card">
+            <div class="persona-who">Head of AI governance</div>
+            <div class="persona-role">"What fraction of our AI decisions are actually auditable?"</div>
+            <div class="persona-question">
+                "Our CRO asks quarterly. Today I have to guess. Different ML teams use different stacks. Nothing is consistent."
+            </div>
+            <div class="persona-answer">
+                Today this demo shows one anchored model; a coverage dashboard and policy gates ("can't promote to prod unless lineage is anchored") are on the roadmap. The proof format is already in shape for consolidated reporting.
+            </div>
+            <a href="/ui/decisions" class="persona-link">See model lineage in action &rarr;</a>
+        </div>
+
+        <div class="persona-card">
+            <div class="persona-who">External ML auditor</div>
+            <div class="persona-role">"Is the model they evaluated the model they deployed?"</div>
+            <div class="persona-question">
+                "Clients hand me Jupyter notebooks and evaluation CSVs. I have no way to verify those artifacts are the ones actually in production."
+            </div>
+            <div class="persona-answer">
+                Every anchored proof is independently verifiable — re-hash the canonical record, check the Ed25519 signature, fetch the permanent copy from Arweave. No client access required. A standalone verifier portal is on the roadmap.
+            </div>
+            <a href="/ui/decisions" class="persona-link">Verify a sample decision &rarr;</a>
+        </div>
+
+        <div class="persona-card">
+            <div class="persona-who">Open-source model publisher</div>
+            <div class="persona-role">"How do I prove the weights match my paper?"</div>
+            <div class="persona-question">
+                "I published a fine-tune on Hugging Face. Someone claims the weights don't match the results in the paper. I'd like to prove they do."
+            </div>
+            <div class="persona-answer">
+                The proof format (SHA-256 artifact hash + Ed25519 signature anchored on Arweave) is public-model-publishing friendly. A dedicated <code>huggingface-cli</code> plugin and a model-card badge are on the roadmap — the underlying primitive is usable today.
+            </div>
+            <a href="https://github.com/kempsterrrr/Verifiable-AI-Decision-Records-Demo/blob/main/ROADMAP.md" target="_blank" rel="noopener" class="persona-link">Read the roadmap &rarr;</a>
+        </div>
+
+    </div>
+
+    <div class="wtif-disclaimer">
+        <strong>A note on scope.</strong>
+        This is an early-stage demonstration of a proof-of-provenance pipeline, not a production compliance tool. The plugin anchors model-artifact hashes and decision records; deeper commitments (training-data hashes, external identity binding, continuous verification, semantic attestation) are explicitly on the <a href="https://github.com/kempsterrrr/Verifiable-AI-Decision-Records-Demo/blob/main/ROADMAP.md" target="_blank" rel="noopener">roadmap</a>. The goal today is to make the core primitive easy to try and honest about what it covers.
+    </div>
+{% endblock %}

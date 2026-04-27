@@ -292,8 +292,9 @@
             <a href="/" class="topbar-title">Verifiable AI</a>
             <div class="topbar-nav">
                 <a href="/" class="{% block nav_models %}{% endblock %}">Models</a>
-                <a href="/ui/predictions" class="{% block nav_predictions %}{% endblock %}">Predictions</a>
+                <a href="/ui/decisions" class="{% block nav_decisions %}{% endblock %}">Decisions</a>
                 <a href="{% block lineage_url %}/{% endblock %}" class="{% block nav_lineage %}{% endblock %}">Model Lineage</a>
+                <a href="/ui/who-this-is-for" class="{% block nav_wtif %}{% endblock %}">Who this is for</a>
             </div>
         </div>
         <div class="topbar-right">
@@ -307,9 +308,9 @@
                 <span class="sys-dot {{ 'sys-dot-on' if arweave_enabled else 'sys-dot-off' }}"></span>
                 Arweave
             </div>
-            <div class="sys-status">
+            <div class="sys-status" title="{{ 'ar.io Verify service is reachable — third-party attestations available' if ario_verify_enabled else 'ar.io Verify service is offline — only local + Arweave verification available' }}">
                 <span class="sys-dot {{ 'sys-dot-on' if ario_verify_enabled else 'sys-dot-off' }}"></span>
-                ar.io Verify
+                ar.io Verify{% if not ario_verify_enabled %} (offline){% endif %}
             </div>
         </div>
     </div>
@@ -320,10 +321,12 @@
 
     <footer class="site-footer">
         <div class="footer-left">
-            <span class="footer-cta">Preparing for AI compliance?</span>
-            <a href="https://calendly.com/placeholder/verifiable-ai" target="_blank" class="footer-link">Book a 20-min walkthrough</a>
+            <span class="footer-cta">Early-stage demo of verifiable AI provenance.</span>
+            <a href="https://github.com/kempsterrrr/Verifiable-AI-Decision-Records-Demo" target="_blank" rel="noopener" class="footer-link">Source on GitHub</a>
             <span class="footer-sep">|</span>
-            <a href="https://form.typeform.com/to/placeholder" target="_blank" class="footer-link">Request early access</a>
+            <a href="https://github.com/kempsterrrr/Verifiable-AI-Decision-Records-Demo/blob/main/ario_mlflow/README.md" target="_blank" rel="noopener" class="footer-link">Plugin README</a>
+            <span class="footer-sep">|</span>
+            <a href="https://github.com/kempsterrrr/Verifiable-AI-Decision-Records-Demo/issues/new" target="_blank" rel="noopener" class="footer-link">Share feedback</a>
         </div>
     </footer>
 

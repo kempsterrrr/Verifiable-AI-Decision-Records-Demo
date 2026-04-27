@@ -919,3 +919,33 @@ def test_anchor_dataset_raises_on_missing_path(tmp_path):
 
     with pytest.raises(FileNotFoundError):
         anchor_dataset(name="x", path=str(tmp_path / "does-not-exist"))
+
+
+def test_anchor_chains_to_dataset_tx_when_tag_present(monkeypatch, tmp_path):
+    """When the run carries an ario.dataset_tx tag, anchor() chains to it."""
+    import mlflow
+    from ario_mlflow.anchoring import anchor
+
+    mlflow.set_tracking_uri(f"file://{tmp_path}/mlruns")
+    mlflow.set_experiment("test")
+
+    from ario_mlflow.proof import ProofEngine
+
+    keys = tmp_path / "keys"
+    keys.mkdir()
+    pe = ProofEngine(str(keys / "priv.pem"), str(keys / "pub.pem"))
+
+    class _DisabledArweave:
+        enabled = False
+        def upload_proof(self, *a, **kw): return None
+
+    with mlflow.start_run() as run:
+        mlflow.set_tag("ario.dataset_tx", "DATASET_TX_ABC123")
+        # Log a dummy artifact so anchor() has something to hash.
+        artifact = tmp_path / "dummy.txt"
+        artifact.write_text("hello")
+        mlflow.log_artifact(str(artifact), artifact_path="model")
+        result = anchor(proof_engine=pe, arweave=_DisabledArweave())
+
+    assert result["proof"]["record"]["dataset_tx"] == "DATASET_TX_ABC123"
+    assert result["proof"]["previous_hash"] == "DATASET_TX_ABC123"

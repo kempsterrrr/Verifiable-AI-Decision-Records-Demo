@@ -194,6 +194,8 @@ def anchor(
         artifact_error = str(e)
     art_hash = hash_data(canonical_json(checksums)) if checksums else None
 
+    dataset_tx = run_data.data.tags.get("ario.dataset_tx")
+
     record = {
         "event_id": str(uuid.uuid4()),
         "event_type": "training_complete",
@@ -203,11 +205,12 @@ def anchor(
         "metrics": metrics,
         "artifact_checksums": checksums,
         "artifact_hash": art_hash,
+        "dataset_tx": dataset_tx,
         "source_name": run_data.data.tags.get("mlflow.source.name", ""),
         "git_commit": run_data.data.tags.get("mlflow.source.git.commit", ""),
     }
 
-    proof = proof_engine.create_proof(record, "GENESIS")
+    proof = proof_engine.create_proof(record, dataset_tx or "GENESIS")
 
     anchor_result = arweave.upload_proof(proof) if arweave.enabled else None
 

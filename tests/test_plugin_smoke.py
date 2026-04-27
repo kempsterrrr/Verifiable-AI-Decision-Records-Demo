@@ -7,6 +7,7 @@ or MLflow server required.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -705,11 +706,11 @@ def test_arweave_upload_proof_sets_post_timeout(monkeypatch):
     class _FakeDataItem:
         def get_raw(self): return b"payload"
 
-    import sys, types
+    import types
     fake_bundle = types.ModuleType("turbo_sdk.bundle")
     fake_bundle.create_data = lambda data, signer, tags: _FakeDataItem()
     fake_bundle.sign = lambda item, signer: None
-    sys.modules["turbo_sdk.bundle"] = fake_bundle
+    monkeypatch.setitem(sys.modules, "turbo_sdk.bundle", fake_bundle)
 
     result = anchor.upload_proof({"record": {"event_type": "x"}, "record_hash": "h"})
     assert result is not None
@@ -1148,6 +1149,9 @@ def test_demo_train_and_register_writes_chain_tags(monkeypatch, tmp_path):
     monkeypatch.setenv("ED25519_PRIVATE_KEY_PATH", str(keys_dir / "priv.pem"))
     monkeypatch.setenv("ED25519_PUBLIC_KEY_PATH", str(keys_dir / "pub.pem"))
 
+    mlflow.set_tracking_uri(f"file://{tmp_path}/mlruns")
+    mlflow.set_experiment("Default")
+
     from app.model import train_and_register_with_params
 
     info = train_and_register_with_params(
@@ -1160,7 +1164,7 @@ def test_demo_train_and_register_writes_chain_tags(monkeypatch, tmp_path):
     client = mlflow.tracking.MlflowClient(tracking_uri=f"file://{tmp_path}/mlruns")
     run = client.get_run(info["run_id"])
     tags = run.data.tags
-    assert "ario.dataset_tx" in tags or tags.get("ario.dataset_status") == "signed"
+    assert "ario.dataset_hash" in tags
     assert "ario.artifact_hash" in tags
     # In offline mode (no wallet), upload returns None — verify_status is "signed".
     assert tags.get("ario.verify_status") in {"signed", "anchored"}

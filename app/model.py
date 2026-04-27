@@ -11,6 +11,7 @@ import logging
 import os
 import tempfile
 
+import ario_mlflow
 import mlflow
 import mlflow.sklearn
 import numpy as np
@@ -78,16 +79,17 @@ def train_and_register_with_params(
     random_state: int = 42,
 ) -> dict:
     """Train the credit classifier with configurable params, anchor data + run, register."""
-    import ario_mlflow
-
     mlflow.set_tracking_uri(tracking_uri)
-    mlflow.set_experiment("Default")
 
     X, y = _generate_credit_data(n_samples=800, random_state=random_state)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=random_state,
     )
 
+    # StandardScaler is essential here because features span three orders of
+    # magnitude (income ~10^4, utilization ~10^-1). Without scaling the
+    # classifier's fit is dominated by income and essentially ignores the
+    # ratio features — bad for a demo meant to illustrate sensible decisions.
     pipeline = Pipeline([
         ("scaler", StandardScaler()),
         ("classifier", LogisticRegression(max_iter=max_iter, random_state=random_state)),
@@ -121,8 +123,6 @@ def train_and_register_with_params(
             # Tag the run with dataset_tx so anchor() chains to it.
             if dataset_result["tx_id"]:
                 mlflow.set_tag("ario.dataset_tx", dataset_result["tx_id"])
-            else:
-                mlflow.set_tag("ario.dataset_status", "signed")
             mlflow.set_tag("ario.dataset_hash", dataset_result["dataset_hash"])
 
             # Log dataset itself as an artifact so verifiers can re-hash it.

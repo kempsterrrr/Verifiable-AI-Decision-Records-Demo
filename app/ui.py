@@ -18,7 +18,7 @@ templates = Jinja2Templates(directory="templates")
 def _common_context(app):
     """Shared template context for all pages (status bar, model info)."""
     return {
-        "model_info": app.state.model_info,
+        "model_info": app.state.model_info or {},
         "arweave_enabled": app.state.anchor.enabled if app.state.anchor else False,
         "ario_verify_enabled": app.state.ario_verify.enabled if app.state.ario_verify else False,
     }
@@ -77,6 +77,116 @@ def _verify_envelope(app, envelope):
     return result, local
 
 
+def _envelope_from_arweave(app, tx_id: str | None) -> dict | None:
+    """Materialize a template-friendly envelope by fetching the proof from Arweave.
+
+    Returns None when no tx is anchored yet. The fetched envelope already has
+    record, record_hash, signature, public_key (signed by the plugin). We add
+    arweave_tx_id and arweave_url so existing templates keep working.
+    """
+    if not tx_id or not app.state.anchor or not app.state.anchor.enabled:
+        return None
+    proof = app.state.anchor.fetch_proof(tx_id)
+    if not proof:
+        return None
+    return {
+        **proof,
+        "arweave_tx_id": tx_id,
+        "arweave_url": f"https://{app.state.settings.ario_gateway_host}/raw/{tx_id}",
+    }
+
+
+def _envelope_from_trace_tags(tags: dict, span_attributes: dict | None = None) -> dict:
+    """Build a partial envelope from an MLflow trace's tags.
+
+    Useful for /ui/decisions and /ui/decisions/{id} when no Arweave fetch is
+    needed — gives templates enough to render: decision_id, model name/version,
+    timestamps, status, hashes.
+    """
+    record = {
+        "decision_id": tags.get("ario.decision_id"),
+        "event_type": "prediction",
+        "model_name": tags.get("ario.model_name"),
+        "model_version": tags.get("ario.model_version"),
+        "input_hash": tags.get("ario.input_hash"),
+        "output_hash": tags.get("ario.output_hash"),
+    }
+    return {
+        "record": record,
+        "record_hash": tags.get("ario.record_hash"),
+        "public_key": tags.get("ario.public_key"),
+        "arweave_tx_id": tags.get("ario.arweave_tx"),
+        "arweave_url": tags.get("ario.arweave_url"),
+        "proof_status": tags.get("ario.proof_status"),
+    }
+
+
+def _list_recent_decisions(app, max_results: int = 50) -> list[dict]:
+    """Return recent decision envelopes by querying MLflow traces.
+
+    Replaces the old app.state.store.list_all() — predictions live as traces now.
+    """
+    settings = app.state.settings
+    mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+    client = mlflow.tracking.MlflowClient()
+    try:
+        # Search across all experiments (in single-experiment demo, there's just "Default").
+        experiments = client.search_experiments()
+        experiment_ids = [e.experiment_id for e in experiments] or ["0"]
+        traces = client.search_traces(
+            experiment_ids=experiment_ids,
+            filter_string="tags.`ario.decision_id` != ''",
+            max_results=max_results,
+            order_by=["timestamp DESC"],
+        )
+    except Exception as e:
+        logger.warning(f"MLflow trace search failed: {e}")
+        return []
+
+    envelopes = []
+    for trace in traces:
+        # MLflow trace .info.tags is the tag dict.
+        tags = dict(getattr(trace.info, "tags", {}) or {})
+        envelopes.append(_envelope_from_trace_tags(tags))
+    return envelopes
+
+
+def _decision_envelope_by_id(app, decision_id: str) -> dict | None:
+    """Look up a single decision's envelope by decision_id.
+
+    Tries trace search first; if the trace's arweave_tx is present, fetches the
+    canonical envelope from Arweave for full verification. Falls back to the
+    trace-tag envelope when the prediction isn't anchored yet.
+    """
+    settings = app.state.settings
+    mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+    client = mlflow.tracking.MlflowClient()
+    try:
+        experiments = client.search_experiments()
+        experiment_ids = [e.experiment_id for e in experiments] or ["0"]
+        traces = client.search_traces(
+            experiment_ids=experiment_ids,
+            filter_string=f"tags.`ario.decision_id` = '{decision_id}'",
+            max_results=1,
+        )
+    except Exception as e:
+        logger.warning(f"Trace lookup for decision_id={decision_id} failed: {e}")
+        return None
+
+    if not traces:
+        return None
+
+    tags = dict(getattr(traces[0].info, "tags", {}) or {})
+    tx_id = tags.get("ario.arweave_tx")
+    if tx_id:
+        # Prefer the canonical Arweave proof for verification.
+        from_chain = _envelope_from_arweave(app, tx_id)
+        if from_chain:
+            return from_chain
+    # Fall back to trace-tag envelope (sufficient for read-only display).
+    return _envelope_from_trace_tags(tags)
+
+
 @router.get("/ui/predictions")
 def predictions_redirect():
     """Permanent redirect from the old URL. Bookmarks keep working."""
@@ -86,32 +196,20 @@ def predictions_redirect():
 @router.get("/ui/decisions", response_class=HTMLResponse)
 def decisions(request: Request):
     app = request.app
-    records = app.state.store.list_all()
-    model_info = app.state.model_info
-
-    # Lifecycle status for provenance card
-    training_env = app.state.lifecycle_store.get_by_run_id(model_info["run_id"])
-    registration_env = app.state.lifecycle_store.get_by_model_version(
-        model_info["model_name"], model_info["model_version"]
-    )
+    records = _list_recent_decisions(app)
+    model_info = app.state.model_info or {}
 
     training_status = "none"
-    if training_env:
-        if _is_fully_verified(training_env.get("last_verification")):
-            training_status = "verified"
-        elif training_env.get("arweave_tx_id"):
-            training_status = "anchored"
-        else:
-            training_status = "local"
-
     registration_status = "none"
-    if registration_env:
-        if _is_fully_verified(registration_env.get("last_verification")):
-            registration_status = "verified"
-        elif registration_env.get("arweave_tx_id"):
-            registration_status = "anchored"
-        else:
-            registration_status = "local"
+    if model_info.get("model_name") and model_info.get("model_version"):
+        chain = app.state.ario_client.lifecycle_for_model(
+            model_info["model_name"], version=model_info["model_version"]
+        )
+        for event in chain:
+            if event["event_type"] == "training_complete" and event.get("tx_id"):
+                training_status = "anchored"
+            elif event["event_type"] == "model_registered" and event.get("tx_id"):
+                registration_status = "anchored"
 
     return templates.TemplateResponse(
         request,
@@ -130,7 +228,7 @@ def model_registry(request: Request):
     app = request.app
     settings = app.state.settings
     model_name = settings.mlflow_model_name
-    active_version = app.state.model_info["model_version"]
+    active_version = (app.state.model_info or {}).get("model_version", "")
 
     mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
     client = mlflow.tracking.MlflowClient()
@@ -139,7 +237,6 @@ def model_registry(request: Request):
     version_data = []
 
     for mv in sorted(versions, key=lambda v: int(v.version), reverse=True):
-        # Get run metrics
         accuracy = None
         created = None
         if mv.run_id:
@@ -150,26 +247,23 @@ def model_registry(request: Request):
             except Exception:
                 pass
 
-        # Check lifecycle anchoring status
-        training_env = app.state.lifecycle_store.get_by_run_id(mv.run_id) if mv.run_id else None
-        reg_env = app.state.lifecycle_store.get_by_model_version(model_name, str(mv.version))
-
-        def _status(env):
-            if not env:
-                return "none"
-            if _is_fully_verified(env.get("last_verification")):
-                return "verified"
-            if env.get("arweave_tx_id"):
-                return "anchored"
-            return "local"
+        # Read chain status from the plugin instead of LifecycleStore.
+        chain = app.state.ario_client.lifecycle_for_model(model_name, version=str(mv.version))
+        training_status = "none"
+        registration_status = "none"
+        for event in chain:
+            if event["event_type"] == "training_complete" and event.get("tx_id"):
+                training_status = "anchored"
+            elif event["event_type"] == "model_registered" and event.get("tx_id"):
+                registration_status = "anchored"
 
         version_data.append({
             "version": str(mv.version),
             "run_id": mv.run_id or "",
             "accuracy": accuracy,
             "stage": mv.current_stage if hasattr(mv, "current_stage") else "None",
-            "training_status": _status(training_env),
-            "registration_status": _status(reg_env),
+            "training_status": training_status,
+            "registration_status": registration_status,
             "is_active": str(mv.version) == str(active_version),
             "created": datetime.fromtimestamp(created / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M") if created else "",
         })
@@ -205,20 +299,23 @@ def who_this_is_for(request: Request):
 @router.get("/ui/decisions/{decision_id}", response_class=HTMLResponse)
 def decision_detail(request: Request, decision_id: str, verify: bool = False):
     app = request.app
-    envelope = app.state.store.get_by_id(decision_id)
+    envelope = _decision_envelope_by_id(app, decision_id)
 
     if not envelope:
         return HTMLResponse("<h1>Decision not found</h1>", status_code=404)
 
-    # Local verification (always — instant, no network)
-    local = app.state.proof_engine.verify_local(envelope)
+    # Local verification (works when envelope was fetched from Arweave —
+    # which has the full record + signature + public_key for verification).
+    local = None
+    if envelope.get("signature") and envelope.get("public_key"):
+        local = app.state.proof_engine.verify_local(envelope)
 
-    # Full verification (on-demand — user-triggered via ?verify=true)
+    # Full verification (on-demand)
     if verify and envelope.get("arweave_tx_id"):
         result = {
             "verified_at": datetime.now(timezone.utc).isoformat(),
-            "hash_valid": local["hash_valid"],
-            "signature_valid": local["signature_valid"],
+            "hash_valid": local["hash_valid"] if local else None,
+            "signature_valid": local["signature_valid"] if local else None,
             "permanent_copy_found": False,
             "hash_match": False,
             "attestation_level": None,
@@ -228,15 +325,12 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
             "attested_at": None,
         }
 
-        # Fetch from ar.io gateway and compare
         arweave_data = app.state.anchor.fetch_proof(envelope["arweave_tx_id"])
         if arweave_data:
             arweave_hash = hash_data(canonical_json(arweave_data.get("record", {})))
             result["permanent_copy_found"] = True
             result["hash_match"] = arweave_hash == arweave_data.get("record_hash")
 
-        # ar.io Verify attestation. Plugin's submit_verification returns a
-        # pre-normalized dict — no second _normalize_result call needed.
         if app.state.ario_verify.enabled:
             normalized = app.state.ario_verify.submit_verification(envelope["arweave_tx_id"])
             if normalized:
@@ -246,11 +340,10 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
                 result["attested_by"] = normalized.get("attested_by")
                 result["attested_at"] = normalized.get("attested_at")
 
-        # Persist results on the envelope
         envelope["last_verification"] = result
-        app.state.store.update(decision_id, envelope)
+        # NOTE: We don't persist last_verification anymore (no local store).
+        # The verification result is just shown to the user this request.
 
-    # Check Turbo status for anchored records (fast, single HTTP call)
     turbo_status = None
     if envelope.get("arweave_tx_id"):
         turbo_status = app.state.anchor.check_status(envelope["arweave_tx_id"])
@@ -271,9 +364,23 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
 def run_detail(request: Request, run_id: str, verify: bool = False):
     app = request.app
 
-    envelope = app.state.lifecycle_store.get_by_run_id(run_id)
-    if not envelope:
+    # Resolve the model name/version owning this run, then fetch the chain.
+    settings = app.state.settings
+    mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+    client = mlflow.tracking.MlflowClient()
+    try:
+        run = client.get_run(run_id)
+    except Exception:
         return HTMLResponse("<h1>Training run not found</h1>", status_code=404)
+
+    training_tx = run.data.tags.get("ario.training_tx")
+    envelope = _envelope_from_arweave(app, training_tx) if training_tx else None
+    if not envelope:
+        return HTMLResponse(
+            "<h1>This run has no anchored training proof yet</h1>"
+            "<p>Either training_tx is still propagating or this run was not anchored.</p>",
+            status_code=404,
+        )
 
     local = app.state.proof_engine.verify_local(envelope)
 
@@ -281,32 +388,13 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
         result, _ = _verify_envelope(app, envelope)
         result["verified_at"] = datetime.now(timezone.utc).isoformat()
         envelope["last_verification"] = result
-        app.state.lifecycle_store.update(envelope["record"]["event_id"], envelope)
+        # No store to update.
 
     turbo_status = None
     if envelope.get("arweave_tx_id"):
         turbo_status = app.state.anchor.check_status(envelope["arweave_tx_id"])
 
-    # Fetch the live MLflow tags directly from the tracking store so evaluators
-    # can confirm the ario.* tags are really on the run (not synthesised by the
-    # demo UI). This is the closest thing to "View in MLflow UI" we can offer
-    # without running a second server alongside uvicorn on Railway.
-    mlflow_tags: dict[str, str] = {}
-    try:
-        import mlflow as _mlflow
-        settings = app.state.settings
-        _mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
-        client = _mlflow.tracking.MlflowClient()
-        run = client.get_run(run_id)
-        mlflow_tags = dict(run.data.tags)
-    except Exception as e:
-        # Log and degrade to an empty tag set so the page still renders,
-        # but don't let a tracking-store outage masquerade as "tagless run".
-        logger.warning(
-            "MLflow live-tag lookup failed for run %s: %s", run_id, e
-        )
-        mlflow_tags = {}
-
+    mlflow_tags = dict(run.data.tags)
     ario_tags = {k: v for k, v in sorted(mlflow_tags.items()) if k.startswith("ario.")}
 
     return templates.TemplateResponse(
@@ -318,11 +406,6 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
             "local_verification": local,
             "turbo_status": turbo_status,
             "mlflow_ario_tags": ario_tags,
-            # Pass the configured URI verbatim — evaluators run the
-            # suggested command from the repo root, where relative
-            # tracking URIs like "mlruns" resolve. Exposing the server's
-            # absolute path (e.g. "/app/mlruns" on Railway) leaks
-            # deployment detail and isn't useful to the reader.
             "mlflow_tracking_uri": app.state.settings.mlflow_tracking_uri,
         },
     )
@@ -332,49 +415,59 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
 def model_chain(request: Request, model_name: str, version: str, verify: bool = False):
     app = request.app
 
-    # Get lifecycle records
-    lifecycle_records = app.state.lifecycle_store.list_all()
-    training_env = None
-    registration_env = None
+    chain = app.state.ario_client.lifecycle_for_model(model_name, version=version)
+    # Index by event_type for the existing template's variable shape.
+    by_type = {e["event_type"]: e for e in chain}
 
-    for rec in lifecycle_records:
-        r = rec.get("record", {})
-        if r.get("event_type") == "training_complete" and r.get("model_name") == model_name and str(r.get("model_version")) == str(version):
-            training_env = rec
-        elif r.get("event_type") == "model_registered" and r.get("model_name") == model_name and str(r.get("model_version")) == str(version):
-            registration_env = rec
+    training_event = by_type.get("training_complete")
+    registration_event = by_type.get("model_registered")
+    dataset_event = by_type.get("dataset_anchored")
+    promotion_event = by_type.get("stage_transition")
 
-    # Local verification for each
+    # Materialize template-shape envelopes by fetching from Arweave.
+    training_env = _envelope_from_arweave(app, training_event["tx_id"]) if training_event else None
+    registration_env = _envelope_from_arweave(app, registration_event["tx_id"]) if registration_event else None
+
     training_local = app.state.proof_engine.verify_local(training_env) if training_env else None
     registration_local = app.state.proof_engine.verify_local(registration_env) if registration_env else None
 
-    # Full verification (on-demand)
     training_verify = None
     registration_verify = None
     if verify:
         if training_env:
             training_verify, _ = _verify_envelope(app, training_env)
             training_env["last_verification"] = training_verify
-            app.state.lifecycle_store.update(training_env["record"]["event_id"], training_env)
         if registration_env:
             registration_verify, _ = _verify_envelope(app, registration_env)
             registration_env["last_verification"] = registration_verify
-            app.state.lifecycle_store.update(registration_env["record"]["event_id"], registration_env)
 
-    # Prediction summary
-    predictions = app.state.store.list_all()
-    model_predictions = [
-        p for p in predictions
-        if p.get("record", {}).get("model_name") == model_name
-        and str(p.get("record", {}).get("model_version")) == str(version)
-    ]
-    anchored_count = sum(1 for p in model_predictions if p.get("arweave_tx_id"))
-    verified_count = sum(
-        1 for p in model_predictions
-        if not p.get("tampered") and _is_fully_verified(p.get("last_verification"))
+    # Prediction summary — query traces tagged with this model.
+    settings = app.state.settings
+    mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+    client = mlflow.tracking.MlflowClient()
+    try:
+        experiments = client.search_experiments()
+        experiment_ids = [e.experiment_id for e in experiments] or ["0"]
+        traces = client.search_traces(
+            experiment_ids=experiment_ids,
+            filter_string=(
+                f"tags.`ario.model_name` = '{model_name}' "
+                f"and tags.`ario.model_version` = '{version}'"
+            ),
+            max_results=200,
+        )
+    except Exception as e:
+        logger.warning(f"Trace search failed for {model_name}/v{version}: {e}")
+        traces = []
+
+    prediction_count = len(traces)
+    anchored_count = sum(
+        1 for t in traces
+        if (getattr(t.info, "tags", {}) or {}).get("ario.arweave_tx")
     )
+    # Verified count is on-demand only; without iterating Arweave we can't compute.
+    verified_count = 0
 
-    # Turbo status for each
     training_turbo = None
     registration_turbo = None
     if training_env and training_env.get("arweave_tx_id"):
@@ -395,8 +488,11 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
             "registration": registration_env,
             "registration_local": registration_local,
             "registration_turbo": registration_turbo,
-            "prediction_count": len(model_predictions),
+            "prediction_count": prediction_count,
             "anchored_count": anchored_count,
             "verified_count": verified_count,
+            # NEW context keys for templates that want to surface dataset/promotion links.
+            "dataset_event": dataset_event,
+            "promotion_event": promotion_event,
         },
     )

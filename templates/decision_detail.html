@@ -195,6 +195,7 @@
             <div class="section">
                 <div class="section-header">Prediction</div>
                 <div class="section-body">
+                    {% if envelope.record.prediction %}
                     <div class="kv">
                         <div class="kv-row">
                             <span class="kv-key">Class</span>
@@ -220,6 +221,11 @@
                         </div>
                         {% endfor %}
                     </div>
+                    {% else %}
+                    <div class="prediction-pending">
+                        <p>Full prediction details available once the proof anchors to Arweave.</p>
+                    </div>
+                    {% endif %}
                 </div>
             </div>
 

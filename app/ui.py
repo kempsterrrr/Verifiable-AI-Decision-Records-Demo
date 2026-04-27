@@ -100,16 +100,28 @@ def _envelope_from_trace_tags(tags: dict, span_attributes: dict | None = None) -
     """Build a partial envelope from an MLflow trace's tags.
 
     Useful for /ui/decisions and /ui/decisions/{id} when no Arweave fetch is
-    needed — gives templates enough to render: decision_id, model name/version,
-    timestamps, status, hashes.
+    needed. The record dict is populated with safe defaults for fields the
+    decision_detail template reads, so a missing-key crash never reaches the
+    user. Templates that need the full record (prediction details, etc.)
+    should fall back to "fetch from Arweave" via _envelope_from_arweave when
+    a tx_id is available.
     """
     record = {
         "decision_id": tags.get("ario.decision_id"),
         "event_type": "prediction",
+        "timestamp": tags.get("ario.timestamp"),
         "model_name": tags.get("ario.model_name"),
         "model_version": tags.get("ario.model_version"),
+        "mlflow_run_id": tags.get("ario.run_id") or tags.get("mlflow.run_id"),
         "input_hash": tags.get("ario.input_hash"),
         "output_hash": tags.get("ario.output_hash"),
+        # The full proof body lives on Arweave — these fields are only present
+        # in the Arweave-fetched envelope, never in the trace-tag fallback.
+        "prediction": None,
+        "artifact_uri": None,
+        "service_name": None,
+        "trace_id": None,
+        "span_id": None,
     }
     return {
         "record": record,
@@ -364,7 +376,6 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
 def run_detail(request: Request, run_id: str, verify: bool = False):
     app = request.app
 
-    # Resolve the model name/version owning this run, then fetch the chain.
     settings = app.state.settings
     mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
     client = mlflow.tracking.MlflowClient()
@@ -373,29 +384,49 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
     except Exception:
         return HTMLResponse("<h1>Training run not found</h1>", status_code=404)
 
-    training_tx = run.data.tags.get("ario.training_tx")
-    envelope = _envelope_from_arweave(app, training_tx) if training_tx else None
-    if not envelope:
-        return HTMLResponse(
-            "<h1>This run has no anchored training proof yet</h1>"
-            "<p>Either training_tx is still propagating or this run was not anchored.</p>",
-            status_code=404,
-        )
+    mlflow_tags = dict(run.data.tags)
+    ario_tags = {k: v for k, v in sorted(mlflow_tags.items()) if k.startswith("ario.")}
 
-    local = app.state.proof_engine.verify_local(envelope)
+    training_tx = mlflow_tags.get("ario.training_tx")
+    envelope = _envelope_from_arweave(app, training_tx) if training_tx else None
+    if envelope is None:
+        # Offline/no-anchor fallback — the page still renders the MLflow tags so
+        # evaluators can see ario.* lifecycle metadata even when there's no
+        # Arweave proof to fetch (e.g., dev mode without a wallet).
+        envelope = {
+            "record": {
+                "event_type": "training_complete",
+                "run_id": run_id,
+                "model_name": mlflow_tags.get("ario.model_name"),
+                "model_version": mlflow_tags.get("ario.model_version"),
+                "params": dict(run.data.params),
+                "metrics": dict(run.data.metrics),
+                # Artifact integrity fields — sourced from tags where available.
+                "artifact_hash": mlflow_tags.get("ario.artifact_hash"),
+                "artifact_checksums": None,
+                "git_commit": mlflow_tags.get("ario.git_commit"),
+                # event_id used by the JS polling loop in run_detail.html.
+                "event_id": mlflow_tags.get("ario.event_id"),
+            },
+            "record_hash": mlflow_tags.get("ario.record_hash"),
+            "public_key": mlflow_tags.get("ario.public_key"),
+            "arweave_tx_id": training_tx,
+            "arweave_url": None,
+            "turbo_receipt": None,
+        }
+
+    local = None
+    if envelope.get("signature") and envelope.get("public_key"):
+        local = app.state.proof_engine.verify_local(envelope)
 
     if verify and envelope.get("arweave_tx_id"):
         result, _ = _verify_envelope(app, envelope)
         result["verified_at"] = datetime.now(timezone.utc).isoformat()
         envelope["last_verification"] = result
-        # No store to update.
 
     turbo_status = None
     if envelope.get("arweave_tx_id"):
         turbo_status = app.state.anchor.check_status(envelope["arweave_tx_id"])
-
-    mlflow_tags = dict(run.data.tags)
-    ario_tags = {k: v for k, v in sorted(mlflow_tags.items()) if k.startswith("ario.")}
 
     return templates.TemplateResponse(
         request,

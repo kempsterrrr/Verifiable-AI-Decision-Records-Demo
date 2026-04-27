@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -96,32 +97,65 @@ def _envelope_from_arweave(app, tx_id: str | None) -> dict | None:
     }
 
 
-def _envelope_from_trace_tags(tags: dict, span_attributes: dict | None = None) -> dict:
-    """Build a partial envelope from an MLflow trace's tags.
+def _envelope_from_trace(trace_info) -> dict:
+    """Build a partial envelope from an MLflow TraceInfo.
 
-    Useful for /ui/decisions and /ui/decisions/{id} when no Arweave fetch is
-    needed. The record dict is populated with safe defaults for fields the
-    decision_detail template reads, so a missing-key crash never reaches the
-    user. Templates that need the full record (prediction details, etc.)
-    should fall back to "fetch from Arweave" via _envelope_from_arweave when
-    a tx_id is available.
+    The plugin tags traces with ``ario.*`` metadata but does NOT write the
+    timestamp as a tag — the canonical timestamp lives on
+    ``TraceInfo.request_time`` (Unix ms). Templates render
+    ``record.timestamp[:10]`` so we serialize to ISO-8601 here.
+
+    Surfaces:
+    - the rich display prediction (``ario.display_prediction_json``) the demo
+      writes from ``_run_prediction`` so the prediction card renders without
+      waiting for the Arweave round-trip.
+    - the Turbo receipt (``ario.receipt_json``) the plugin tags after a
+      successful upload, so the upload-receipt card has its values back.
+    - the MLflow trace_id (canonical trace handle, replaces the OTel trace
+      id from the pre-Phase-4 architecture).
     """
+    tags = dict(getattr(trace_info, "tags", {}) or {})
+    request_time_ms = getattr(trace_info, "request_time", None) or getattr(trace_info, "timestamp_ms", None)
+    timestamp_iso: str | None = None
+    if request_time_ms is not None:
+        timestamp_iso = datetime.fromtimestamp(
+            request_time_ms / 1000.0, tz=timezone.utc
+        ).isoformat()
+
+    rich_prediction: dict | None = None
+    raw_pred_json = tags.get("ario.display_prediction_json")
+    if raw_pred_json:
+        try:
+            rich_prediction = json.loads(raw_pred_json)
+        except (ValueError, TypeError):
+            rich_prediction = None
+
+    turbo_receipt: dict | None = None
+    raw_receipt_json = tags.get("ario.receipt_json")
+    if raw_receipt_json:
+        try:
+            turbo_receipt = json.loads(raw_receipt_json)
+        except (ValueError, TypeError):
+            turbo_receipt = None
+
+    mlflow_trace_id = getattr(trace_info, "trace_id", None) or getattr(trace_info, "request_id", None)
+    model_uri = tags.get("ario.model_uri")
+    if not model_uri and tags.get("ario.model_name") and tags.get("ario.model_version"):
+        model_uri = f"models:/{tags['ario.model_name']}/{tags['ario.model_version']}"
+
     record = {
         "decision_id": tags.get("ario.decision_id"),
         "event_type": "prediction",
-        "timestamp": tags.get("ario.timestamp"),
+        "timestamp": timestamp_iso,
         "model_name": tags.get("ario.model_name"),
         "model_version": tags.get("ario.model_version"),
-        "mlflow_run_id": tags.get("ario.run_id") or tags.get("mlflow.run_id"),
+        "run_id": tags.get("ario.run_id") or tags.get("mlflow.run_id"),
+        "model_uri": model_uri,
         "input_hash": tags.get("ario.input_hash"),
         "output_hash": tags.get("ario.output_hash"),
-        # The full proof body lives on Arweave — these fields are only present
-        # in the Arweave-fetched envelope, never in the trace-tag fallback.
-        "prediction": None,
-        "artifact_uri": None,
-        "service_name": None,
-        "trace_id": None,
-        "span_id": None,
+        "prediction": rich_prediction,
+        # MLflow trace id is the canonical trace handle post-Phase-4.
+        "trace_id": mlflow_trace_id,
     }
     return {
         "record": record,
@@ -130,6 +164,7 @@ def _envelope_from_trace_tags(tags: dict, span_attributes: dict | None = None) -
         "arweave_tx_id": tags.get("ario.arweave_tx"),
         "arweave_url": tags.get("ario.arweave_url"),
         "proof_status": tags.get("ario.proof_status"),
+        "turbo_receipt": turbo_receipt,
     }
 
 
@@ -157,9 +192,7 @@ def _list_recent_decisions(app, max_results: int = 50) -> list[dict]:
 
     envelopes = []
     for trace in traces:
-        # MLflow trace .info.tags is the tag dict.
-        tags = dict(getattr(trace.info, "tags", {}) or {})
-        envelopes.append(_envelope_from_trace_tags(tags))
+        envelopes.append(_envelope_from_trace(trace.info))
     return envelopes
 
 
@@ -188,15 +221,29 @@ def _decision_envelope_by_id(app, decision_id: str) -> dict | None:
     if not traces:
         return None
 
-    tags = dict(getattr(traces[0].info, "tags", {}) or {})
+    trace_info = traces[0].info
+    trace_envelope = _envelope_from_trace(trace_info)
+    tags = dict(getattr(trace_info, "tags", {}) or {})
     tx_id = tags.get("ario.arweave_tx")
     if tx_id:
-        # Prefer the canonical Arweave proof for verification.
+        # Prefer the canonical Arweave proof for verification, but overlay the
+        # trace-only fields (display_prediction, turbo_receipt) so the page
+        # has both the signed proof AND the display data the user expects.
         from_chain = _envelope_from_arweave(app, tx_id)
         if from_chain:
+            from_chain = dict(from_chain)
+            # Carry over display-only fields the proof doesn't contain.
+            if trace_envelope.get("turbo_receipt") and not from_chain.get("turbo_receipt"):
+                from_chain["turbo_receipt"] = trace_envelope["turbo_receipt"]
+            # Splice the rich prediction onto the signed record without
+            # mutating the bytes that were hashed (the proof's record_hash
+            # is over a record without 'prediction'; we add it as a sibling
+            # on the in-memory dict for template rendering only).
+            display_pred = trace_envelope.get("record", {}).get("prediction")
+            if display_pred and isinstance(from_chain.get("record"), dict):
+                from_chain["record"] = {**from_chain["record"], "prediction": display_pred}
             return from_chain
-    # Fall back to trace-tag envelope (sufficient for read-only display).
-    return _envelope_from_trace_tags(tags)
+    return trace_envelope
 
 
 @router.get("/ui/predictions")

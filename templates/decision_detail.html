@@ -215,7 +215,7 @@
                     </div>
                     {% else %}
                     <div class="prediction-pending">
-                        <p>Full prediction details available once the proof anchors to Arweave.</p>
+                        <p>Prediction details not recorded for this decision. The proof's <code>input_hash</code> and <code>output_hash</code> below are sufficient for cryptographic verification.</p>
                     </div>
                     {% endif %}
                 </div>
@@ -523,16 +523,30 @@
                             <span class="kv-value">{{ envelope.record.model_name }} / v{{ envelope.record.model_version }}</span>
                         </div>
                         <div class="kv-row">
-                            <span class="kv-key">Run ID</span>
-                            <span class="kv-value mono mono-sm">{{ envelope.record.mlflow_run_id }}</span>
+                            <span class="kv-key">Source Run</span>
+                            <span class="kv-value mono mono-sm"><a href="/ui/runs/{{ envelope.record.run_id }}">{{ envelope.record.run_id }}</a></span>
                         </div>
+                        {% if envelope.record.model_uri %}
                         <div class="kv-row">
-                            <span class="kv-key">Artifact</span>
-                            <span class="kv-value mono mono-sm">{{ envelope.record.artifact_uri }}</span>
+                            <span class="kv-key">Model URI</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.record.model_uri }}</span>
                         </div>
+                        {% endif %}
+                        {% if envelope.record.artifact_verified is not none %}
+                        <div class="kv-row">
+                            <span class="kv-key">Artifact Integrity</span>
+                            <span class="kv-value">
+                                {% if envelope.record.artifact_verified %}
+                                    <span class="check">Verified — model bytes match anchored hash</span>
+                                {% else %}
+                                    <span class="cross">Not verified</span>
+                                {% endif %}
+                            </span>
+                        </div>
+                        {% endif %}
                         <div class="kv-row">
                             <span class="kv-key">Lineage</span>
-                            <span class="kv-value"><a href="/ui/models/{{ envelope.record.model_name }}/{{ envelope.record.model_version }}">View model lineage &rarr;</a></span>
+                            <span class="kv-value"><a href="/ui/models/{{ envelope.record.model_name }}/{{ envelope.record.model_version }}">View full chain &rarr;</a></span>
                         </div>
                     </div>
                 </div>
@@ -544,16 +558,18 @@
                 <div class="section-body">
                     <div class="kv">
                         <div class="kv-row">
-                            <span class="kv-key">Service</span>
-                            <span class="kv-value">{{ envelope.record.service_name }}</span>
+                            <span class="kv-key">Decision ID</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.record.decision_id }}</span>
                         </div>
+                        {% if envelope.record.trace_id %}
                         <div class="kv-row">
-                            <span class="kv-key">Trace ID</span>
+                            <span class="kv-key">MLflow Trace</span>
                             <span class="kv-value mono mono-sm">{{ envelope.record.trace_id }}</span>
                         </div>
+                        {% endif %}
                         <div class="kv-row">
-                            <span class="kv-key">Span ID</span>
-                            <span class="kv-value mono mono-sm">{{ envelope.record.span_id }}</span>
+                            <span class="kv-key">Latency</span>
+                            <span class="kv-value">{{ envelope.record.latency_ms }} ms</span>
                         </div>
                     </div>
                 </div>

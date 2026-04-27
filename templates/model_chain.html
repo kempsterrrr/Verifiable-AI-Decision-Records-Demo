@@ -130,6 +130,50 @@
         </div>
 
         <div class="chain">
+            <!-- Dataset Node (link 1 of the chain) -->
+            <div class="chain-node">
+                {% if dataset_event and dataset_event.tx_id %}
+                    <div class="chain-dot chain-dot-yellow"></div>
+                {% else %}
+                    <div class="chain-dot chain-dot-gray"></div>
+                {% endif %}
+                <div class="chain-card">
+                    <div class="chain-card-header">
+                        <h3>Training Dataset</h3>
+                        {% if dataset_event and dataset_event.tx_id %}
+                            <span class="badge badge-yellow" title="Dataset hashed and anchored to Arweave."><span class="badge-dot"></span> Anchored</span>
+                        {% else %}
+                            <span class="badge badge-gray"><span class="badge-dot"></span> Not anchored</span>
+                        {% endif %}
+                    </div>
+                    {% if dataset_event %}
+                    <div class="chain-card-body">
+                        <div class="kv">
+                            {% if dataset_event.run_id %}
+                            <div class="kv-row">
+                                <span class="kv-key">Source Run</span>
+                                <span class="kv-value mono mono-sm">{{ dataset_event.run_id }}</span>
+                            </div>
+                            {% endif %}
+                            <div class="kv-row">
+                                <span class="kv-key">Anchored before training</span>
+                                <span class="kv-value"><span class="check">Yes</span> — training proof chains to this</span>
+                            </div>
+                        </div>
+                    </div>
+                    {% if dataset_event.tx_id %}
+                    <div class="chain-card-footer">
+                        <a href="https://arweave.net/{{ dataset_event.tx_id }}" target="_blank" class="mono mono-sm">TX: {{ dataset_event.tx_id[:16] }}...</a>
+                    </div>
+                    {% endif %}
+                    {% else %}
+                    <div class="chain-card-body">
+                        <p style="color: var(--muted); font-size: 0.85rem;">No dataset proof anchored for this model version. Train a new version to anchor data → training → registration as a chain.</p>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+
             <!-- Training Node -->
             <div class="chain-node">
                 {% if training %}
@@ -347,6 +391,46 @@
                         {% endif %}
                     </div>
                     {% endif %}
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Promotion Node (link 4) -->
+            <div class="chain-node">
+                {% if promotion_event and promotion_event.tx_id %}
+                    <div class="chain-dot chain-dot-yellow"></div>
+                {% else %}
+                    <div class="chain-dot chain-dot-gray"></div>
+                {% endif %}
+                <div class="chain-card">
+                    <div class="chain-card-header">
+                        <h3>Stage Transition</h3>
+                        {% if promotion_event and promotion_event.tx_id %}
+                            <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
+                        {% else %}
+                            <span class="badge badge-gray" title="No stage transition recorded — model has not been promoted."><span class="badge-dot"></span> Not promoted</span>
+                        {% endif %}
+                    </div>
+                    {% if promotion_event %}
+                    <div class="chain-card-body">
+                        <div class="kv">
+                            {% if promotion_event.previous_tx %}
+                            <div class="kv-row">
+                                <span class="kv-key">Registration TX</span>
+                                <span class="kv-value mono mono-sm">{{ promotion_event.previous_tx[:16] }}...</span>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% if promotion_event.tx_id %}
+                    <div class="chain-card-footer">
+                        <a href="https://arweave.net/{{ promotion_event.tx_id }}" target="_blank" class="mono mono-sm">TX: {{ promotion_event.tx_id[:16] }}...</a>
+                    </div>
+                    {% endif %}
+                    {% else %}
+                    <div class="chain-card-body">
+                        <p style="color: var(--muted); font-size: 0.85rem;">Stage transition (e.g., Staging → Production) is anchored via <code>ArioMlflowClient.transition_model_version_stage()</code>. Not yet performed for this version.</p>
+                    </div>
                     {% endif %}
                 </div>
             </div>

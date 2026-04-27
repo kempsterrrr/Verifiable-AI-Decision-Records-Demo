@@ -60,7 +60,24 @@ def _resolve_model_version(client, model_uri: str):
             logger.warning(f"Could not resolve version {model_uri}: {e}")
             return None
 
-    # Stage URI (deprecated in MLflow 2.9+ but still supported).
+    # "latest" is a common convention for "highest version" — handle it
+    # explicitly because MLflow's filter parser rejects current_stage='latest'
+    # in newer versions where stages were removed entirely.
+    if suffix.lower() == "latest":
+        try:
+            results = client.search_model_versions(f"name='{name}'")
+        except Exception as e:
+            logger.warning(f"Could not list versions for {model_uri}: {e}")
+            return None
+        if not results:
+            return None
+        try:
+            return max(results, key=lambda v: int(v.version))
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Could not pick latest version for {model_uri}: {e}")
+            return None
+
+    # Stage URI (deprecated in MLflow 2.9+ but still supported on older backends).
     try:
         results = client.search_model_versions(
             f"name='{name}' and current_stage='{suffix}'"
@@ -102,6 +119,7 @@ class VerifiedPrediction:
     proof_status: str  # "anchoring" | "anchored" | "disabled" | "failed"
     record: dict | None = None
     tx_id: str | None = None
+    trace_id: str | None = None  # MLflow trace id, so callers can tag the trace
     anchor_error: str | None = None
     _anchor_done: threading.Event = field(
         default_factory=threading.Event, repr=False, compare=False
@@ -311,11 +329,14 @@ class VerifiedModel:
             proof = self._proof_engine.create_proof(record, self._last_hash)
             self._last_hash = proof["record_hash"]
 
+        trace_id = mlflow.get_active_trace_id()
+
         result = VerifiedPrediction(
             prediction=prediction,
             decision_id=decision_id,
             proof_status="disabled" if not self._anchor.enabled else "anchoring",
             record=record,
+            trace_id=trace_id,
         )
         if not self._anchor.enabled:
             # Nothing will mark this done in the background, so callers
@@ -325,7 +346,6 @@ class VerifiedModel:
         # Tag the MLflow trace with proof metadata — links trace to proof.
         # Best-effort: tracing backends can fail (network, backend down); we
         # don't want that to surface as an inference failure.
-        trace_id = mlflow.get_active_trace_id()
         if trace_id:
             try:
                 mlflow.set_trace_tag(trace_id, "ario.decision_id", decision_id)
@@ -362,6 +382,16 @@ class VerifiedModel:
                         mlflow.set_trace_tag(trace_id, "ario.arweave_tx", anchor_result["tx_id"])
                         mlflow.set_trace_tag(trace_id, "ario.arweave_url", anchor_result["url"])
                         mlflow.set_trace_tag(trace_id, "ario.proof_status", "anchored")
+                        # Persist the Turbo receipt so the demo UI can render it
+                        # without re-fetching from the gateway. JSON-encoded so
+                        # the structured fields (timestamp, owner, signature,
+                        # version, deadlineHeight) round-trip via tags.
+                        receipt = anchor_result.get("receipt")
+                        if receipt:
+                            import json as _json
+                            mlflow.set_trace_tag(
+                                trace_id, "ario.receipt_json", _json.dumps(receipt)
+                            )
                     except Exception as e:
                         # Trace may have been flushed by the backend already.
                         logger.debug(f"Could not update trace {trace_id} with anchor tags: {e}")

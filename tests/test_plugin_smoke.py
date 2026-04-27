@@ -609,6 +609,80 @@ def test_verified_model_resolves_stage_uri(monkeypatch):
     assert vm.model_version == "3"
 
 
+def test_artifact_checksums_skips_registered_model_meta(tmp_path, monkeypatch):
+    """Hash is stable across MLflow's post-log_model registry mutations.
+
+    When ArioMlflowClient.create_model_version runs after anchor(), MLflow
+    writes a `registered_model_meta` file into the run's model dir. If
+    artifact_checksums included it, anchor()'s pre-registration hash and
+    VerifiedModel's post-registration re-hash would diverge — making every
+    integrity check fail for any registered model. Skipping it keeps the
+    log → anchor → register pipeline stable.
+    """
+    import mlflow as _mlflow
+    from ario_mlflow.anchoring import artifact_checksums
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "MLmodel").write_text("artifact_path: model\n")
+    (model_dir / "model.pkl").write_bytes(b"fake-pickle-bytes")
+
+    monkeypatch.setattr(
+        _mlflow.artifacts,
+        "download_artifacts",
+        lambda **kw: str(model_dir),
+    )
+
+    pre_register = artifact_checksums("run-x", artifact_path="model")
+    # Simulate MLflow's registry writing meta after registration.
+    (model_dir / "registered_model_meta").write_text('{"name": "credit-scorer"}\n')
+    post_register = artifact_checksums("run-x", artifact_path="model")
+
+    assert pre_register == post_register, (
+        "registered_model_meta must be excluded so integrity check is stable"
+    )
+    assert "registered_model_meta" not in post_register
+    assert "MLmodel" in post_register
+    assert "model.pkl" in post_register
+
+
+def test_verified_model_resolves_latest_uri(monkeypatch):
+    """models:/name/latest picks the highest version number.
+
+    Regression: stages were removed in newer MLflow, so the previous
+    fallback (search by current_stage='latest') returned an empty list and
+    the demo's lifespan loaded with model_name='unknown' until the user
+    trained a fresh version.
+    """
+    import ario_mlflow.model as model_module
+    from ario_mlflow.model import VerifiedModel
+
+    class _FakeMV:
+        def __init__(self, version):
+            self.name = "credit-scorer"
+            self.version = version
+            self.run_id = f"run-{version}"
+            self.source = f"runs:/run-{version}/model"
+
+    class _FakeClient:
+        def search_model_versions(self, query):
+            return [_FakeMV(1), _FakeMV(7), _FakeMV(3)]
+
+        def get_model_version(self, *a, **kw):
+            raise AssertionError("numeric API was used for a 'latest' URI")
+
+        def get_run(self, run_id):
+            return type("R", (), {"data": type("D", (), {"tags": {}})()})()
+
+    monkeypatch.setattr(model_module.mlflow.tracking, "MlflowClient", lambda: _FakeClient())
+    monkeypatch.setattr(model_module, "artifact_checksums", lambda *a, **kw: {})
+    monkeypatch.setattr(model_module.mlflow.pyfunc, "load_model", lambda uri: object())
+
+    vm = VerifiedModel("models:/credit-scorer/latest")
+    assert vm.model_name == "credit-scorer"
+    assert vm.model_version == "7"  # highest of [1, 7, 3]
+
+
 # --- Previously missed out-of-diff regressions ----------------------------
 
 
@@ -1168,3 +1242,47 @@ def test_demo_train_and_register_writes_chain_tags(monkeypatch, tmp_path):
     assert "ario.artifact_hash" in tags
     # In offline mode (no wallet), upload returns None — verify_status is "signed".
     assert tags.get("ario.verify_status") in {"signed", "anchored"}
+
+
+def test_demo_train_and_register_is_idempotent_when_model_exists(monkeypatch, tmp_path):
+    """train_and_register_with_params can be called repeatedly for the same model.
+
+    Regression test: the original Phase 4 code matched MlflowException's
+    "already exists" path against str(e), but the literal string
+    "RESOURCE_ALREADY_EXISTS" is the error_code attribute, not part of the
+    message — so the second call always re-raised. Live demo's /api/train
+    endpoint hit this whenever the model was already registered (i.e., the
+    second time anyone trained).
+    """
+    import mlflow
+
+    monkeypatch.delenv("ARIO_MLFLOW_SIGNING_KEY", raising=False)
+    monkeypatch.setenv("ARIO_MLFLOW_ARWEAVE_WALLET", "")
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", f"file://{tmp_path}/mlruns")
+
+    keys_dir = tmp_path / "keys"
+    keys_dir.mkdir()
+    monkeypatch.setenv("ED25519_PRIVATE_KEY_PATH", str(keys_dir / "priv.pem"))
+    monkeypatch.setenv("ED25519_PUBLIC_KEY_PATH", str(keys_dir / "pub.pem"))
+
+    mlflow.set_tracking_uri(f"file://{tmp_path}/mlruns")
+    mlflow.set_experiment("Default")
+
+    from app.model import train_and_register_with_params
+
+    info1 = train_and_register_with_params(
+        tracking_uri=f"file://{tmp_path}/mlruns",
+        model_name="credit_idem",
+        max_iter=50,
+        random_state=7,
+    )
+    info2 = train_and_register_with_params(
+        tracking_uri=f"file://{tmp_path}/mlruns",
+        model_name="credit_idem",
+        max_iter=50,
+        random_state=8,
+    )
+
+    assert info1["model_version"] == "1"
+    assert info2["model_version"] == "2"
+    assert info1["run_id"] != info2["run_id"]

@@ -67,11 +67,27 @@ def parse_runs_uri(source: str | None) -> tuple[str | None, str | None]:
     return (run_id or None), (artifact_path or None)
 
 
+# Files that MLflow's model registry writes INTO the run's model dir as part
+# of registration. These appear AFTER ``mlflow.<flavor>.log_model()`` returns
+# but during/after ``create_model_version()`` — so anchor()'s pre-registration
+# hash and VerifiedModel's post-registration re-hash would diverge if we
+# included them. Excluding them keeps the integrity check stable across the
+# log_model → anchor() → create_model_version() pipeline.
+_REGISTRY_META_FILES = frozenset({
+    "registered_model_meta",
+})
+
+
 def artifact_checksums(client_or_run_id, run_id: str | None = None, artifact_path: str = "model") -> dict[str, str]:
     """Compute SHA-256 checksums of model artifacts in an MLflow run.
 
     Uses ``mlflow.artifacts.download_artifacts`` which works with both
     file-based and database-backed tracking stores in MLflow 3.x.
+
+    Excludes MLflow registry metadata files (e.g. ``registered_model_meta``)
+    because they are written by ``create_model_version`` AFTER the model has
+    been logged — including them would make the hash unstable across the
+    "log → anchor → register" pipeline used by demos that anchor in-flight.
 
     Args:
         client_or_run_id: An MlflowClient (ignored, kept for backward compat) or a run_id string.
@@ -92,6 +108,8 @@ def artifact_checksums(client_or_run_id, run_id: str | None = None, artifact_pat
     checksums: dict[str, str] = {}
     for root, _dirs, files in os.walk(local_path):
         for fname in files:
+            if fname in _REGISTRY_META_FILES:
+                continue
             fpath = os.path.join(root, fname)
             rel = os.path.relpath(fpath, local_path)
             try:

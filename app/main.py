@@ -68,9 +68,18 @@ async def lifespan(app: FastAPI):
             f"{app.state.model_info['model_name']}/v{app.state.model_info['model_version']}"
         )
     except IntegrityError as e:
-        # Tampered artifacts are a hard failure, not a "no model yet" case.
-        logger.error(f"VerifiedModel integrity check FAILED: {e}")
-        raise
+        # Tampered/mismatched artifacts on the resolved version. Don't silently
+        # downgrade — this is a security signal — but don't crash the server
+        # either, otherwise the user can't even reach /api/train to recover by
+        # training a fresh version. Log loudly, surface the failure on app
+        # state so the UI can warn, and refuse to serve predictions until a
+        # clean model is loaded (api_train will overwrite verified_model).
+        logger.error(
+            f"VerifiedModel integrity check FAILED at startup: {e}. "
+            f"Predictions disabled until a fresh model is trained."
+        )
+        app.state.verified_model = None
+        app.state.model_info = {"integrity_error": str(e)}
     except Exception as e:
         # On a fresh deployment with no model yet, models:/<name>/latest raises.
         logger.warning(f"VerifiedModel load deferred: {e}")
@@ -90,6 +99,54 @@ tracer = trace.get_tracer(__name__)
 app.include_router(ui_router)
 
 
+def _enrich_prediction(verified_model, features: list[float], raw_prediction) -> dict | None:
+    """Build a display-friendly prediction dict for the demo UI.
+
+    Plugin records hold only input/output hashes — sufficient for verifiability,
+    insufficient for showing "approved with 87% confidence". This wraps
+    sklearn-specific knowledge (CLASS_NAMES, predict_proba) so the demo can
+    render the badged prediction card. Display-only; the on-chain proof is
+    unaffected.
+    """
+    try:
+        from app.model import CLASS_NAMES
+        pyfunc = getattr(verified_model, "_model", None)
+        if pyfunc is None or not hasattr(raw_prediction, "__getitem__"):
+            return None
+        class_index = int(raw_prediction[0])
+        rich = {
+            "class": CLASS_NAMES[class_index] if 0 <= class_index < len(CLASS_NAMES) else str(class_index),
+            "class_index": class_index,
+            "features_used": dict(zip(FEATURE_NAMES, features)),
+            "probabilities": {},
+        }
+        # predict_proba is sklearn-specific and lives on the underlying
+        # estimator, not the pyfunc wrapper. Try a few attribute paths.
+        candidates = [pyfunc]
+        impl = getattr(pyfunc, "_model_impl", None)
+        if impl is not None:
+            candidates.append(impl)
+            for attr in ("sklearn_model", "python_model", "model"):
+                inner = getattr(impl, attr, None)
+                if inner is not None:
+                    candidates.append(inner)
+        for cand in candidates:
+            if hasattr(cand, "predict_proba"):
+                try:
+                    proba = cand.predict_proba([features])[0]
+                    rich["probabilities"] = {
+                        CLASS_NAMES[i] if i < len(CLASS_NAMES) else str(i): float(p)
+                        for i, p in enumerate(proba)
+                    }
+                    break
+                except Exception as e:
+                    logger.debug(f"predict_proba on {type(cand).__name__} failed: {e}")
+        return rich
+    except Exception as e:
+        logger.warning(f"Could not enrich prediction display: {e}")
+        return None
+
+
 def _run_prediction(app_state, features: list[float]):
     """Run inference via the plugin's VerifiedModel. Returns (envelope, vp).
 
@@ -97,13 +154,33 @@ def _run_prediction(app_state, features: list[float]):
     /predict JSON contract — but the underlying state is now plugin-managed:
     record + signing + chained Arweave anchoring all happen inside
     VerifiedModel.predict() on a daemon thread.
+
+    For display, we enrich the record with a sklearn-specific prediction dict
+    (class name, probabilities, features_used) and tag the MLflow trace so
+    page reloads (which read from the trace, not from this response) show the
+    same data.
     """
     input_data = dict(zip(FEATURE_NAMES, features))
     vp = app_state.verified_model.predict(input_data)
 
+    rich_prediction = _enrich_prediction(app_state.verified_model, features, vp.prediction)
+    record = dict(vp.record) if vp.record else {}
+    if rich_prediction:
+        record["prediction"] = rich_prediction
+        # Persist on the trace so /ui/decisions/{id} reloads see the same data.
+        if vp.trace_id:
+            try:
+                import json
+                import mlflow
+                mlflow.set_trace_tag(
+                    vp.trace_id, "ario.display_prediction_json", json.dumps(rich_prediction)
+                )
+            except Exception as e:
+                logger.debug(f"Could not tag trace with display prediction: {e}")
+
     envelope = {
         "decision_id": vp.decision_id,
-        "record": vp.record,
+        "record": record,
         "proof_status": vp.proof_status,
         "tx_id": vp.tx_id,
     }

@@ -146,9 +146,11 @@ def train_and_register_with_params(
             try:
                 ario_client.create_registered_model(model_name)
             except MlflowException as e:
-                # RESOURCE_ALREADY_EXISTS is the expected idempotent path.
-                # Any other MLflow error should surface.
-                if "RESOURCE_ALREADY_EXISTS" not in str(e):
+                # RESOURCE_ALREADY_EXISTS is the expected idempotent path —
+                # the previous match against str(e) was wrong (the literal
+                # "RESOURCE_ALREADY_EXISTS" is the error_code attribute, not
+                # part of the human message). Any other code re-raises.
+                if e.error_code != "RESOURCE_ALREADY_EXISTS":
                     raise
             mv = ario_client.create_model_version(
                 name=model_name,

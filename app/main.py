@@ -24,7 +24,7 @@ from app.lifecycle import build_training_record, build_registration_record
 from app.model import load_model, predict, train_and_register_with_params, FEATURE_NAMES
 from ario_mlflow import VerifiedModel
 from ario_mlflow.client import ArioMlflowClient
-from ario_mlflow.model import IntegrityError
+from ario_mlflow.model import IntegrityError, VerifiedPrediction
 from app.ui import router as ui_router
 
 logging.basicConfig(level=logging.INFO)
@@ -197,54 +197,24 @@ def _anchor_record(store, anchor, decision_id: str, proof: dict):
         logger.error(f"Background anchoring failed for {decision_id}: {e}")
 
 
-def _run_prediction(app_state, features: list[float]) -> tuple[dict, dict]:
-    """Core prediction flow: inference -> record -> proof -> store. Anchoring happens async."""
-    settings = app_state.settings
-    model_info = app_state.model_info
+def _run_prediction(app_state, features: list[float]):
+    """Run inference via the plugin's VerifiedModel. Returns (envelope, vp).
 
-    with tracer.start_as_current_span("predict") as span:
-        trace_id = format(span.get_span_context().trace_id, "032x")
-        span_id = format(span.get_span_context().span_id, "016x")
+    The envelope shape is preserved for the existing template renderers and the
+    /predict JSON contract — but the underlying state is now plugin-managed:
+    record + signing + chained Arweave anchoring all happen inside
+    VerifiedModel.predict() on a daemon thread.
+    """
+    input_data = dict(zip(FEATURE_NAMES, features))
+    vp = app_state.verified_model.predict(input_data)
 
-        # Run inference
-        start = time.time()
-        input_data = dict(zip(FEATURE_NAMES, features))
-        prediction = predict(model_info["model"], features)
-        latency_ms = (time.time() - start) * 1000
-
-        # Build decision record
-        record = build_decision_record(
-            input_data=input_data,
-            prediction=prediction,
-            model_name=model_info["model_name"],
-            model_version=model_info["model_version"],
-            mlflow_run_id=model_info["run_id"],
-            artifact_uri=model_info["artifact_uri"],
-            trace_id=trace_id,
-            span_id=span_id,
-            latency_ms=latency_ms,
-            service_name=settings.otel_service_name,
-        )
-
-        # Get previous hash for chaining
-        last = app_state.store.get_last()
-        previous_hash = last["record_hash"] if last else "GENESIS"
-
-        # Create proof
-        proof = app_state.proof_engine.create_proof(record, previous_hash)
-
-        # Build local envelope: proof + placeholder anchoring metadata
-        envelope = {
-            **proof,
-            "arweave_tx_id": None,
-            "arweave_url": None,
-            "turbo_receipt": None,
-        }
-
-        # Store immediately (without Arweave data)
-        app_state.store.append(envelope)
-
-        return envelope, proof
+    envelope = {
+        "decision_id": vp.decision_id,
+        "record": vp.record,
+        "proof_status": vp.proof_status,
+        "tx_id": vp.tx_id,
+    }
+    return envelope, vp
 
 
 # --- API Endpoints ---
@@ -263,16 +233,7 @@ def api_predict(request: Request, body: dict, background_tasks: BackgroundTasks)
     features = [
         float(body.get(name, FEATURE_DEFAULTS[name])) for name in FEATURE_NAMES
     ]
-    envelope, proof = _run_prediction(request.app.state, features)
-    decision_id = envelope["record"]["decision_id"]
-    if request.app.state.anchor.enabled:
-        background_tasks.add_task(
-            _anchor_record,
-            request.app.state.store,
-            request.app.state.anchor,
-            decision_id,
-            proof,
-        )
+    envelope, _vp = _run_prediction(request.app.state, features)
     return envelope
 
 
@@ -294,17 +255,8 @@ def form_predict(
         "credit_score": credit_score,
     }
     features = [float(form_values[name]) for name in FEATURE_NAMES]
-    envelope, proof = _run_prediction(request.app.state, features)
-    decision_id = envelope["record"]["decision_id"]
-    if request.app.state.anchor.enabled:
-        background_tasks.add_task(
-            _anchor_record,
-            request.app.state.store,
-            request.app.state.anchor,
-            decision_id,
-            proof,
-        )
-    return RedirectResponse(f"/ui/decisions/{decision_id}", status_code=303)
+    envelope, _vp = _run_prediction(request.app.state, features)
+    return RedirectResponse(f"/ui/decisions/{envelope['decision_id']}", status_code=303)
 
 
 @app.post("/api/train")

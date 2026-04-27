@@ -5,6 +5,9 @@ def __getattr__(name):
     if name == "anchor":
         from ario_mlflow.anchoring import anchor
         return anchor
+    if name == "anchor_dataset":
+        from ario_mlflow.anchoring import anchor_dataset
+        return anchor_dataset
     if name == "VerifiedModel":
         from ario_mlflow.model import VerifiedModel
         return VerifiedModel
@@ -17,4 +20,4 @@ def __getattr__(name):
     raise AttributeError(f"module 'ario_mlflow' has no attribute {name!r}")
 
 
-__all__ = ["anchor", "VerifiedModel", "IntegrityError", "ArioMlflowClient"]
+__all__ = ["anchor", "anchor_dataset", "VerifiedModel", "IntegrityError", "ArioMlflowClient"]

@@ -264,3 +264,81 @@ def anchor(
         "artifact_status": artifact_status,
         "artifact_error": artifact_error,
     }
+
+
+def anchor_dataset(
+    name: str,
+    path: str,
+    proof_engine: ProofEngine | None = None,
+    arweave: ArweaveAnchor | None = None,
+) -> dict:
+    """Anchor a training dataset as the origin link in the provenance chain.
+
+    Hashes every file at ``path`` (a single file or a directory walked
+    recursively), signs a ``dataset_anchored`` proof envelope, and uploads
+    it to Arweave when an anchor is enabled. The returned ``tx_id`` is
+    intended to be written onto the subsequent training run as the
+    ``ario.dataset_tx`` MLflow tag, so :func:`anchor` can chain to it.
+
+    Args:
+        name: Logical dataset name (e.g. ``"credit_train_v3"``). Recorded
+            in the proof so verifiers can identify the dataset without
+            inspecting bytes.
+        path: Path to a single file or a directory of files.
+        proof_engine: Optional override for the signing engine.
+        arweave: Optional override for the Arweave anchor client.
+
+    Returns:
+        A dict with keys ``proof``, ``anchor_result`` (None if anchoring
+        disabled or upload failed), ``tx_id`` (the Arweave tx, or None),
+        and ``dataset_hash`` (canonical hash of the file→sha256 mapping).
+    """
+    if proof_engine is None:
+        proof_engine = ProofEngine()
+    if arweave is None:
+        arweave = ArweaveAnchor(
+            os.environ.get("ARIO_MLFLOW_ARWEAVE_WALLET", ""),
+            os.environ.get("ARIO_MLFLOW_GATEWAY_HOST", "turbo-gateway.com"),
+        )
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Dataset path does not exist: {path!r}")
+
+    files: dict[str, str] = {}
+    if os.path.isfile(path):
+        with open(path, "rb") as f:
+            files[os.path.basename(path)] = hashlib.sha256(f.read()).hexdigest()
+    else:
+        for root, _dirs, filenames in os.walk(path):
+            for fname in filenames:
+                fpath = os.path.join(root, fname)
+                rel = os.path.relpath(fpath, path)
+                with open(fpath, "rb") as f:
+                    files[rel] = hashlib.sha256(f.read()).hexdigest()
+
+    dataset_hash = hash_data(canonical_json(files))
+
+    record = {
+        "event_id": str(uuid.uuid4()),
+        "event_type": "dataset_anchored",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "dataset_name": name,
+        "dataset_files": files,
+        "dataset_hash": dataset_hash,
+    }
+
+    proof = proof_engine.create_proof(record, "GENESIS")
+    anchor_result = arweave.upload_proof(proof) if arweave.enabled else None
+    tx_id = anchor_result["tx_id"] if anchor_result else None
+
+    logger.info(
+        f"Dataset {name!r} anchored: files={len(files)}, "
+        f"status={'anchored' if anchor_result else 'signed'}"
+    )
+
+    return {
+        "proof": proof,
+        "anchor_result": anchor_result,
+        "tx_id": tx_id,
+        "dataset_hash": dataset_hash,
+    }

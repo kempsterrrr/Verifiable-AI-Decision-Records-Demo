@@ -859,3 +859,63 @@ def test_chain_integrity_empty_store_is_intact():
         "intact": True,
         "broken_at": None,
     }
+
+
+# --- anchor_dataset (Task 1: dataset link in the chain) -------------------
+
+
+def test_anchor_dataset_hashes_single_file(tmp_path):
+    """anchor_dataset() returns a proof whose record contains the file's sha256."""
+    import hashlib
+    from ario_mlflow.anchoring import anchor_dataset
+
+    data = b"feature1,feature2,label\n1,2,0\n3,4,1\n"
+    dataset_file = tmp_path / "train.csv"
+    dataset_file.write_bytes(data)
+    expected_sha = hashlib.sha256(data).hexdigest()
+
+    # Disable Arweave so the test is offline.
+    class _DisabledArweave:
+        enabled = False
+        def upload_proof(self, *a, **kw): return None
+
+    result = anchor_dataset(name="train", path=str(dataset_file), arweave=_DisabledArweave())
+
+    assert result["proof"]["record"]["event_type"] == "dataset_anchored"
+    assert result["proof"]["record"]["dataset_name"] == "train"
+    assert result["proof"]["record"]["dataset_files"] == {"train.csv": expected_sha}
+    assert result["proof"]["record"]["dataset_hash"] is not None
+    assert result["anchor_result"] is None  # Arweave disabled
+
+
+def test_anchor_dataset_hashes_directory_recursively(tmp_path):
+    """Directory paths walk recursively, with relative paths preserved as keys."""
+    import hashlib
+    from ario_mlflow.anchoring import anchor_dataset
+
+    (tmp_path / "splits").mkdir()
+    train_bytes = b"x,y\n1,0\n2,1\n"
+    test_bytes = b"x,y\n3,1\n"
+    (tmp_path / "splits" / "train.csv").write_bytes(train_bytes)
+    (tmp_path / "splits" / "test.csv").write_bytes(test_bytes)
+
+    class _DisabledArweave:
+        enabled = False
+        def upload_proof(self, *a, **kw): return None
+
+    result = anchor_dataset(name="credit", path=str(tmp_path), arweave=_DisabledArweave())
+
+    files = result["proof"]["record"]["dataset_files"]
+    assert files == {
+        "splits/train.csv": hashlib.sha256(train_bytes).hexdigest(),
+        "splits/test.csv": hashlib.sha256(test_bytes).hexdigest(),
+    }
+
+
+def test_anchor_dataset_raises_on_missing_path(tmp_path):
+    """Missing path raises FileNotFoundError instead of producing a bogus hash."""
+    import pytest
+    from ario_mlflow.anchoring import anchor_dataset
+
+    with pytest.raises(FileNotFoundError):
+        anchor_dataset(name="x", path=str(tmp_path / "does-not-exist"))

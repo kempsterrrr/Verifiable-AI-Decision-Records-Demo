@@ -9,6 +9,7 @@ than flower measurements.
 
 import logging
 import os
+import tempfile
 
 import mlflow
 import mlflow.sklearn
@@ -76,18 +77,17 @@ def train_and_register_with_params(
     max_iter: int = 200,
     random_state: int = 42,
 ) -> dict:
-    """Train the credit classifier with configurable params and register it."""
+    """Train the credit classifier with configurable params, anchor data + run, register."""
+    import ario_mlflow
+
     mlflow.set_tracking_uri(tracking_uri)
+    mlflow.set_experiment("Default")
 
     X, y = _generate_credit_data(n_samples=800, random_state=random_state)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=random_state,
     )
 
-    # StandardScaler is essential here because features span three orders of
-    # magnitude (income ~10^4, utilization ~10^-1). Without scaling the
-    # classifier's fit is dominated by income and essentially ignores the
-    # ratio features — bad for a demo meant to illustrate sensible decisions.
     pipeline = Pipeline([
         ("scaler", StandardScaler()),
         ("classifier", LogisticRegression(max_iter=max_iter, random_state=random_state)),
@@ -95,37 +95,67 @@ def train_and_register_with_params(
     pipeline.fit(X_train, y_train)
     accuracy = pipeline.score(X_test, y_test)
 
-    with mlflow.start_run() as run:
-        mlflow.log_param("model_type", "LogisticRegression+StandardScaler")
-        mlflow.log_param("max_iter", max_iter)
-        mlflow.log_param("random_state", random_state)
-        mlflow.log_param("n_training_samples", len(X_train))
-        mlflow.log_param("feature_names", ",".join(FEATURE_NAMES))
-        mlflow.log_metric("accuracy", accuracy)
+    # Persist the training split to disk so we can hash it as the dataset link.
+    # Using the test split would also be valid; we anchor the train split as the
+    # one the model was actually fit on.
+    with tempfile.TemporaryDirectory() as data_dir:
+        train_path = os.path.join(data_dir, "credit_train.csv")
+        header = ",".join(FEATURE_NAMES + ["label"])
+        rows = np.column_stack([X_train, y_train])
+        np.savetxt(train_path, rows, delimiter=",", header=header, comments="", fmt="%.6f")
 
-        model_info = mlflow.sklearn.log_model(
-            pipeline,
-            "model",
-            registered_model_name=model_name,
-            input_example=X_train[:1],
+        # Link 1: dataset.
+        dataset_result = ario_mlflow.anchor_dataset(
+            name=f"{model_name}_train_rs{random_state}",
+            path=train_path,
         )
 
-        client = mlflow.tracking.MlflowClient()
-        versions = client.search_model_versions(f"name='{model_name}'")
-        latest_version = max(int(v.version) for v in versions)
+        with mlflow.start_run() as run:
+            mlflow.log_param("model_type", "LogisticRegression+StandardScaler")
+            mlflow.log_param("max_iter", max_iter)
+            mlflow.log_param("random_state", random_state)
+            mlflow.log_param("n_training_samples", len(X_train))
+            mlflow.log_param("feature_names", ",".join(FEATURE_NAMES))
+            mlflow.log_metric("accuracy", accuracy)
 
-        logger.info(
-            f"Credit model trained: accuracy={accuracy:.4f}, "
-            f"run_id={run.info.run_id}, version={latest_version}"
-        )
+            # Tag the run with dataset_tx so anchor() chains to it.
+            if dataset_result["tx_id"]:
+                mlflow.set_tag("ario.dataset_tx", dataset_result["tx_id"])
+            else:
+                mlflow.set_tag("ario.dataset_status", "signed")
+            mlflow.set_tag("ario.dataset_hash", dataset_result["dataset_hash"])
 
-        return {
-            "run_id": run.info.run_id,
-            "model_name": model_name,
-            "model_version": str(latest_version),
-            "artifact_uri": model_info.model_uri,
-            "accuracy": accuracy,
-        }
+            # Log dataset itself as an artifact so verifiers can re-hash it.
+            mlflow.log_artifact(train_path, artifact_path="dataset")
+
+            model_info = mlflow.sklearn.log_model(
+                pipeline,
+                "model",
+                registered_model_name=model_name,
+                input_example=X_train[:1],
+            )
+
+            # Link 2: training run. anchor() reads ario.dataset_tx and chains.
+            ario_mlflow.anchor(artifact_path="model")
+
+            client = mlflow.tracking.MlflowClient()
+            versions = client.search_model_versions(f"name='{model_name}'")
+            latest_version = max(int(v.version) for v in versions)
+
+            logger.info(
+                f"Credit model trained: accuracy={accuracy:.4f}, "
+                f"run_id={run.info.run_id}, version={latest_version}, "
+                f"dataset_tx={dataset_result['tx_id']}"
+            )
+
+            return {
+                "run_id": run.info.run_id,
+                "model_name": model_name,
+                "model_version": str(latest_version),
+                "artifact_uri": model_info.model_uri,
+                "accuracy": accuracy,
+                "dataset_tx": dataset_result["tx_id"],
+            }
 
 
 class _IncompatibleSchemaError(Exception):

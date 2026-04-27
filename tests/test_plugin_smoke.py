@@ -1128,3 +1128,39 @@ def test_lifecycle_for_model_returns_empty_when_no_versions(tmp_path, monkeypatc
     mlflow.set_tracking_uri(f"file://{tmp_path}/mlruns")
     client = ArioMlflowClient(tracking_uri=f"file://{tmp_path}/mlruns")
     assert client.lifecycle_for_model("does-not-exist") == []
+
+
+# --- Task 5: demo training anchors dataset and run via plugin ---------------
+
+
+def test_demo_train_and_register_writes_chain_tags(monkeypatch, tmp_path):
+    """train_and_register_with_params writes dataset_tx + training_tx tags."""
+    import mlflow
+
+    monkeypatch.delenv("ARIO_MLFLOW_SIGNING_KEY", raising=False)
+    monkeypatch.setenv("ARIO_MLFLOW_ARWEAVE_WALLET", "")
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", f"file://{tmp_path}/mlruns")
+
+    # Demo expects keys at known paths via env or settings; make ProofEngine
+    # use ephemeral keys.
+    keys_dir = tmp_path / "keys"
+    keys_dir.mkdir()
+    monkeypatch.setenv("ED25519_PRIVATE_KEY_PATH", str(keys_dir / "priv.pem"))
+    monkeypatch.setenv("ED25519_PUBLIC_KEY_PATH", str(keys_dir / "pub.pem"))
+
+    from app.model import train_and_register_with_params
+
+    info = train_and_register_with_params(
+        tracking_uri=f"file://{tmp_path}/mlruns",
+        model_name="credit_test",
+        max_iter=50,
+        random_state=7,
+    )
+
+    client = mlflow.tracking.MlflowClient(tracking_uri=f"file://{tmp_path}/mlruns")
+    run = client.get_run(info["run_id"])
+    tags = run.data.tags
+    assert "ario.dataset_tx" in tags or tags.get("ario.dataset_status") == "signed"
+    assert "ario.artifact_hash" in tags
+    # In offline mode (no wallet), upload returns None — verify_status is "signed".
+    assert tags.get("ario.verify_status") in {"signed", "anchored"}

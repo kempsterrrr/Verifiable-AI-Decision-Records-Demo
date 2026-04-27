@@ -229,7 +229,20 @@ class VerifiedModel:
         # Only now load the model.
         self._model = mlflow.pyfunc.load_model(load_uri)
 
-        self._last_hash = "GENESIS"
+        # Seed the prediction chain from the loaded model version's lifecycle
+        # tags so the first prediction's previous_hash points back into the
+        # data->training->registration->promotion chain. Prefer promotion_tx
+        # (the most recent lifecycle event), fall back to registration_tx,
+        # finally GENESIS for orphaned models.
+        seed_hash = "GENESIS"
+        mv_tags = getattr(mv, "tags", None) if mv is not None else None
+        if mv_tags:
+            seed_hash = (
+                mv_tags.get("ario.promotion_tx")
+                or mv_tags.get("ario.registration_tx")
+                or "GENESIS"
+            )
+        self._last_hash = seed_hash
         self._lock = threading.Lock()
 
     @mlflow.trace(name="VerifiedModel.predict")

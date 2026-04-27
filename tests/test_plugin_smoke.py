@@ -951,3 +951,116 @@ def test_anchor_chains_to_dataset_tx_when_tag_present(monkeypatch, tmp_path):
 
     assert result["proof"]["record"]["dataset_tx"] == "DATASET_TX_ABC123"
     assert result["proof"]["previous_hash"] == "DATASET_TX_ABC123"
+
+
+# --- VerifiedModel chains to lifecycle tx (Task 3: inference link) --------
+
+
+def test_verified_model_predict_chains_to_promotion_tx(monkeypatch, tmp_path):
+    """First prediction's previous_hash equals the loaded mv's ario.promotion_tx."""
+    from unittest.mock import MagicMock
+    from ario_mlflow.model import VerifiedModel
+    from ario_mlflow.proof import ProofEngine
+    from ario_mlflow.arweave import ArweaveAnchor
+
+    # Mock model version with promotion_tx tag.
+    mv = MagicMock()
+    mv.name = "credit"
+    mv.version = "3"
+    mv.run_id = "run-abc"
+    mv.source = "runs:/run-abc/model"
+    mv.tags = {
+        "ario.promotion_tx": "PROMO_TX_XYZ",
+        "ario.registration_tx": "REG_TX_OLD",
+    }
+
+    monkeypatch.setattr("ario_mlflow.model._resolve_model_version", lambda c, u: mv)
+
+    # Stub run with no artifact_hash so integrity check skips.
+    fake_run = MagicMock()
+    fake_run.data.tags = {}
+    fake_client = MagicMock()
+    fake_client.get_run.return_value = fake_run
+    monkeypatch.setattr("mlflow.tracking.MlflowClient", lambda: fake_client)
+
+    # Stub pyfunc load.
+    fake_model = MagicMock()
+    fake_model.predict.return_value = [1]
+    monkeypatch.setattr("mlflow.pyfunc.load_model", lambda uri: fake_model)
+
+    keys = tmp_path / "keys"
+    keys.mkdir()
+    monkeypatch.delenv("ARIO_MLFLOW_SIGNING_KEY", raising=False)
+    pe = ProofEngine(str(keys / "priv.pem"), str(keys / "pub.pem"))
+    arweave = ArweaveAnchor("", "turbo-gateway.com")  # disabled
+
+    vm = VerifiedModel("models:/credit/3", proof_engine=pe, anchor=arweave)
+    result = vm.predict({"a": 1.0})
+
+    assert result.record is not None
+    assert vm._last_hash != "GENESIS"
+
+
+def test_verified_model_falls_back_to_registration_tx(monkeypatch, tmp_path):
+    """When promotion_tx is absent, _last_hash seeds from registration_tx."""
+    from unittest.mock import MagicMock
+    from ario_mlflow.model import VerifiedModel
+    from ario_mlflow.proof import ProofEngine
+    from ario_mlflow.arweave import ArweaveAnchor
+
+    mv = MagicMock()
+    mv.name = "credit"
+    mv.version = "1"
+    mv.run_id = "run-1"
+    mv.source = "runs:/run-1/model"
+    mv.tags = {"ario.registration_tx": "REG_TX_ONLY"}  # no promotion_tx
+
+    monkeypatch.setattr("ario_mlflow.model._resolve_model_version", lambda c, u: mv)
+    fake_run = MagicMock()
+    fake_run.data.tags = {}
+    fake_client = MagicMock()
+    fake_client.get_run.return_value = fake_run
+    monkeypatch.setattr("mlflow.tracking.MlflowClient", lambda: fake_client)
+    monkeypatch.setattr("mlflow.pyfunc.load_model", lambda uri: MagicMock())
+
+    keys = tmp_path / "keys"
+    keys.mkdir()
+    monkeypatch.delenv("ARIO_MLFLOW_SIGNING_KEY", raising=False)
+    pe = ProofEngine(str(keys / "priv.pem"), str(keys / "pub.pem"))
+    arweave = ArweaveAnchor("", "turbo-gateway.com")
+
+    vm = VerifiedModel("models:/credit/1", proof_engine=pe, anchor=arweave)
+
+    assert vm._last_hash == "REG_TX_ONLY"
+
+
+def test_verified_model_falls_back_to_genesis_when_no_chain_tags(monkeypatch, tmp_path):
+    """Truly orphaned models still work — _last_hash stays GENESIS."""
+    from unittest.mock import MagicMock
+    from ario_mlflow.model import VerifiedModel
+    from ario_mlflow.proof import ProofEngine
+    from ario_mlflow.arweave import ArweaveAnchor
+
+    mv = MagicMock()
+    mv.name = "orphan"
+    mv.version = "1"
+    mv.run_id = "run-x"
+    mv.source = "runs:/run-x/model"
+    mv.tags = {}  # no ario tags at all
+
+    monkeypatch.setattr("ario_mlflow.model._resolve_model_version", lambda c, u: mv)
+    fake_run = MagicMock()
+    fake_run.data.tags = {}
+    fake_client = MagicMock()
+    fake_client.get_run.return_value = fake_run
+    monkeypatch.setattr("mlflow.tracking.MlflowClient", lambda: fake_client)
+    monkeypatch.setattr("mlflow.pyfunc.load_model", lambda uri: MagicMock())
+
+    keys = tmp_path / "keys"
+    keys.mkdir()
+    monkeypatch.delenv("ARIO_MLFLOW_SIGNING_KEY", raising=False)
+    pe = ProofEngine(str(keys / "priv.pem"), str(keys / "pub.pem"))
+    arweave = ArweaveAnchor("", "turbo-gateway.com")
+
+    vm = VerifiedModel("models:/orphan/1", proof_engine=pe, anchor=arweave)
+    assert vm._last_hash == "GENESIS"

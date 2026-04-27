@@ -995,10 +995,13 @@ def test_verified_model_predict_chains_to_promotion_tx(monkeypatch, tmp_path):
     arweave = ArweaveAnchor("", "turbo-gateway.com")  # disabled
 
     vm = VerifiedModel("models:/credit/3", proof_engine=pe, anchor=arweave)
-    result = vm.predict({"a": 1.0})
+    # Pin the seeded value BEFORE the first prediction advances _last_hash.
+    assert vm._last_hash == "PROMO_TX_XYZ"
 
+    result = vm.predict({"a": 1.0})
     assert result.record is not None
-    assert vm._last_hash != "GENESIS"
+    # _last_hash advances after each predict() — confirm it's no longer the seed.
+    assert vm._last_hash != "PROMO_TX_XYZ"
 
 
 def test_verified_model_falls_back_to_registration_tx(monkeypatch, tmp_path):

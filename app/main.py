@@ -1,7 +1,5 @@
 import logging
 import os
-import threading
-import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -14,14 +12,10 @@ from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProces
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 from app.config import get_settings
-from app.storage import RecordStore
-from app.lifecycle_store import LifecycleStore
 from ario_mlflow.proof import ProofEngine, canonical_json, hash_data
 from ario_mlflow.arweave import ArweaveAnchor
 from ario_mlflow.verify import ArioVerifyClient
-from app.decision_record import build_decision_record
-from app.lifecycle import build_training_record, build_registration_record
-from app.model import load_model, predict, train_and_register_with_params, FEATURE_NAMES
+from app.model import train_and_register_with_params, FEATURE_NAMES
 from ario_mlflow import VerifiedModel
 from ario_mlflow.client import ArioMlflowClient
 from ario_mlflow.model import IntegrityError, VerifiedPrediction
@@ -29,81 +23,6 @@ from app.ui import router as ui_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-# TODO(Task 8): delete — superseded by ario_mlflow.anchor()/ArioMlflowClient.
-def _anchor_lifecycle_record(lifecycle_store, anchor, event_id: str, proof: dict):
-    """Background: upload lifecycle proof to Arweave and update stored record."""
-    try:
-        anchor_result = anchor.upload_proof(proof)
-        if anchor_result:
-            envelope = lifecycle_store.get_by_event_id(event_id)
-            if envelope:
-                envelope["arweave_tx_id"] = anchor_result["tx_id"]
-                envelope["arweave_url"] = anchor_result["url"]
-                envelope["turbo_receipt"] = anchor_result["receipt"]
-                lifecycle_store.update(event_id, envelope)
-                logger.info(f"Anchored lifecycle event {event_id}: tx={anchor_result['tx_id']}")
-    except Exception as e:
-        logger.error(f"Background lifecycle anchoring failed for {event_id}: {e}")
-
-
-# TODO(Task 8): delete — superseded by ario_mlflow.anchor()/ArioMlflowClient.
-def _startup_anchor_lifecycle(settings, model_info, proof_engine, lifecycle_store, anchor):
-    """Anchor training run and model registration if not already done."""
-    run_id = model_info["run_id"]
-    model_name = model_info["model_name"]
-    model_version = model_info["model_version"]
-
-    # Check if training record already exists
-    existing_training = lifecycle_store.get_by_run_id(run_id)
-    training_tx = None
-
-    if not existing_training:
-        logger.info(f"Anchoring training run {run_id}...")
-        record = build_training_record(
-            settings.mlflow_tracking_uri, run_id, model_name, model_version,
-        )
-        last = lifecycle_store.list_all()
-        previous_hash = last[-1]["record_hash"] if last else "GENESIS"
-        proof = proof_engine.create_proof(record, previous_hash)
-        envelope = {
-            **proof,
-            "arweave_tx_id": None,
-            "arweave_url": None,
-            "turbo_receipt": None,
-        }
-        lifecycle_store.append(envelope)
-
-        if anchor.enabled:
-            _anchor_lifecycle_record(lifecycle_store, anchor, record["event_id"], proof)
-        training_tx = envelope.get("arweave_tx_id")
-    else:
-        training_tx = existing_training.get("arweave_tx_id")
-        logger.info(f"Training run {run_id} already anchored.")
-
-    # Check if registration record already exists
-    existing_reg = lifecycle_store.get_by_model_version(model_name, model_version)
-    if not existing_reg:
-        logger.info(f"Anchoring model registration {model_name}/v{model_version}...")
-        record = build_registration_record(
-            settings.mlflow_tracking_uri, model_name, model_version, training_tx,
-        )
-        last = lifecycle_store.list_all()
-        previous_hash = last[-1]["record_hash"] if last else "GENESIS"
-        proof = proof_engine.create_proof(record, previous_hash)
-        envelope = {
-            **proof,
-            "arweave_tx_id": None,
-            "arweave_url": None,
-            "turbo_receipt": None,
-        }
-        lifecycle_store.append(envelope)
-
-        if anchor.enabled:
-            _anchor_lifecycle_record(lifecycle_store, anchor, record["event_id"], proof)
-    else:
-        logger.info(f"Model registration {model_name}/v{model_version} already anchored.")
 
 
 @asynccontextmanager
@@ -117,8 +36,6 @@ async def lifespan(app: FastAPI):
 
     # Core components
     app.state.settings = settings
-    app.state.store = RecordStore(settings.records_file)              # KEEP — UI uses it (until Task 9)
-    app.state.lifecycle_store = LifecycleStore(settings.lifecycle_file)  # KEEP — UI uses it (until Task 9)
     app.state.proof_engine = ProofEngine(
         settings.ed25519_private_key_path,
         settings.ed25519_public_key_path,
@@ -178,23 +95,6 @@ FastAPIInstrumentor.instrument_app(app)
 tracer = trace.get_tracer(__name__)
 
 app.include_router(ui_router)
-
-
-# TODO(Task 8): delete — superseded by ario_mlflow.anchor()/ArioMlflowClient.
-def _anchor_record(store, anchor, decision_id: str, proof: dict):
-    """Background task: upload proof to Arweave and update stored record."""
-    try:
-        anchor_result = anchor.upload_proof(proof)
-        if anchor_result:
-            envelope = store.get_by_id(decision_id)
-            if envelope:
-                envelope["arweave_tx_id"] = anchor_result["tx_id"]
-                envelope["arweave_url"] = anchor_result["url"]
-                envelope["turbo_receipt"] = anchor_result["receipt"]
-                store.update(decision_id, envelope)
-                logger.info(f"Anchored decision {decision_id}: tx={anchor_result['tx_id']}")
-    except Exception as e:
-        logger.error(f"Background anchoring failed for {decision_id}: {e}")
 
 
 def _run_prediction(app_state, features: list[float]):

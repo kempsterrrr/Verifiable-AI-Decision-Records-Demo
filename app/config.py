@@ -13,10 +13,6 @@ class Settings:
     ed25519_public_key_path: str = "keys/ed25519_public.json"
     arweave_wallet_path: str = "keys/arweave_wallet.json"
 
-    # Storage
-    records_file: str = "data/records.json"
-    lifecycle_file: str = "data/lifecycle.json"
-
     # MLflow
     mlflow_tracking_uri: str = "mlruns"
     mlflow_model_name: str = "credit-scorer"

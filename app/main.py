@@ -22,6 +22,8 @@ from ario_mlflow.verify import ArioVerifyClient
 from app.decision_record import build_decision_record
 from app.lifecycle import build_training_record, build_registration_record
 from app.model import load_model, predict, train_and_register_with_params, FEATURE_NAMES
+from ario_mlflow import VerifiedModel
+from ario_mlflow.client import ArioMlflowClient
 from app.ui import router as ui_router
 
 logging.basicConfig(level=logging.INFO)
@@ -112,31 +114,46 @@ async def lifespan(app: FastAPI):
 
     # Core components
     app.state.settings = settings
-    app.state.store = RecordStore(settings.records_file)
-    app.state.lifecycle_store = LifecycleStore(settings.lifecycle_file)
+    app.state.store = RecordStore(settings.records_file)              # KEEP — UI uses it (until Task 9)
+    app.state.lifecycle_store = LifecycleStore(settings.lifecycle_file)  # KEEP — UI uses it (until Task 9)
     app.state.proof_engine = ProofEngine(
         settings.ed25519_private_key_path,
         settings.ed25519_public_key_path,
     )
-
-    # MLflow model
-    logger.info("Loading MLflow model...")
-    app.state.model_info = load_model(settings.mlflow_tracking_uri, settings.mlflow_model_name)
-    logger.info(f"Model loaded: {settings.mlflow_model_name}/v{app.state.model_info['model_version']}")
-
-    # Arweave anchor
     app.state.anchor = ArweaveAnchor(settings.arweave_wallet_path, settings.ario_gateway_host)
-
-    # AR.IO Verify
     app.state.ario_verify = ArioVerifyClient(settings.ario_verify_url)
 
-    # Anchor training and registration in background thread
-    threading.Thread(
-        target=_startup_anchor_lifecycle,
-        args=(settings, app.state.model_info, app.state.proof_engine,
-              app.state.lifecycle_store, app.state.anchor),
-        daemon=True,
-    ).start()
+    # NEW: ArioMlflowClient handles registration/promotion anchoring with chaining.
+    app.state.ario_client = ArioMlflowClient(
+        tracking_uri=settings.mlflow_tracking_uri,
+        proof_engine=app.state.proof_engine,
+        anchor=app.state.anchor,
+    )
+
+    # NEW: VerifiedModel handles inference with integrity check + chained proof.
+    # Task 7 will route /predict through this; for now it's loaded so it's ready.
+    logger.info("Loading verified model...")
+    try:
+        app.state.verified_model = VerifiedModel(
+            f"models:/{settings.mlflow_model_name}/latest",
+            proof_engine=app.state.proof_engine,
+            anchor=app.state.anchor,
+        )
+        app.state.model_info = {
+            "model_name": app.state.verified_model.model_name,
+            "model_version": app.state.verified_model.model_version,
+            "run_id": app.state.verified_model.run_id,
+        }
+        logger.info(
+            f"Verified model loaded: "
+            f"{app.state.model_info['model_name']}/v{app.state.model_info['model_version']}"
+        )
+    except Exception as e:
+        # On a fresh deployment with no model yet, /api/train will populate one.
+        # Don't crash startup just because the model isn't there yet.
+        logger.warning(f"VerifiedModel load deferred: {e}")
+        app.state.verified_model = None
+        app.state.model_info = None
 
     yield
 
@@ -279,13 +296,12 @@ def form_predict(
 
 @app.post("/api/train")
 def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
-    """Train a new model version, register it, and anchor proofs."""
+    """Train a new model version (anchors data + run + registration via plugin)."""
     import random
     settings = request.app.state.settings
     max_iter = int(body.get("max_iter", 200))
     random_state = int(body.get("random_state", random.randint(1, 10000)))
 
-    # Train and register (synchronous, <1s)
     info = train_and_register_with_params(
         settings.mlflow_tracking_uri,
         settings.mlflow_model_name,
@@ -293,56 +309,25 @@ def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
         random_state=random_state,
     )
 
-    # Build lifecycle proof records
-    training_record = build_training_record(
-        settings.mlflow_tracking_uri, info["run_id"],
-        info["model_name"], info["model_version"],
+    # Reload VerifiedModel so the runtime predicts with the new version, and so
+    # the prediction chain seeds from the new version's registration_tx.
+    request.app.state.verified_model = VerifiedModel(
+        f"models:/{settings.mlflow_model_name}/{info['model_version']}",
+        proof_engine=request.app.state.proof_engine,
+        anchor=request.app.state.anchor,
     )
-    last = request.app.state.lifecycle_store.list_all()
-    previous_hash = last[-1]["record_hash"] if last else "GENESIS"
-    training_proof = request.app.state.proof_engine.create_proof(training_record, previous_hash)
-    training_envelope = {**training_proof, "arweave_tx_id": None, "arweave_url": None, "turbo_receipt": None}
-    request.app.state.lifecycle_store.append(training_envelope)
-
-    registration_record = build_registration_record(
-        settings.mlflow_tracking_uri, info["model_name"], info["model_version"],
-        training_envelope.get("arweave_tx_id"),
-    )
-    last = request.app.state.lifecycle_store.list_all()
-    previous_hash = last[-1]["record_hash"]
-    registration_proof = request.app.state.proof_engine.create_proof(registration_record, previous_hash)
-    registration_envelope = {**registration_proof, "arweave_tx_id": None, "arweave_url": None, "turbo_receipt": None}
-    request.app.state.lifecycle_store.append(registration_envelope)
-
-    # Anchor both in background
-    if request.app.state.anchor.enabled:
-        background_tasks.add_task(
-            _anchor_lifecycle_record,
-            request.app.state.lifecycle_store,
-            request.app.state.anchor,
-            training_record["event_id"],
-            training_proof,
-        )
-        background_tasks.add_task(
-            _anchor_lifecycle_record,
-            request.app.state.lifecycle_store,
-            request.app.state.anchor,
-            registration_record["event_id"],
-            registration_proof,
-        )
-
-    # Auto-switch to the newly trained model
-    new_model_info = load_model(settings.mlflow_tracking_uri, settings.mlflow_model_name)
-    request.app.state.model_info = new_model_info
+    request.app.state.model_info = {
+        "model_name": info["model_name"],
+        "model_version": info["model_version"],
+        "run_id": info["run_id"],
+    }
     logger.info(f"Switched active model to v{info['model_version']}")
 
     return {
         "run_id": info["run_id"],
-        "model_name": info["model_name"],
         "model_version": info["model_version"],
         "accuracy": info["accuracy"],
-        "training_event_id": training_record["event_id"],
-        "registration_event_id": registration_record["event_id"],
+        "dataset_tx": info["dataset_tx"],
     }
 
 

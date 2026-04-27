@@ -131,16 +131,27 @@ def train_and_register_with_params(
             model_info = mlflow.sklearn.log_model(
                 pipeline,
                 "model",
-                registered_model_name=model_name,
                 input_example=X_train[:1],
             )
 
             # Link 2: training run. anchor() reads ario.dataset_tx and chains.
             ario_mlflow.anchor(artifact_path="model")
 
-            client = mlflow.tracking.MlflowClient()
-            versions = client.search_model_versions(f"name='{model_name}'")
-            latest_version = max(int(v.version) for v in versions)
+            # Register via ArioMlflowClient so registration is anchored and
+            # chained to ario.training_tx automatically.
+            from ario_mlflow.client import ArioMlflowClient
+            ario_client = ArioMlflowClient(tracking_uri=tracking_uri)
+            # Ensure the registered model exists (create_model_version requires it).
+            try:
+                ario_client.create_registered_model(model_name)
+            except Exception:
+                pass  # Already exists — that's fine.
+            mv = ario_client.create_model_version(
+                name=model_name,
+                source=model_info.model_uri,
+                run_id=run.info.run_id,
+            )
+            latest_version = mv.version
 
             logger.info(
                 f"Credit model trained: accuracy={accuracy:.4f}, "

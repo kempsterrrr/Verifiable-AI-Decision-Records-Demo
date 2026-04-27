@@ -929,6 +929,8 @@ def test_anchor_chains_to_dataset_tx_when_tag_present(monkeypatch, tmp_path):
     mlflow.set_tracking_uri(f"file://{tmp_path}/mlruns")
     mlflow.set_experiment("test")
 
+    monkeypatch.delenv("ARIO_MLFLOW_SIGNING_KEY", raising=False)
+
     from ario_mlflow.proof import ProofEngine
 
     keys = tmp_path / "keys"

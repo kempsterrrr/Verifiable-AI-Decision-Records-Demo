@@ -23,44 +23,28 @@ If someone tampers with a local record, the **Arweave-anchored copy** remains in
 
 ## Architecture
 
+The verifiable provenance chain lives entirely in MLflow tags and on
+Arweave — there is no separate local store. Each link (dataset, training,
+registration, promotion, inference) is its own signed proof anchored to
+Arweave, chained to the previous link via `ario.<event>_tx` tags. The
+demo is a thin viewer over `ArioMlflowClient.lifecycle_for_model()`. Any
+project that adopts the plugin gets the same end-to-end chain for free.
+
 ```
-Startup (background thread)
-  |---> MLflow: read training run (params, metrics, artifact checksums)
-  |---> Build training proof → sign → anchor to Arweave
-  |---> MLflow: read model registration metadata
-  |---> Build registration proof → sign → anchor to Arweave
-  |---> Chain: training TX → registration TX
-
-User Input
+anchor_dataset()          →  ario.dataset_tx  (link 1: data)
   |
-  v
-FastAPI /predict (returns instantly)
-  |---> MLflow (model lineage: run_id, version, artifact_uri)
-  |---> OpenTelemetry (trace_id, span_id)
-  |---> Inference (sklearn LogisticRegression)
+anchor() in start_run()   →  ario.training_tx, ario.artifact_hash  (link 2: training)
   |
-  v
-Decision Record (canonical JSON)
-  |---> SHA-256 hash + hash chain (previous_hash)
-  |---> Ed25519 signature
-  |---> Store locally (instant)
+create_model_version()    →  ario.registration_tx  (link 3: registration)
   |
-  v (background thread)
-Proof upload
-  |---> ar.io Turbo upload to Arweave
-  |---> TX ID written back to stored record
+transition_stage()        →  ario.promotion_tx  (link 4: promotion)
   |
-  v
-Local storage: proof + anchoring metadata (Arweave TX, Turbo receipt)
-Arweave: proof only (record, hash, chain link, signature, public key)
-
-  ... later, on demand ...
-
-/verify endpoint
-  |---> Local verification (re-hash, check signature)
-  |---> External verification (fetch from Arweave, compare)
-  |---> ar.io Verify attestation (independent third-party check)
+VerifiedModel.predict()   →  ario.arweave_tx on MLflow trace  (link 5: inference)
 ```
+
+All state (TX IDs, hashes, chain pointers) lives in MLflow tags and on
+Arweave. `ArioMlflowClient.lifecycle_for_model(name, version)` reconstructs
+the full event timeline from those tags — no separate file store required.
 
 ### Async Anchoring
 
@@ -207,8 +191,6 @@ Environment variables (prefix: `VAIDR_`):
 | `VAIDR_MLFLOW_MODEL_NAME` | `iris-classifier` | Registered model name |
 | `VAIDR_ARIO_GATEWAY_HOST` | `turbo-gateway.com` | ar.io gateway hostname |
 | `VAIDR_ARIO_VERIFY_URL` | `https://vilenarios.com/local/verify` | ar.io Verify service URL |
-| `VAIDR_RECORDS_FILE` | `data/records.json` | Local record storage path |
-| `VAIDR_LIFECYCLE_FILE` | `data/lifecycle.json` | Lifecycle record storage path |
 
 ---
 

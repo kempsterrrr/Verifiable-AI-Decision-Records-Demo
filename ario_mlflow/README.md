@@ -43,6 +43,33 @@ sessions. Set `ARIO_MLFLOW_ARWEAVE_WALLET=/path/to/wallet.json` to use your own.
 
 A full runnable example lives in `examples/sklearn-quickstart/`.
 
+## End-to-end chain
+
+The plugin anchors five separately-signed lifecycle events, each
+chained to the previous via Arweave tx pointers stored as MLflow tags:
+
+| Link | API | Tag set |
+|---|---|---|
+| 1. Data | `anchor_dataset(name, path)` | (caller writes `ario.dataset_tx` on the run) |
+| 2. Training | `anchor()` inside `start_run()` | `ario.training_tx`, `ario.artifact_hash` |
+| 3. Registration | `ArioMlflowClient.create_model_version(...)` | `ario.registration_tx` |
+| 4. Promotion | `ArioMlflowClient.transition_model_version_stage(...)` | `ario.promotion_tx` |
+| 5. Inference | `VerifiedModel.predict(input)` | (per-prediction proof, anchored async; trace tagged with `ario.decision_id`/`ario.arweave_tx`) |
+
+To render the chain for a model:
+
+```python
+from ario_mlflow.client import ArioMlflowClient
+
+client = ArioMlflowClient(tracking_uri="http://localhost:5000")
+chain = client.lifecycle_for_model("credit_classifier")
+for event in chain:
+    print(f"{event['event_type']}: tx={event['tx_id']}  prev={event['previous_tx']}")
+```
+
+The chain is reconstructable from MLflow alone — no separate local store
+needed.
+
 ## The three integration points
 
 ### 1. `ario_mlflow.anchor()` — training provenance

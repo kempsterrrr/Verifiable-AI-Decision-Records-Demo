@@ -104,6 +104,25 @@ Update `ROADMAP.md` and the mirrored internal notes whenever:
 
 Archive section is below — empty for now.
 
+## Phase 4 — End-to-end chain on plugin (2026-04)
+
+Make the plugin natively support the full verifiable lifecycle chain
+(data → training → registration → promotion → inference) and migrate
+the demo onto it so anyone using the plugin gets the same provenance.
+
+- Added `ario_mlflow.anchor_dataset(name, path)` — link 1 (data).
+- `ario_mlflow.anchor()` chains training proof to `ario.dataset_tx`.
+- `VerifiedModel.predict()` chains predictions to the loaded model
+  version's `ario.promotion_tx` / `ario.registration_tx`, closing the
+  inference link.
+- `ArioMlflowClient.lifecycle_for_model(name, version)` returns the
+  chained event timeline so consumers can render the chain without
+  maintaining a local store.
+- Demo migrated end-to-end: `app/lifecycle.py`, `app/lifecycle_store.py`,
+  `app/storage.py`, `app/decision_record.py` removed; UI reads from the
+  plugin via `lifecycle_for_model()` + MLflow trace search.
+- Tamper demo retired pending plugin-side tamper-proxy support.
+
 ## Archive
 
 ### Vocabulary pass — done 2026-04-22

@@ -142,10 +142,14 @@ def train_and_register_with_params(
             from ario_mlflow.client import ArioMlflowClient
             ario_client = ArioMlflowClient(tracking_uri=tracking_uri)
             # Ensure the registered model exists (create_model_version requires it).
+            from mlflow.exceptions import MlflowException
             try:
                 ario_client.create_registered_model(model_name)
-            except Exception:
-                pass  # Already exists — that's fine.
+            except MlflowException as e:
+                # RESOURCE_ALREADY_EXISTS is the expected idempotent path.
+                # Any other MLflow error should surface.
+                if "RESOURCE_ALREADY_EXISTS" not in str(e):
+                    raise
             mv = ario_client.create_model_version(
                 name=model_name,
                 source=model_info.model_uri,

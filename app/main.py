@@ -24,12 +24,14 @@ from app.lifecycle import build_training_record, build_registration_record
 from app.model import load_model, predict, train_and_register_with_params, FEATURE_NAMES
 from ario_mlflow import VerifiedModel
 from ario_mlflow.client import ArioMlflowClient
+from ario_mlflow.model import IntegrityError
 from app.ui import router as ui_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+# TODO(Task 8): delete — superseded by ario_mlflow.anchor()/ArioMlflowClient.
 def _anchor_lifecycle_record(lifecycle_store, anchor, event_id: str, proof: dict):
     """Background: upload lifecycle proof to Arweave and update stored record."""
     try:
@@ -46,6 +48,7 @@ def _anchor_lifecycle_record(lifecycle_store, anchor, event_id: str, proof: dict
         logger.error(f"Background lifecycle anchoring failed for {event_id}: {e}")
 
 
+# TODO(Task 8): delete — superseded by ario_mlflow.anchor()/ArioMlflowClient.
 def _startup_anchor_lifecycle(settings, model_info, proof_engine, lifecycle_store, anchor):
     """Anchor training run and model registration if not already done."""
     run_id = model_info["run_id"]
@@ -139,18 +142,27 @@ async def lifespan(app: FastAPI):
             proof_engine=app.state.proof_engine,
             anchor=app.state.anchor,
         )
+        # NOTE(Task 7 will tidy): Old /predict path still reads model_info["model"]
+        # and model_info["artifact_uri"]. Surface VerifiedModel's underlying pyfunc
+        # and uri so the existing path keeps working until Task 7 routes
+        # /predict through VerifiedModel.predict().
         app.state.model_info = {
             "model_name": app.state.verified_model.model_name,
             "model_version": app.state.verified_model.model_version,
             "run_id": app.state.verified_model.run_id,
+            "model": app.state.verified_model._model,
+            "artifact_uri": app.state.verified_model._model_uri,
         }
         logger.info(
             f"Verified model loaded: "
             f"{app.state.model_info['model_name']}/v{app.state.model_info['model_version']}"
         )
+    except IntegrityError as e:
+        # Tampered artifacts are a hard failure, not a "no model yet" case.
+        logger.error(f"VerifiedModel integrity check FAILED: {e}")
+        raise
     except Exception as e:
-        # On a fresh deployment with no model yet, /api/train will populate one.
-        # Don't crash startup just because the model isn't there yet.
+        # On a fresh deployment with no model yet, models:/<name>/latest raises.
         logger.warning(f"VerifiedModel load deferred: {e}")
         app.state.verified_model = None
         app.state.model_info = None
@@ -168,6 +180,7 @@ tracer = trace.get_tracer(__name__)
 app.include_router(ui_router)
 
 
+# TODO(Task 8): delete — superseded by ario_mlflow.anchor()/ArioMlflowClient.
 def _anchor_record(store, anchor, decision_id: str, proof: dict):
     """Background task: upload proof to Arweave and update stored record."""
     try:
@@ -320,6 +333,8 @@ def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
         "model_name": info["model_name"],
         "model_version": info["model_version"],
         "run_id": info["run_id"],
+        "model": request.app.state.verified_model._model,
+        "artifact_uri": request.app.state.verified_model._model_uri,
     }
     logger.info(f"Switched active model to v{info['model_version']}")
 

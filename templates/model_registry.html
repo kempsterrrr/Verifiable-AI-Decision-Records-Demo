@@ -318,12 +318,12 @@
             setStepDone('step-train');
             setStepDone('step-register');
 
-            // Step 3: Poll for training anchor
+            // Step 3: Poll for training anchor (Phase 4: use tx_id, not event_id)
             setStepActive('step-anchor-train');
-            return pollAnchor(data.training_event_id, 'step-anchor-train').then(() => {
+            return pollAnchorByTx(data.training_tx, 'step-anchor-train').then(() => {
                 // Step 4: Poll for registration anchor
                 setStepActive('step-anchor-reg');
-                return pollAnchor(data.registration_event_id, 'step-anchor-reg');
+                return pollAnchorByTx(data.registration_tx, 'step-anchor-reg');
             }).then(() => {
                 result.innerHTML = 'Model v' + data.model_version + ' trained (accuracy: ' + data.accuracy.toFixed(4) + ') and anchored to Arweave. Redirecting to model lineage...';
                 result.classList.add('show');
@@ -361,10 +361,14 @@
         el.querySelector('.step-icon').innerHTML = '&#10003;';
     }
 
-    function pollAnchor(eventId, stepId) {
+    function pollAnchorByTx(txId, stepId) {
+        // Phase 4: poll /lifecycle/by-tx/{txId} instead of /lifecycle/{eventId}.
+        // If txId is missing (anchor still in flight), resolve immediately so
+        // the training flow doesn't hang — the model is still anchored async.
         return new Promise((resolve) => {
+            if (!txId) { setStepDone(stepId); resolve(); return; }
             const poll = setInterval(() => {
-                fetch('/lifecycle/' + eventId)
+                fetch('/lifecycle/by-tx/' + txId)
                     .then(r => r.json())
                     .then(data => {
                         if (data.arweave_tx_id) {

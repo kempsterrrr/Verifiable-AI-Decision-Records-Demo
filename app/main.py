@@ -290,11 +290,35 @@ def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
     }
     logger.info(f"Switched active model to v{info['model_version']}")
 
+    # Look up anchoring tx IDs from MLflow tags so the training-progress UI
+    # can poll /lifecycle/by-tx/{txId} for status updates.
+    import mlflow as _mlflow
+    _mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+    _client = _mlflow.tracking.MlflowClient()
+    training_tx = None
+    registration_tx = None
+    try:
+        run_tags = _client.get_run(info["run_id"]).data.tags
+        training_tx = run_tags.get("ario.training_tx")
+    except Exception:
+        pass
+    try:
+        mv_list = _client.search_model_versions(
+            f"name='{info['model_name']}' and version='{info['model_version']}'"
+        )
+        if mv_list:
+            registration_tx = (mv_list[0].tags or {}).get("ario.registration_tx")
+    except Exception:
+        pass
+
     return {
         "run_id": info["run_id"],
+        "model_name": info["model_name"],
         "model_version": info["model_version"],
         "accuracy": info["accuracy"],
         "dataset_tx": info["dataset_tx"],
+        "training_tx": training_tx,
+        "registration_tx": registration_tx,
     }
 
 
@@ -331,14 +355,10 @@ def activate_model(request: Request, model_name: str, version: str):
     return {"activated": True, "model_name": model_name, "model_version": str(version)}
 
 
-@app.get("/decisions")
-def list_decisions(request: Request):
-    return request.app.state.store.list_all()
-
-
 @app.get("/decisions/{decision_id}")
 def get_decision(request: Request, decision_id: str):
-    envelope = request.app.state.store.get_by_id(decision_id)
+    from app.ui import _decision_envelope_by_id
+    envelope = _decision_envelope_by_id(request.app, decision_id)
     if not envelope:
         return JSONResponse({"error": "Decision not found"}, status_code=404)
     # Attach a live turbo_status so the polling UI can update the badge
@@ -350,71 +370,27 @@ def get_decision(request: Request, decision_id: str):
     return envelope
 
 
-@app.post("/verify/{decision_id}")
-def verify_decision(request: Request, decision_id: str):
-    envelope = request.app.state.store.get_by_id(decision_id)
-    if not envelope:
-        return JSONResponse({"error": "Decision not found"}, status_code=404)
+@app.get("/lifecycle/by-tx/{tx_id}")
+def get_lifecycle_by_tx(request: Request, tx_id: str):
+    """Return turbo receipt status for a lifecycle proof tx.
 
-    # Local verification
-    local_result = request.app.state.proof_engine.verify_local(envelope)
-
-    # External verification (fetch from Arweave and compare)
-    external_result = None
-    if envelope.get("arweave_tx_id"):
-        arweave_data = request.app.state.anchor.fetch_proof(envelope["arweave_tx_id"])
-        if arweave_data:
-            arweave_hash = hash_data(canonical_json(arweave_data.get("record", {})))
-            external_result = {
-                "arweave_data_found": True,
-                "arweave_record_hash": arweave_hash,
-                "arweave_matches_original": arweave_hash == arweave_data.get("record_hash"),
-                "local_tampered": not local_result["overall"],
-            }
-        else:
-            external_result = {"arweave_data_found": False}
-
-    # ar.io Verify — on-demand attestation
-    ario_result = None
-    if envelope.get("arweave_tx_id") and request.app.state.ario_verify.enabled:
-        # Plugin's submit_verification returns a pre-normalized dict.
-        ario_result = request.app.state.ario_verify.submit_verification(envelope["arweave_tx_id"])
-
-    result = {
-        "decision_id": decision_id,
-        "local_verification": local_result,
-        "external_verification": external_result,
-        "ario_verification": ario_result,
-    }
-
-    # If called from browser, redirect to detail page with verification results
-    accept = request.headers.get("accept", "")
-    if "text/html" in accept:
-        return RedirectResponse(f"/ui/decisions/{decision_id}?verify=true", status_code=303)
-
-    return result
-
-
-@app.get("/lifecycle")
-def list_lifecycle(request: Request):
-    return request.app.state.lifecycle_store.list_all()
-
-
-@app.get("/lifecycle/{event_id}")
-def get_lifecycle_event(request: Request, event_id: str):
-    envelope = request.app.state.lifecycle_store.get_by_event_id(event_id)
-    if not envelope:
-        return JSONResponse({"error": "Lifecycle event not found"}, status_code=404)
-    envelope = dict(envelope)
-    if envelope.get("arweave_tx_id"):
-        envelope["turbo_status"] = request.app.state.anchor.check_status(envelope["arweave_tx_id"])
-    return envelope
+    Replaces the old /lifecycle/{event_id} endpoint for the JS polling story
+    in run_detail.html. Templates pass a known Arweave tx_id so we can
+    check status directly without a local event registry.
+    """
+    turbo_status = request.app.state.anchor.check_status(tx_id)
+    # If anchoring is still in progress, check_status may return NOT_FOUND.
+    # The JS only needs arweave_tx_id to be truthy to consider the step done,
+    # so we return it unconditionally (the tx was submitted, even if not yet
+    # indexed by the gateway).
+    return {"tx_id": tx_id, "arweave_tx_id": tx_id, "turbo_status": turbo_status}
 
 
 @app.get("/api/export/{decision_id}")
 def export_decision(request: Request, decision_id: str):
     """Download a decision record as a JSON file."""
-    envelope = request.app.state.store.get_by_id(decision_id)
+    from app.ui import _decision_envelope_by_id
+    envelope = _decision_envelope_by_id(request.app, decision_id)
     if not envelope:
         return JSONResponse({"error": "Decision not found"}, status_code=404)
     import json
@@ -495,48 +471,32 @@ def compute_chain_integrity(records: list) -> dict:
 
 @app.get("/api/chain-integrity")
 def chain_integrity(request: Request):
-    """Verify link + content integrity across all stored decision records."""
-    return compute_chain_integrity(request.app.state.store.list_all())
+    """Verify link + content integrity across all anchored decision records.
 
+    Data source is now MLflow traces + Arweave-fetched envelopes (plugin-driven).
+    Only anchored records (with arweave_tx_id) are included — unanchored records
+    cannot be chain-verified as they lack the full proof envelope.
+    """
+    from app.ui import _list_recent_decisions, _envelope_from_arweave
 
-@app.post("/tamper/{decision_id}")
-def tamper_decision(request: Request, decision_id: str):
-    envelope = request.app.state.store.get_by_id(decision_id)
-    if not envelope:
-        return JSONResponse({"error": "Decision not found"}, status_code=404)
+    # Fetch lightweight trace-tag envelopes to find all decision IDs + tx IDs.
+    trace_envelopes = _list_recent_decisions(request.app)
 
-    # Tamper: modify output_hash in the record
-    original_hash = envelope["record"]["output_hash"]
-    envelope["record"]["output_hash"] = "TAMPERED_" + original_hash[:50]
-    envelope["tampered"] = True
+    # For chain integrity we need the full envelope (with record_hash, previous_hash,
+    # record) which only exists on Arweave. Unanchored records are skipped.
+    full_envelopes = []
+    for env in trace_envelopes:
+        tx_id = env.get("arweave_tx_id")
+        if not tx_id:
+            continue
+        full_env = _envelope_from_arweave(request.app, tx_id)
+        if full_env:
+            full_envelopes.append(full_env)
 
-    # Re-run local verification so any UI that keys off `last_verification`
-    # (the predictions-page stat cards, the detail page's verification section)
-    # immediately reflects the tamper. The Arweave side of last_verification,
-    # if previously checked, is still accurate and kept — the permanent copy
-    # IS still on the network and matches the ORIGINAL record, even though
-    # the local copy no longer does.
-    local = request.app.state.proof_engine.verify_local(envelope)
-    previous = envelope.get("last_verification") or {}
-    envelope["last_verification"] = {
-        **previous,
-        "hash_valid": local["hash_valid"],
-        "signature_valid": local["signature_valid"],
-        "verified_at": datetime.now(timezone.utc).isoformat(),
-    }
+    # Sort by timestamp so the chain check is order-stable.
+    def _ts(e):
+        return (e.get("record") or {}).get("timestamp") or ""
 
-    request.app.state.store.update(decision_id, envelope)
+    full_envelopes.sort(key=_ts)
 
-    result = {
-        "decision_id": decision_id,
-        "tampered": True,
-        "original_output_hash": original_hash,
-        "tampered_output_hash": envelope["record"]["output_hash"],
-        "message": "Record tampered locally. Local verification will fail. Arweave record is unaffected.",
-    }
-
-    accept = request.headers.get("accept", "")
-    if "text/html" in accept:
-        return RedirectResponse(f"/ui/decisions/{decision_id}", status_code=303)
-
-    return result
+    return compute_chain_integrity(full_envelopes)

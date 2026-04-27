@@ -420,7 +420,9 @@
         // Mirror the decision-detail polling: populate TX, receipt, and
         // live-update the Turbo status badge until it reaches FINALIZED
         // (or a 5-minute hard cap).
-        const eventId = "{{ envelope.record.event_id }}";
+        // Phase 4: poll /lifecycle/by-tx/{txId} instead of /lifecycle/{eventId}
+        // since the local lifecycle store is being retired.
+        const txId = "{{ envelope.arweave_tx_id or '' }}";
         let haveTx = {{ 'true' if envelope.arweave_tx_id else 'false' }};
         let haveReceipt = {{ 'true' if envelope.turbo_receipt else 'false' }};
         let lastStatus = null;
@@ -609,7 +611,8 @@
             // Keep polling until we actually have the Turbo receipt — the
             // upstream can return FINALIZED before the receipt surfaces.
             if (attempts > maxAttempts || (lastStatus === 'FINALIZED' && haveReceipt)) { clearInterval(poll); return; }
-            fetch("/lifecycle/" + eventId)
+            if (!txId) { clearInterval(poll); return; }
+            fetch("/lifecycle/by-tx/" + txId)
                 .then(r => r.json())
                 .then(data => {
                     if (!haveTx && data.arweave_tx_id) { haveTx = true; renderAnchoring(data); }

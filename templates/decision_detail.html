@@ -176,19 +176,11 @@
             <div class="page-actions">
                 <a id="verify-btn" href="/ui/decisions/{{ envelope.record.decision_id }}?verify=true" class="btn btn-primary btn-sm" data-loading-text="Verifying..." {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>Verify with ar.io</a>
                 <a href="/api/export/{{ envelope.record.decision_id }}" class="btn btn-outline btn-sm">Download Proof</a>
-                {% if not envelope.get('tampered') %}
-                <form action="/tamper/{{ envelope.record.decision_id }}" method="POST" style="display:inline;" onsubmit="return confirm('This changes the locally-stored record to simulate what happens when internal logs are lost, rotated, or silently edited. The permanent copy on Arweave is unaffected. Continue?')">
-                    <button type="submit" class="btn btn-danger-outline btn-sm" data-loading-text="Simulating...">Simulate lost/changed record</button>
-                </form>
-                {% endif %}
+                {# Removed in Phase 4: tamper demo retired pending plugin integration. #}
             </div>
         </div>
 
-        {% if envelope.get('tampered') %}
-        <div class="alert alert-danger">
-            This local record no longer matches what was originally signed — the same failure mode as logs being deleted, rotated, or silently overwritten in production. The permanent copy on Arweave is unaffected, and the re-verification below shows a third party would still catch the discrepancy.
-        </div>
-        {% endif %}
+        {# Removed in Phase 4: tamper alert banner retired with tamper demo. #}
 
         <div class="grid">
             <!-- Prediction -->

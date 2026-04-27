@@ -417,9 +417,7 @@
                             {% if env.arweave_tx_id %}
                             <a href="/ui/decisions/{{ env.record.decision_id }}?verify=true" class="btn btn-primary btn-sm" data-loading-text="Verifying...">Verify</a>
                             {% endif %}
-                            <form action="/tamper/{{ env.record.decision_id }}" method="POST" style="display:inline;" onsubmit="return confirm('This will permanently modify this record locally. The Arweave copy is unaffected. Continue?')">
-                                <button type="submit" class="btn btn-danger-outline btn-sm" data-loading-text="Tampering...">Tamper</button>
-                            </form>
+                            {# Removed in Phase 4: tamper demo retired pending plugin integration. #}
                         </div>
                     </td>
                 </tr>

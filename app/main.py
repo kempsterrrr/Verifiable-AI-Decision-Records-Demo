@@ -1,7 +1,6 @@
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks, FastAPI, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -18,7 +17,7 @@ from ario_mlflow.verify import ArioVerifyClient
 from app.model import train_and_register_with_params, FEATURE_NAMES
 from ario_mlflow import VerifiedModel
 from ario_mlflow.client import ArioMlflowClient
-from ario_mlflow.model import IntegrityError, VerifiedPrediction
+from ario_mlflow.model import IntegrityError
 from app.ui import router as ui_router
 
 logging.basicConfig(level=logging.INFO)
@@ -59,16 +58,10 @@ async def lifespan(app: FastAPI):
             proof_engine=app.state.proof_engine,
             anchor=app.state.anchor,
         )
-        # NOTE(Task 7 will tidy): Old /predict path still reads model_info["model"]
-        # and model_info["artifact_uri"]. Surface VerifiedModel's underlying pyfunc
-        # and uri so the existing path keeps working until Task 7 routes
-        # /predict through VerifiedModel.predict().
         app.state.model_info = {
             "model_name": app.state.verified_model.model_name,
             "model_version": app.state.verified_model.model_version,
             "run_id": app.state.verified_model.run_id,
-            "model": app.state.verified_model._model,
-            "artifact_uri": app.state.verified_model._model_uri,
         }
         logger.info(
             f"Verified model loaded: "
@@ -185,8 +178,6 @@ def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
         "model_name": info["model_name"],
         "model_version": info["model_version"],
         "run_id": info["run_id"],
-        "model": request.app.state.verified_model._model,
-        "artifact_uri": request.app.state.verified_model._model_uri,
     }
     logger.info(f"Switched active model to v{info['model_version']}")
 
@@ -229,22 +220,19 @@ def activate_model(request: Request, model_name: str, version: str):
     settings = request.app.state.settings
     mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
 
-    model_uri = f"models:/{model_name}/{version}"
     try:
-        model = mlflow.sklearn.load_model(model_uri)
+        request.app.state.verified_model = VerifiedModel(
+            f"models:/{model_name}/{version}",
+            proof_engine=request.app.state.proof_engine,
+            anchor=request.app.state.anchor,
+        )
     except Exception as e:
         return JSONResponse({"error": f"Could not load model: {e}"}, status_code=404)
 
-    client = mlflow.tracking.MlflowClient()
-    versions = client.search_model_versions(f"name='{model_name}'")
-    mv = next((v for v in versions if str(v.version) == str(version)), None)
-
     request.app.state.model_info = {
-        "model": model,
-        "model_name": model_name,
-        "model_version": str(version),
-        "run_id": mv.run_id if mv else "unknown",
-        "artifact_uri": model_uri,
+        "model_name": request.app.state.verified_model.model_name,
+        "model_version": request.app.state.verified_model.model_version,
+        "run_id": request.app.state.verified_model.run_id,
     }
     logger.info(f"Activated model {model_name}/v{version}")
 
@@ -313,7 +301,7 @@ def compute_chain_integrity(records: list) -> dict:
        reordered.
     2. **Content integrity** — each record's ``record`` field still hashes
        to its own ``record_hash``. Breaks when a field inside the record
-       is modified after signing (what the ``/tamper`` button does).
+       is modified after signing.
 
     The legacy ``intact`` / ``broken_at`` fields are preserved for any
     old clients and reflect whichever check fails first (link, then

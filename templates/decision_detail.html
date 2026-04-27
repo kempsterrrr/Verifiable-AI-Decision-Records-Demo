@@ -232,16 +232,20 @@
                         <span>Hash Integrity</span>
                         {% if v %}
                             <span class="{{ 'check' if v.hash_valid else 'cross' }}">{{ 'PASS' if v.hash_valid else 'FAIL' }}</span>
-                        {% else %}
+                        {% elif local_verification %}
                             <span class="{{ 'check' if local_verification.hash_valid else 'cross' }}">{{ 'PASS' if local_verification.hash_valid else 'FAIL' }}</span>
+                        {% else %}
+                            <span class="unchecked">Not checked</span>
                         {% endif %}
                     </div>
                     <div class="verify-row">
                         <span>Signature</span>
                         {% if v %}
                             <span class="{{ 'check' if v.signature_valid else 'cross' }}">{{ 'PASS' if v.signature_valid else 'FAIL' }}</span>
-                        {% else %}
+                        {% elif local_verification %}
                             <span class="{{ 'check' if local_verification.signature_valid else 'cross' }}">{{ 'PASS' if local_verification.signature_valid else 'FAIL' }}</span>
+                        {% else %}
+                            <span class="unchecked">Not checked</span>
                         {% endif %}
                     </div>
                     <div class="verify-row">

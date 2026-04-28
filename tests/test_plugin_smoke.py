@@ -1573,3 +1573,106 @@ def test_decision_envelope_arweave_fetched_record_unchanged(monkeypatch, tmp_pat
     assert env["display_prediction"]["class"] == "approve"
     # Arweave-fetched envelope IS locally verifiable.
     assert env["locally_verifiable"] is True
+
+
+# --- Tamper-with-model-artifact demo (Layer 1) --------------------------------
+
+
+def test_verify_run_artifact_integrity_passes_when_unchanged(monkeypatch, tmp_path):
+    """verify_run_artifact_integrity passes when MLflow storage matches the
+    anchored hash."""
+    import mlflow as _mlflow
+    from ario_mlflow.anchoring import artifact_checksums
+    from ario_mlflow.proof import canonical_json, hash_data
+    from app.ui import _verify_run_artifact_integrity
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "MLmodel").write_text("artifact_path: model\n")
+    (model_dir / "model.pkl").write_bytes(b"genuine model bytes")
+    monkeypatch.setattr(_mlflow.artifacts, "download_artifacts", lambda **kw: str(model_dir))
+
+    expected = hash_data(canonical_json(artifact_checksums("run-x", artifact_path="model")))
+    result = _verify_run_artifact_integrity("run-x", expected)
+    assert result["match"] is True
+    assert result["recomputed"] == expected
+    assert result["error"] is None
+
+
+def test_verify_run_artifact_integrity_fails_when_tampered(monkeypatch, tmp_path):
+    """verify_run_artifact_integrity catches model.pkl mutation after
+    anchoring — the core 'tamper-with-MLflow-storage' verification path."""
+    import mlflow as _mlflow
+    from ario_mlflow.anchoring import artifact_checksums
+    from ario_mlflow.proof import canonical_json, hash_data
+    from app.ui import _verify_run_artifact_integrity
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "MLmodel").write_text("artifact_path: model\n")
+    (model_dir / "model.pkl").write_bytes(b"genuine model bytes")
+    monkeypatch.setattr(_mlflow.artifacts, "download_artifacts", lambda **kw: str(model_dir))
+
+    anchored_hash = hash_data(canonical_json(artifact_checksums("run-x", artifact_path="model")))
+
+    # Now tamper: append a byte to model.pkl.
+    with open(model_dir / "model.pkl", "ab") as f:
+        f.write(b"\x00")
+
+    result = _verify_run_artifact_integrity("run-x", anchored_hash)
+    assert result["match"] is False
+    assert result["recomputed"] != anchored_hash
+    assert result["expected"] == anchored_hash
+
+
+def test_verify_run_artifact_integrity_returns_none_on_no_anchored_hash():
+    """When there's no anchored hash to compare against, integrity is
+    'not checked', not 'fail'."""
+    from app.ui import _verify_run_artifact_integrity
+
+    result = _verify_run_artifact_integrity("run-x", None)
+    assert result["match"] is None
+    assert result["error"] is not None  # explanation that we have nothing to compare
+
+
+def test_tamper_then_untamper_endpoints_round_trip(monkeypatch, tmp_path):
+    """End-to-end: POST /api/tamper/training/{run_id} mutates model.pkl
+    so artifact-integrity verification fails; POST /api/untamper/training
+    restores it and verification passes again.
+    """
+    import mlflow as _mlflow
+    from ario_mlflow.anchoring import artifact_checksums
+    from ario_mlflow.proof import canonical_json, hash_data
+    from app.ui import _verify_run_artifact_integrity
+    from app.main import api_tamper_training, api_untamper_training
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "MLmodel").write_text("artifact_path: model\n")
+    (model_dir / "model.pkl").write_bytes(b"genuine model bytes")
+    monkeypatch.setattr(_mlflow.artifacts, "download_artifacts", lambda **kw: str(model_dir))
+
+    anchored_hash = hash_data(canonical_json(artifact_checksums("run-x", artifact_path="model")))
+
+    class _Req:
+        class app:
+            class state:
+                class settings:
+                    mlflow_tracking_uri = f"file://{tmp_path}/mlruns"
+
+    # Tamper.
+    out = api_tamper_training(_Req(), "run-x")
+    assert "tamper_backup" in out["backup_path"]
+    assert (model_dir / "model.pkl.tamper_backup").exists()
+
+    # Verify catches it.
+    result = _verify_run_artifact_integrity("run-x", anchored_hash)
+    assert result["match"] is False
+
+    # Untamper.
+    api_untamper_training(_Req(), "run-x")
+    assert not (model_dir / "model.pkl.tamper_backup").exists()
+
+    # Verify passes again.
+    result = _verify_run_artifact_integrity("run-x", anchored_hash)
+    assert result["match"] is True

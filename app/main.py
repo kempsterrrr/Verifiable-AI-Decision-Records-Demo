@@ -342,6 +342,78 @@ def api_promote(request: Request, model_name: str, version: str):
     }
 
 
+@app.post("/api/tamper/training/{run_id}")
+def api_tamper_training(request: Request, run_id: str):
+    """Demo-only: corrupt the run's model.pkl in MLflow's artifact store so
+    the artifact-integrity verification on Run Detail catches the change.
+
+    Backs up the original to ``model.pkl.tamper_backup`` next to it. Use
+    /api/untamper/training/{run_id} to restore.
+
+    Only supported on file-based MLflow tracking stores. Other backends
+    (S3-backed artifacts, etc.) would need a backend-specific implementation.
+    """
+    settings = request.app.state.settings
+    import mlflow as _mlflow
+    _mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+    try:
+        # Resolve to the local artifact path. download_artifacts on a
+        # file-store returns the actual path inside mlruns/, not a copy.
+        local_model_dir = _mlflow.artifacts.download_artifacts(
+            run_id=run_id, artifact_path="model"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Could not locate run model artifacts: {e}")
+
+    target = os.path.join(local_model_dir, "model.pkl")
+    if not os.path.isfile(target):
+        raise HTTPException(status_code=404, detail=f"model.pkl not found in run {run_id}")
+    backup = target + ".tamper_backup"
+    if os.path.exists(backup):
+        raise HTTPException(status_code=409, detail="Already tampered — call /api/untamper first.")
+
+    # Atomic-ish: copy original to backup, then mutate. We append a single
+    # byte rather than full overwrite so the file is still a "file" but the
+    # hash differs.
+    import shutil
+    shutil.copyfile(target, backup)
+    with open(target, "ab") as f:
+        f.write(b"\x00")
+    return {
+        "run_id": run_id,
+        "tampered_path": target,
+        "backup_path": backup,
+        "note": "Reload Run Detail to see Artifact Integrity FAIL.",
+    }
+
+
+@app.post("/api/untamper/training/{run_id}")
+def api_untamper_training(request: Request, run_id: str):
+    """Restore model.pkl from the tamper backup."""
+    settings = request.app.state.settings
+    import mlflow as _mlflow
+    _mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+    try:
+        local_model_dir = _mlflow.artifacts.download_artifacts(
+            run_id=run_id, artifact_path="model"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Could not locate run model artifacts: {e}")
+
+    target = os.path.join(local_model_dir, "model.pkl")
+    backup = target + ".tamper_backup"
+    if not os.path.exists(backup):
+        raise HTTPException(status_code=404, detail="No tamper backup found — nothing to restore.")
+
+    import shutil
+    shutil.move(backup, target)
+    return {
+        "run_id": run_id,
+        "restored_path": target,
+        "note": "Reload Run Detail to see Artifact Integrity PASS.",
+    }
+
+
 @app.post("/api/activate/{model_name}/{version}")
 def activate_model(request: Request, model_name: str, version: str):
     """Switch the active model to a specific version."""

@@ -78,6 +78,42 @@ def _verify_envelope(app, envelope):
     return result, local
 
 
+def _verify_run_artifact_integrity(run_id: str, expected_artifact_hash: str | None) -> dict:
+    """Re-derive the run's artifact hash from MLflow's current storage and
+    compare to the value committed in the Arweave proof.
+
+    This is the actual verification: we hash whatever MLflow stores now and
+    check it matches what was anchored. Catches any post-anchor mutation
+    of the model files (someone swapped model.pkl, etc.).
+
+    Returns ``{match: bool|None, recomputed: str|None, expected: str|None,
+    error: str|None}``. ``match`` is ``None`` when we couldn't re-derive
+    (e.g., artifacts unavailable) so the UI can show "Not checked" rather
+    than "FAIL".
+    """
+    if not expected_artifact_hash:
+        return {"match": None, "recomputed": None, "expected": None, "error": "No anchored artifact_hash to compare against."}
+    try:
+        from ario_mlflow.anchoring import artifact_checksums
+        from ario_mlflow.proof import canonical_json, hash_data
+        checksums = artifact_checksums(run_id, artifact_path="model")
+        recomputed = hash_data(canonical_json(checksums))
+        return {
+            "match": recomputed == expected_artifact_hash,
+            "recomputed": recomputed,
+            "expected": expected_artifact_hash,
+            "error": None,
+        }
+    except Exception as e:
+        logger.warning(f"Could not re-derive artifact hash for run {run_id}: {e}")
+        return {
+            "match": None,
+            "recomputed": None,
+            "expected": expected_artifact_hash,
+            "error": str(e),
+        }
+
+
 def _envelope_from_arweave(app, tx_id: str | None) -> dict | None:
     """Materialize a template-friendly envelope by fetching the proof from Arweave.
 
@@ -486,6 +522,11 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
     if envelope.get("arweave_tx_id"):
         turbo_status = app.state.anchor.check_status(envelope["arweave_tx_id"])
 
+    artifact_integrity = _verify_run_artifact_integrity(
+        run_id,
+        (envelope.get("record") or {}).get("artifact_hash"),
+    )
+
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -496,6 +537,7 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
             "turbo_status": turbo_status,
             "mlflow_ario_tags": ario_tags,
             "mlflow_tracking_uri": app.state.settings.mlflow_tracking_uri,
+            "artifact_integrity": artifact_integrity,
         },
     )
 

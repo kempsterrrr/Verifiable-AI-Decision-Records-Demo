@@ -89,6 +89,15 @@
             </div>
             <div class="page-actions">
                 <a id="verify-btn" href="/ui/runs/{{ envelope.record.run_id }}?verify=true" class="btn btn-primary btn-sm" data-loading-text="Verifying..." {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>Verify with ar.io</a>
+                <button type="button" class="btn btn-outline btn-sm tamper-btn"
+                        data-run-id="{{ envelope.record.run_id }}"
+                        title="Demo: simulate someone replacing model.pkl in production. Verification catches it.">
+                    Tamper Model
+                </button>
+                <button type="button" class="btn btn-outline btn-sm untamper-btn"
+                        data-run-id="{{ envelope.record.run_id }}">
+                    Untamper
+                </button>
             </div>
         </div>
 
@@ -192,6 +201,29 @@
                                 <div style="font-size:0.72rem;color:var(--muted);margin-top:0.15rem;">{{ v.attested_at[:19] }}Z</div>
                             {% endif %}
                         </span>
+                    </div>
+                    {% endif %}
+
+                    <div class="verify-row">
+                        <span title="Re-derives the artifact hash from MLflow's current storage and compares to the value anchored on Arweave. Catches any mutation of model.pkl or other model files after anchoring.">Artifact Integrity</span>
+                        {% if artifact_integrity.match is none %}
+                            {% if artifact_integrity.error %}
+                                <span class="cross" title="{{ artifact_integrity.error }}">Not checked</span>
+                            {% else %}
+                                <span class="unchecked">Not checked</span>
+                            {% endif %}
+                        {% elif artifact_integrity.match %}
+                            <span class="check">PASS — bytes match anchored hash</span>
+                        {% else %}
+                            <span class="cross">FAIL — bytes differ from anchored hash</span>
+                        {% endif %}
+                    </div>
+                    {% if artifact_integrity.match is false %}
+                    <div class="verify-note verify-note-warn" style="margin-top: 0.5rem;">
+                        <div style="font-size: 0.7rem; margin-top: 0.25rem;">
+                            Anchored: <span class="mono mono-sm">{{ artifact_integrity.expected[:16] }}…</span><br>
+                            Now: <span class="mono mono-sm">{{ artifact_integrity.recomputed[:16] }}…</span>
+                        </div>
                     </div>
                     {% endif %}
 
@@ -418,6 +450,35 @@
 {% endblock %}
 
 {% block scripts %}
+    <script>
+    function bindTamperButtons() {
+        document.querySelectorAll(".tamper-btn, .untamper-btn").forEach(btn => {
+            btn.addEventListener("click", async () => {
+                const runId = btn.dataset.runId;
+                const isUntamper = btn.classList.contains("untamper-btn");
+                const path = isUntamper ? "untamper" : "tamper";
+                const original = btn.textContent;
+                btn.disabled = true;
+                btn.textContent = isUntamper ? "Restoring…" : "Tampering…";
+                try {
+                    const resp = await fetch(`/api/${path}/training/${encodeURIComponent(runId)}`, {
+                        method: "POST",
+                    });
+                    if (!resp.ok) {
+                        const err = await resp.json().catch(() => ({}));
+                        throw new Error(err.detail || `HTTP ${resp.status}`);
+                    }
+                    window.location.reload();
+                } catch (e) {
+                    btn.disabled = false;
+                    btn.textContent = original;
+                    alert(`${isUntamper ? "Untamper" : "Tamper"} failed: ${e.message}`);
+                }
+            });
+        });
+    }
+    bindTamperButtons();
+    </script>
     {% if arweave_enabled %}
     <script>
     (function() {

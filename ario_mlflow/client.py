@@ -342,7 +342,24 @@ class ArioMlflowClient(MlflowClient):
                 previous_hash=training_tx or "GENESIS",
             )
 
-            result = self._anchor.upload_proof(envelope) if self._anchor.enabled else None
+            # Defense in depth: wrap upload_proof so a transient
+            # Turbo/Arweave outage degrades to signed-only (result=None)
+            # rather than aborting the whole _anchor_registration body
+            # via the outer except. Tags + payload.json artifact must
+            # still be written so the model version carries a valid
+            # signed proof even when the upload failed. Symmetric with
+            # anchor()'s upload_proof wrapping.
+            if self._anchor.enabled:
+                try:
+                    result = self._anchor.upload_proof(envelope)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        f"Registration upload raised for {model_name}/v{version}; "
+                        f"keeping signed-only proof: {e}"
+                    )
+                    result = None
+            else:
+                result = None
 
             tags = {
                 "ario.verify_status": "anchored" if result else "signed",
@@ -466,7 +483,22 @@ class ArioMlflowClient(MlflowClient):
                 previous_hash=registration_tx or "GENESIS",
             )
 
-            result = self._anchor.upload_proof(envelope) if self._anchor.enabled else None
+            # Defense in depth: wrap upload_proof so a transient
+            # Turbo/Arweave outage degrades to signed-only (result=None)
+            # rather than aborting the whole _anchor_promotion body via
+            # the outer except. Symmetric with anchor() and
+            # _anchor_registration.
+            if self._anchor.enabled:
+                try:
+                    result = self._anchor.upload_proof(envelope)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        f"Promotion upload raised for {model_name}/v{version} "
+                        f"({from_stage}->{to_stage}); keeping signed-only proof: {e}"
+                    )
+                    result = None
+            else:
+                result = None
 
             # Write the canonical bytes as an artifact on the source run
             # so verifiers have an immutable witness for check 2. Keyed
@@ -511,20 +543,20 @@ class ArioMlflowClient(MlflowClient):
                     "promotion", model_name, version,
                     status="anchored", tx_id=result["tx_id"],
                 )
-            elif not self._anchor.enabled:
+            else:
+                # result=None covers three cases that all degrade to
+                # signed-only (consistent with anchor() and
+                # _anchor_registration): anchor disabled, upload returned
+                # no result, or upload raised an exception we caught
+                # above. The signed envelope and payload artifact are
+                # still in MLflow regardless.
                 logger.info(
                     f"Promotion {model_name}/v{version} ({from_stage}->{to_stage}) "
-                    "signed (anchoring disabled)"
+                    f"signed (anchor enabled={self._anchor.enabled})"
                 )
                 self._record_status(
                     "promotion", model_name, version,
                     status="signed",
-                )
-            else:
-                self._record_status(
-                    "promotion", model_name, version,
-                    status="failed",
-                    error="upload returned no result",
                 )
 
         except Exception as e:

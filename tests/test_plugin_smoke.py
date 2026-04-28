@@ -590,6 +590,135 @@ def test_anchor_continues_when_upload_raises(monkeypatch, tmp_path):
     assert result["tags"]["ario.verify_status"] == "signed"
 
 
+def test_registration_continues_when_upload_raises(monkeypatch):
+    """Transient Turbo/Arweave outage during registration must degrade
+    to signed-only — the registration's signed envelope, payload
+    artifact, and tags must still be written. Mirrors the anchor()
+    fix; CodeRabbit second-pass.
+    """
+    import ario_mlflow.client as client_module
+    from ario_mlflow.proof import ProofEngine
+
+    artifacts_logged: list = []
+    mv_tags: dict = {}
+    statuses: list = []
+
+    class _FakeRun:
+        data = type("D", (), {"tags": {
+            "ario.training_tx": "TX-T",
+            "ario.artifact_hash": "h",
+        }})()
+
+    class _BoomAnchor:
+        enabled = True
+        wallet_mode = "user-configured"
+        def upload_proof(self, *a, **kw):
+            raise RuntimeError("Turbo outage during registration")
+
+    class _Client(client_module.ArioMlflowClient):
+        def __init__(self):
+            import tempfile as _t
+            self._proof_engine = ProofEngine(
+                str(_t.mkdtemp() + "/priv"),
+                str(_t.mkdtemp() + "/pub"),
+            )
+            self._anchor = _BoomAnchor()
+
+        def get_run(self, rid): return _FakeRun()
+        def set_model_version_tag(self, name, version, key, value):
+            mv_tags.setdefault((name, str(version)), {})[key] = value
+        def log_artifacts(self, run_id, local_dir, artifact_path):
+            snapshot: dict[str, bytes] = {}
+            for root, _dirs, files in os.walk(local_dir):
+                for fname in files:
+                    fpath = os.path.join(root, fname)
+                    rel = os.path.relpath(fpath, local_dir)
+                    with open(fpath, "rb") as f:
+                        snapshot[rel] = f.read()
+            artifacts_logged.append({"run_id": run_id, "files": snapshot})
+        def _record_status(self, event_type, name, version, **kw):
+            statuses.append({"event_type": event_type, "name": name, "version": str(version), **kw})
+
+    monkeypatch.setattr(client_module, "artifact_checksums", lambda *a, **kw: {})
+
+    c = _Client()
+    c._anchor_registration("fraud", "1", run_id="train-xyz", source="runs:/train-xyz/model")
+
+    # Despite upload raising, status is "signed" (not "failed") and
+    # the local artifacts + tags are intact.
+    assert statuses, "no status was recorded"
+    assert statuses[-1]["status"] == "signed", statuses
+    # registration_payload.json + registration_proof.json must have
+    # been written to MLflow even though the upload raised.
+    assert artifacts_logged, "log_artifacts was not called"
+    files = artifacts_logged[0]["files"]
+    assert "registration_payload.json" in files
+    assert "registration_proof.json" in files
+    # verify_status tag set to "signed", not "anchored".
+    tags = mv_tags[("fraud", "1")]
+    assert tags["ario.verify_status"] == "signed"
+    # Payload hash tag still written so verify can locate the artifact.
+    assert "ario.payload_hash" in tags
+
+
+def test_promotion_continues_when_upload_raises(monkeypatch):
+    """Same fix for promotion: upload exception degrades to signed-only,
+    payload artifact is still written. Status correctly reports "signed"
+    rather than the previous "failed"."""
+    import ario_mlflow.client as client_module
+    from ario_mlflow.proof import ProofEngine
+
+    artifacts_logged: list = []
+    mv_tags: dict = {}
+    statuses: list = []
+
+    class _FakeMV:
+        run_id = "src-run"
+        tags = {"ario.registration_tx": "TX-REG-9"}
+
+    class _BoomAnchor:
+        enabled = True
+        wallet_mode = "user-configured"
+        def upload_proof(self, *a, **kw):
+            raise RuntimeError("Turbo outage during promotion")
+
+    class _Client(client_module.ArioMlflowClient):
+        def __init__(self):
+            import tempfile as _t
+            self._proof_engine = ProofEngine(
+                str(_t.mkdtemp() + "/priv"),
+                str(_t.mkdtemp() + "/pub"),
+            )
+            self._anchor = _BoomAnchor()
+
+        def get_model_version(self, name, version): return _FakeMV()
+        def set_model_version_tag(self, name, version, key, value):
+            mv_tags.setdefault((name, str(version)), {})[key] = value
+        def log_artifacts(self, run_id, local_dir, artifact_path):
+            snapshot: dict[str, bytes] = {}
+            for root, _dirs, files in os.walk(local_dir):
+                for fname in files:
+                    fpath = os.path.join(root, fname)
+                    rel = os.path.relpath(fpath, local_dir)
+                    with open(fpath, "rb") as f:
+                        snapshot[rel] = f.read()
+            artifacts_logged.append({"run_id": run_id, "files": snapshot})
+        def _record_status(self, event_type, name, version, **kw):
+            statuses.append({"event_type": event_type, "name": name, "version": str(version), **kw})
+
+    c = _Client()
+    c._anchor_promotion("fraud", "5", "Staging", "Production")
+
+    assert statuses, "no status was recorded"
+    assert statuses[-1]["status"] == "signed", statuses
+    # Per Cluster 2 fix: promotion artifacts keyed by event_id under
+    # promotions/<event_id>/.
+    assert artifacts_logged, "log_artifacts was not called"
+    files = artifacts_logged[0]["files"]
+    assert any(f.startswith("promotions/") and f.endswith("payload.json") for f in files), list(files.keys())
+    assert any(f.startswith("promotions/") and f.endswith("proof.json") for f in files)
+
+
 def test_ario_verify_normalize_handles_null_sub_objects():
     """Regression for 2026-04-28 bug: ar.io Verify returns explicit
     ``null`` for ``attestation`` / ``links`` / ``existence`` sub-objects

@@ -187,23 +187,23 @@
             <div class="section">
                 <div class="section-header">Prediction</div>
                 <div class="section-body">
-                    {% if envelope.record.prediction %}
+                    {% if envelope.display_prediction %}
                     <div class="kv">
                         <div class="kv-row">
                             <span class="kv-key">Class</span>
-                            <span class="kv-value"><span class="badge badge-primary">{{ envelope.record.prediction['class'] }}</span></span>
+                            <span class="kv-value"><span class="badge badge-primary">{{ envelope.display_prediction['class'] }}</span></span>
                         </div>
                         <div class="kv-row">
                             <span class="kv-key">Index</span>
-                            <span class="kv-value">{{ envelope.record.prediction.class_index }}</span>
+                            <span class="kv-value">{{ envelope.display_prediction.class_index }}</span>
                         </div>
                         <div class="kv-row">
                             <span class="kv-key">Features</span>
-                            <span class="kv-value">{{ envelope.record.prediction.features_used | join(', ') }}</span>
+                            <span class="kv-value">{{ envelope.display_prediction.features_used | join(', ') }}</span>
                         </div>
                     </div>
                     <div style="margin-top: 0.75rem;">
-                        {% for cls, prob in envelope.record.prediction.probabilities.items() %}
+                        {% for cls, prob in envelope.display_prediction.probabilities.items() %}
                         <div class="prob-row">
                             <span class="prob-label">{{ cls }}</span>
                             <div class="prob-track">
@@ -561,10 +561,10 @@
                             <span class="kv-key">Decision ID</span>
                             <span class="kv-value mono mono-sm">{{ envelope.record.decision_id }}</span>
                         </div>
-                        {% if envelope.record.trace_id %}
+                        {% if envelope.display_trace_id %}
                         <div class="kv-row">
                             <span class="kv-key">MLflow Trace</span>
-                            <span class="kv-value mono mono-sm">{{ envelope.record.trace_id }}</span>
+                            <span class="kv-value mono mono-sm">{{ envelope.display_trace_id }}</span>
                         </div>
                         {% endif %}
                         <div class="kv-row">

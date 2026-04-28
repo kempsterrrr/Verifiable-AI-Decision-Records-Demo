@@ -150,15 +150,13 @@ def _enrich_prediction(verified_model, features: list[float], raw_prediction) ->
 def _run_prediction(app_state, features: list[float]):
     """Run inference via the plugin's VerifiedModel. Returns (envelope, vp).
 
-    The envelope shape is preserved for the existing template renderers and the
-    /predict JSON contract — but the underlying state is now plugin-managed:
-    record + signing + chained Arweave anchoring all happen inside
-    VerifiedModel.predict() on a daemon thread.
-
-    For display, we enrich the record with a sklearn-specific prediction dict
-    (class name, probabilities, features_used) and tag the MLflow trace so
-    page reloads (which read from the trace, not from this response) show the
-    same data.
+    Envelope shape:
+    - record:             EXACTLY what was signed (don't mutate — verification
+                          re-hashes this and compares to record_hash)
+    - record_hash, ...:   the proof commitments
+    - display_prediction: demo-only enrichment (class name + probabilities);
+                          a sibling, NOT nested under record. The on-chain
+                          proof is unaffected.
     """
     if app_state.verified_model is None:
         info = getattr(app_state, "model_info", None) or {}
@@ -173,25 +171,22 @@ def _run_prediction(app_state, features: list[float]):
     vp = app_state.verified_model.predict(input_data)
 
     rich_prediction = _enrich_prediction(app_state.verified_model, features, vp.prediction)
-    record = dict(vp.record) if vp.record else {}
-    if rich_prediction:
-        record["prediction"] = rich_prediction
-        # Persist on the trace so /ui/decisions/{id} reloads see the same data.
-        if vp.trace_id:
-            try:
-                import json
-                import mlflow
-                mlflow.set_trace_tag(
-                    vp.trace_id, "ario.display_prediction_json", json.dumps(rich_prediction)
-                )
-            except Exception as e:
-                logger.debug(f"Could not tag trace with display prediction: {e}")
+    if rich_prediction and vp.trace_id:
+        try:
+            import json
+            import mlflow
+            mlflow.set_trace_tag(
+                vp.trace_id, "ario.display_prediction_json", json.dumps(rich_prediction)
+            )
+        except Exception as e:
+            logger.debug(f"Could not tag trace with display prediction: {e}")
 
     envelope = {
         "decision_id": vp.decision_id,
-        "record": record,
+        "record": vp.record,                  # canonical signed bytes — DO NOT mutate
         "proof_status": vp.proof_status,
         "tx_id": vp.tx_id,
+        "display_prediction": rich_prediction,  # demo-only enrichment
     }
     return envelope, vp
 

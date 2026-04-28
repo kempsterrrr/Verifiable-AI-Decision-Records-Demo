@@ -109,21 +109,14 @@ def _escape_mlflow_filter_value(value: str) -> str:
 
 
 def _envelope_from_trace(trace_info) -> dict:
-    """Build a partial envelope from an MLflow TraceInfo.
+    """Build a partial envelope from an MLflow TraceInfo for DISPLAY ONLY.
 
-    The plugin tags traces with ``ario.*`` metadata but does NOT write the
-    timestamp as a tag — the canonical timestamp lives on
-    ``TraceInfo.request_time`` (Unix ms). Templates render
-    ``record.timestamp[:10]`` so we serialize to ISO-8601 here.
-
-    Surfaces:
-    - the rich display prediction (``ario.display_prediction_json``) the demo
-      writes from ``_run_prediction`` so the prediction card renders without
-      waiting for the Arweave round-trip.
-    - the Turbo receipt (``ario.receipt_json``) the plugin tags after a
-      successful upload, so the upload-receipt card has its values back.
-    - the MLflow trace_id (canonical trace handle, replaces the OTel trace
-      id from the pre-Phase-4 architecture).
+    The trace tags carry pointers (decision_id, arweave_tx, record_hash) and
+    display data (display_prediction_json, receipt_json), but they CANNOT
+    reproduce the exact bytes that were signed (latency_ms and other signed
+    fields aren't fully reconstructable from tags). So this envelope is
+    marked ``locally_verifiable=False`` — callers must not run verify_local
+    on it. To verify, fetch the canonical proof from Arweave by tx_id.
     """
     tags = dict(getattr(trace_info, "tags", {}) or {})
     request_time_ms = getattr(trace_info, "request_time", None) or getattr(trace_info, "timestamp_ms", None)
@@ -154,6 +147,9 @@ def _envelope_from_trace(trace_info) -> dict:
     if not model_uri and tags.get("ario.model_name") and tags.get("ario.model_version"):
         model_uri = f"models:/{tags['ario.model_name']}/{tags['ario.model_version']}"
 
+    # Note: this record is structurally incomplete (missing latency_ms,
+    # artifact_verified, etc.) and MUST NOT be fed to verify_local. It's
+    # populated for display only.
     record = {
         "decision_id": tags.get("ario.decision_id"),
         "event_type": "prediction",
@@ -164,9 +160,6 @@ def _envelope_from_trace(trace_info) -> dict:
         "model_uri": model_uri,
         "input_hash": tags.get("ario.input_hash"),
         "output_hash": tags.get("ario.output_hash"),
-        "prediction": rich_prediction,
-        # MLflow trace id is the canonical trace handle post-Phase-4.
-        "trace_id": mlflow_trace_id,
     }
     return {
         "record": record,
@@ -176,6 +169,10 @@ def _envelope_from_trace(trace_info) -> dict:
         "arweave_url": tags.get("ario.arweave_url"),
         "proof_status": tags.get("ario.proof_status"),
         "turbo_receipt": turbo_receipt,
+        "display_prediction": rich_prediction,
+        "display_trace_id": mlflow_trace_id,
+        # Tells decision_detail not to compute hash_valid against this envelope.
+        "locally_verifiable": False,
     }
 
 
@@ -237,22 +234,19 @@ def _decision_envelope_by_id(app, decision_id: str) -> dict | None:
     tags = dict(getattr(trace_info, "tags", {}) or {})
     tx_id = tags.get("ario.arweave_tx")
     if tx_id:
-        # Prefer the canonical Arweave proof for verification, but overlay the
-        # trace-only fields (display_prediction, turbo_receipt) so the page
-        # has both the signed proof AND the display data the user expects.
         from_chain = _envelope_from_arweave(app, tx_id)
         if from_chain:
+            # Canonical proof from Arweave: record stays untouched (locally
+            # verifiable). Carry display-only fields from the trace as
+            # envelope-level siblings.
             from_chain = dict(from_chain)
-            # Carry over display-only fields the proof doesn't contain.
+            from_chain["locally_verifiable"] = True
             if trace_envelope.get("turbo_receipt") and not from_chain.get("turbo_receipt"):
                 from_chain["turbo_receipt"] = trace_envelope["turbo_receipt"]
-            # Splice the rich prediction onto the signed record without
-            # mutating the bytes that were hashed (the proof's record_hash
-            # is over a record without 'prediction'; we add it as a sibling
-            # on the in-memory dict for template rendering only).
-            display_pred = trace_envelope.get("record", {}).get("prediction")
-            if display_pred and isinstance(from_chain.get("record"), dict):
-                from_chain["record"] = {**from_chain["record"], "prediction": display_pred}
+            if trace_envelope.get("display_prediction"):
+                from_chain["display_prediction"] = trace_envelope["display_prediction"]
+            if trace_envelope.get("display_trace_id"):
+                from_chain["display_trace_id"] = trace_envelope["display_trace_id"]
             return from_chain
     return trace_envelope
 
@@ -376,8 +370,14 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
 
     # Local verification (works when envelope was fetched from Arweave —
     # which has the full record + signature + public_key for verification).
+    # Trace-tag envelopes are marked locally_verifiable=False because they
+    # can't reconstruct all signed fields; skip verify_local on them.
     local = None
-    if envelope.get("signature") and envelope.get("public_key"):
+    if (
+        envelope.get("locally_verifiable")
+        and envelope.get("signature")
+        and envelope.get("public_key")
+    ):
         local = app.state.proof_engine.verify_local(envelope)
 
     # Full verification (on-demand)

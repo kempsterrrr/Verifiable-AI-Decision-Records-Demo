@@ -1431,3 +1431,145 @@ def test_promote_endpoint_anchors_promotion_tx(monkeypatch, tmp_path):
     mlflow_client = _mlflow.tracking.MlflowClient(tracking_uri=tracking_uri)
     mv = mlflow_client.get_model_version("credit_promote", info["model_version"])
     assert (mv.tags or {}).get("ario.promotion_tx") == "STUB_PROMO_TX"
+
+
+# --- Spurious tamper bug regressions (issues #3 + #4) ----------------------
+
+
+def test_envelope_from_trace_marks_not_locally_verifiable():
+    """Trace-tag envelopes are structurally incomplete vs the signed record;
+    they must be flagged so callers skip verify_local on them."""
+    from unittest.mock import MagicMock
+    from app.ui import _envelope_from_trace
+
+    info = MagicMock()
+    info.request_time = 1777300000000
+    info.timestamp_ms = 1777300000000
+    info.trace_id = "tr-test"
+    info.tags = {
+        "ario.decision_id": "did-1",
+        "ario.model_name": "m",
+        "ario.model_version": "1",
+        "ario.record_hash": "abc",
+        "ario.public_key": "pub",
+        "ario.arweave_tx": "TX1",
+    }
+
+    env = _envelope_from_trace(info)
+    assert env["locally_verifiable"] is False
+    # Display fields live at envelope level, not in record.
+    assert "prediction" not in env["record"]
+    assert "trace_id" not in env["record"]
+
+
+def test_run_prediction_envelope_record_is_signed_bytes(monkeypatch):
+    """envelope.record must equal vp.record bit-for-bit so verify_local
+    re-hashes the same bytes that were signed.
+
+    Regression for the "every anchored decision shows tampered" bug —
+    we used to inject display_prediction into the record, which broke the
+    hash invariant.
+    """
+    from unittest.mock import MagicMock
+    from app.main import _run_prediction
+
+    signed_record = {
+        "decision_id": "d-1",
+        "event_type": "prediction",
+        "timestamp": "2026-04-28T12:00:00+00:00",
+        "model_name": "m",
+        "model_version": "1",
+        "input_hash": "abc",
+        "output_hash": "def",
+        "latency_ms": 0.5,
+        "artifact_verified": True,
+    }
+    vp = MagicMock()
+    vp.record = signed_record
+    vp.decision_id = "d-1"
+    vp.proof_status = "anchored"
+    vp.tx_id = "TX1"
+    vp.trace_id = None
+    vp.prediction = [1]
+
+    fake_model = MagicMock()
+    fake_model._model = MagicMock()
+    fake_model.predict.return_value = vp
+
+    class _State:
+        verified_model = fake_model
+
+    envelope, _ = _run_prediction(_State(), [78000.0, 0.18, 0.22, 72.0, 745.0])
+    # The record must be the EXACT object signed — no extra fields.
+    assert envelope["record"] is vp.record or envelope["record"] == signed_record
+    assert "prediction" not in envelope["record"]
+    # display_prediction is a sibling on the envelope, not in the record.
+    assert "display_prediction" in envelope
+
+
+def test_decision_envelope_arweave_fetched_record_unchanged(monkeypatch, tmp_path):
+    """When Arweave proof is fetched, the canonical record must not be
+    mutated by display enrichment."""
+    from unittest.mock import MagicMock
+    from app.ui import _decision_envelope_by_id
+
+    canonical_record = {
+        "decision_id": "d-1",
+        "event_type": "prediction",
+        "timestamp": "2026-04-28T12:00:00+00:00",
+        "model_name": "m",
+        "model_version": "1",
+        "input_hash": "abc",
+        "output_hash": "def",
+        "latency_ms": 0.5,
+        "artifact_verified": True,
+    }
+    canonical_proof = {
+        "record": canonical_record,
+        "record_hash": "RH",
+        "previous_hash": "PH",
+        "signature": "SIG",
+        "public_key": "PK",
+    }
+
+    fake_anchor = MagicMock()
+    fake_anchor.enabled = True
+    fake_anchor.fetch_proof = lambda tx: canonical_proof
+
+    fake_settings = MagicMock()
+    fake_settings.mlflow_tracking_uri = "file:///tmp/none"
+    fake_settings.ario_gateway_host = "turbo-gateway.com"
+
+    fake_trace_info = MagicMock()
+    fake_trace_info.tags = {
+        "ario.decision_id": "d-1",
+        "ario.arweave_tx": "TX1",
+        "ario.display_prediction_json": '{"class":"approve","class_index":1,"features_used":{},"probabilities":{}}',
+        "ario.public_key": "PK",
+        "ario.record_hash": "RH",
+    }
+    fake_trace_info.request_time = 1777300000000
+
+    fake_traces = [MagicMock(info=fake_trace_info)]
+    fake_client = MagicMock()
+    fake_client.search_experiments.return_value = [MagicMock(experiment_id="0")]
+    fake_client.search_traces.return_value = fake_traces
+
+    import app.ui as ui_module
+    monkeypatch.setattr(ui_module.mlflow.tracking, "MlflowClient", lambda: fake_client)
+    monkeypatch.setattr(ui_module.mlflow, "set_tracking_uri", lambda _u: None)
+
+    class _App:
+        class state:
+            anchor = fake_anchor
+            settings = fake_settings
+
+    env = _decision_envelope_by_id(_App(), "d-1")
+    assert env is not None
+    # Record must equal canonical bytes — no mutation.
+    assert env["record"] == canonical_record
+    assert "prediction" not in env["record"]
+    # display_prediction lifted to envelope level.
+    assert env["display_prediction"]["class"] == "approve"
+    # Arweave-fetched envelope IS locally verifiable.
+    assert env["locally_verifiable"] is True

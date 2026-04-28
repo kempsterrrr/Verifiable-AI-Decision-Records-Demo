@@ -2062,3 +2062,123 @@ def test_verify_run_artifact_integrity_uses_custom_artifact_path(monkeypatch, tm
     # the recompute itself succeeded.
     assert result["match"] is False
     assert result["error"] is None
+
+
+# --- Phase B: live-verify endpoint + drift prevention ---
+
+
+def test_compute_decision_verification_returns_full_shape(monkeypatch, tmp_path):
+    """Helper returns the six expected keys regardless of state."""
+    from unittest.mock import MagicMock
+    from app.ui import _compute_decision_verification
+
+    fake_app = MagicMock()
+    fake_app.state.proof_engine = MagicMock()
+    fake_app.state.anchor = MagicMock()
+    fake_app.state.anchor.check_status.return_value = {"status": "FINALIZED"}
+    fake_app.state.ario_verify = MagicMock()
+    fake_app.state.ario_verify.enabled = False
+    fake_app.state.ario_verify_cache = {}
+    fake_app.state.settings = MagicMock()
+    fake_app.state.settings.mlflow_tracking_uri = "file:/dev/null"
+
+    # Trace-tag-shaped envelope (locally_verifiable=False).
+    env = {
+        "record": {"decision_id": "d-1"},
+        "arweave_tx_id": None,
+        "locally_verifiable": False,
+    }
+
+    out = _compute_decision_verification(fake_app, env, "d-1")
+    assert set(out.keys()) == {
+        "local_verification", "anchored_on_arweave", "attestation",
+        "prediction_integrity", "turbo_status", "verified_at",
+    }
+    assert out["local_verification"] is None
+    assert out["anchored_on_arweave"] is False
+    assert out["attestation"] is None
+
+
+def test_api_reverify_decision_busts_attestation_cache(tmp_path, monkeypatch):
+    """Endpoint must pop the cache so the round-trip is fresh."""
+    from unittest.mock import MagicMock
+    from app.main import api_reverify_decision
+
+    # Pre-populate cache with a known stale value.
+    stale = {"attestation_level": 1, "report_url": None, "pdf_url": None,
+             "attested_by": None, "attested_at": None}
+
+    fake_envelope = {
+        "record": {"decision_id": "d-1"},
+        "arweave_tx_id": "TX_OLD",
+        "locally_verifiable": True,
+        "signature": "s",
+        "public_key": "p",
+    }
+
+    import app.main as main_mod
+    monkeypatch.setattr(
+        "app.ui._decision_envelope_by_id",
+        lambda app_, decision_id: fake_envelope,
+    )
+
+    captured = {"compute_called": False}
+
+    def fake_compute(app_, env, decision_id):
+        captured["compute_called"] = True
+        captured["cache_state_at_compute"] = dict(app_.state.ario_verify_cache)
+        return {
+            "local_verification": {"hash_valid": True, "signature_valid": True, "overall": True},
+            "anchored_on_arweave": True,
+            "attestation": {"attestation_level": 3, "report_url": None, "pdf_url": None,
+                            "attested_by": None, "attested_at": None},
+            "prediction_integrity": {"overall_match": True, "match_input": True,
+                                     "match_output": True, "anchored_input_hash": "a",
+                                     "recomputed_input_hash": "a", "anchored_output_hash": "b",
+                                     "recomputed_output_hash": "b", "error": None},
+            "turbo_status": {"status": "FINALIZED"},
+            "verified_at": "2026-04-28T12:00:00+00:00",
+        }
+
+    monkeypatch.setattr("app.ui._compute_decision_verification", fake_compute)
+
+    fake_request = MagicMock()
+    fake_request.app.state.ario_verify_cache = {"TX_OLD": stale}
+    fake_request.app.state.decision_verify_cache = {"d-1": "stale"}
+
+    out = api_reverify_decision(fake_request, "d-1")
+    assert captured["compute_called"]
+    # The cache was BUSTED before compute ran.
+    assert captured["cache_state_at_compute"] == {}
+    assert out["decision_id"] == "d-1"
+    assert "verified_at" in out
+
+
+def test_api_reverify_decision_404_when_decision_not_found(monkeypatch):
+    """No envelope → 404, not a 500."""
+    from unittest.mock import MagicMock
+    from fastapi import HTTPException
+    from app.main import api_reverify_decision
+    import pytest
+
+    monkeypatch.setattr("app.ui._decision_envelope_by_id", lambda app_, decision_id: None)
+    fake_request = MagicMock()
+
+    with pytest.raises(HTTPException) as ei:
+        api_reverify_decision(fake_request, "nope")
+    assert ei.value.status_code == 404
+
+
+def test_decision_detail_and_reverify_endpoint_compute_same_keys(monkeypatch):
+    """Drift-prevention: route and endpoint share _compute_decision_verification.
+
+    If a future change adds a key to one but not the other, this test fails."""
+    import inspect
+    from app.ui import decision_detail, _compute_decision_verification
+
+    # The route's body should reference _compute_decision_verification.
+    src = inspect.getsource(decision_detail)
+    assert "_compute_decision_verification" in src, (
+        "decision_detail must call _compute_decision_verification "
+        "(otherwise the page and the live-verify endpoint will drift)."
+    )

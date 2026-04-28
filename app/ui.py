@@ -328,20 +328,30 @@ def who_this_is_for(request: Request):
     )
 
 
-@router.get("/ui/decisions/{decision_id}", response_class=HTMLResponse)
-def decision_detail(request: Request, decision_id: str):
-    app = request.app
-    envelope = _decision_envelope_by_id(app, decision_id)
+def _compute_decision_verification(app, envelope: dict, decision_id: str) -> dict:
+    """Compute the full verification context for a decision.
 
-    if not envelope:
-        return HTMLResponse("<h1>Decision not found</h1>", status_code=404)
+    Single source of truth for what 'verify a decision' means: used by
+    both the page-load route AND the live-verify endpoint, so the two
+    cannot drift. Reads from app.state.proof_engine, .anchor,
+    .ario_verify, .ario_verify_cache, and .settings.
 
-    # ── Local checks (always, cheap) ─────────────────────────────────────
-    # Trace-tag envelopes are flagged locally_verifiable=False because they
-    # can't reconstruct all signed fields; verify_local would always fail
-    # on them by construction. For the canonical Arweave-fetched envelope,
-    # these checks ARE meaningful — they catch in-memory mutation of the
-    # envelope before render and signature forgery.
+    Returns a flat dict with these keys (each value may be None):
+        local_verification:   {hash_valid, signature_valid, overall} | None
+        anchored_on_arweave:  bool
+        attestation:          {attestation_level, report_url, pdf_url,
+                              attested_by, attested_at} | None
+        prediction_integrity: {match_input, match_output, overall_match,
+                              anchored_input_hash, recomputed_input_hash,
+                              anchored_output_hash, recomputed_output_hash,
+                              error} | None
+        turbo_status:         dict | None  (from anchor.check_status)
+        verified_at:          ISO-8601 string of the moment this ran
+    """
+    verified_at = datetime.now(timezone.utc).isoformat()
+
+    # Local checks (always cheap; trace-tag envelopes are flagged
+    # locally_verifiable=False and skip this).
     local = None
     if (
         envelope.get("locally_verifiable")
@@ -350,16 +360,14 @@ def decision_detail(request: Request, decision_id: str):
     ):
         local = app.state.proof_engine.verify_local(envelope)
 
-    # ── Arweave reachability (always, fast) ──────────────────────────────
-    # We already fetched once in _envelope_from_arweave to build the
-    # envelope. The "anchored on ar.io" status is just whether that
-    # envelope came from a real fetch — captured by locally_verifiable.
-    anchored_on_arweave = bool(envelope.get("locally_verifiable") and envelope.get("arweave_tx_id"))
+    # Arweave reachability — already implied by locally_verifiable=True
+    # (we only set that flag when the envelope came from a successful
+    # _envelope_from_arweave fetch).
+    anchored_on_arweave = bool(
+        envelope.get("locally_verifiable") and envelope.get("arweave_tx_id")
+    )
 
-    # ── ar.io Verify attestation (cached per tx_id) ──────────────────────
-    # Independent attestation by an ar.io Verify operator. Stable for a
-    # given tx; cached for the process lifetime to avoid hammering the
-    # service on every render.
+    # ar.io Verify attestation, cached per tx_id.
     attestation = None
     tx_id = envelope.get("arweave_tx_id")
     if tx_id and app.state.ario_verify.enabled:
@@ -381,7 +389,8 @@ def decision_detail(request: Request, decision_id: str):
             except Exception as e:
                 logger.warning(f"ar.io Verify failed for {tx_id}: {e}")
 
-    # ── Prediction integrity (always, the meaningful MLflow ↔ Arweave check) ─
+    # Prediction integrity — re-derive from MLflow span data, compare to
+    # anchored proof. The meaningful MLflow ↔ Arweave check.
     prediction_integrity = None
     if envelope.get("arweave_tx_id"):
         try:
@@ -407,7 +416,29 @@ def decision_detail(request: Request, decision_id: str):
 
     turbo_status = None
     if envelope.get("arweave_tx_id"):
-        turbo_status = app.state.anchor.check_status(envelope["arweave_tx_id"])
+        try:
+            turbo_status = app.state.anchor.check_status(envelope["arweave_tx_id"])
+        except Exception as e:
+            logger.debug(f"check_status failed for {envelope['arweave_tx_id']}: {e}")
+
+    return {
+        "local_verification": local,
+        "anchored_on_arweave": anchored_on_arweave,
+        "attestation": attestation,
+        "prediction_integrity": prediction_integrity,
+        "turbo_status": turbo_status,
+        "verified_at": verified_at,
+    }
+
+
+@router.get("/ui/decisions/{decision_id}", response_class=HTMLResponse)
+def decision_detail(request: Request, decision_id: str):
+    app = request.app
+    envelope = _decision_envelope_by_id(app, decision_id)
+    if not envelope:
+        return HTMLResponse("<h1>Decision not found</h1>", status_code=404)
+
+    verification = _compute_decision_verification(app, envelope, decision_id)
 
     return templates.TemplateResponse(
         request,
@@ -415,11 +446,7 @@ def decision_detail(request: Request, decision_id: str):
         {
             **_common_context(app),
             "envelope": envelope,
-            "local_verification": local,
-            "anchored_on_arweave": anchored_on_arweave,
-            "attestation": attestation,
-            "turbo_status": turbo_status,
-            "prediction_integrity": prediction_integrity,
+            **verification,  # local_verification, anchored_on_arweave, attestation, prediction_integrity, turbo_status, verified_at
         },
     )
 

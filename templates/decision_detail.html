@@ -172,6 +172,12 @@
                 <div class="page-id">{{ envelope.record.decision_id }}</div>
             </div>
             <div class="page-actions">
+                <button type="button" class="btn btn-primary btn-sm reverify-btn"
+                        data-decision-id="{{ envelope.record.decision_id }}"
+                        data-loading-text="Re-verifying…"
+                        title="Live re-verification: clears caches, makes a fresh ar.io Verify network call, updates rows in place. The page already shows current verification state — this button is for live demos where you want the round-trip to be visible.">
+                    Verify with ar.io (live)
+                </button>
                 <a href="/api/export/{{ envelope.record.decision_id }}" class="btn btn-outline btn-sm">Download Proof</a>
                 {% if envelope.arweave_tx_id %}
                 <button type="button" class="btn btn-outline btn-sm tamper-decision-btn"
@@ -237,50 +243,58 @@
                     </div>
                     <div class="verify-row">
                         <span title="Recomputes the canonical hash of the proof's record bytes and compares to the stored record_hash. Catches in-memory mutation of the envelope.">Hash Integrity</span>
-                        {% if local_verification %}
-                            <span class="{{ 'check' if local_verification.hash_valid else 'cross' }}">{{ 'PASS' if local_verification.hash_valid else 'FAIL' }}</span>
-                        {% else %}
-                            <span class="unchecked">Not checked</span>
-                        {% endif %}
+                        <span data-verify-cell="hash_valid">
+                            {% if local_verification %}
+                                <span class="{{ 'check' if local_verification.hash_valid else 'cross' }}">{{ 'PASS' if local_verification.hash_valid else 'FAIL' }}</span>
+                            {% else %}
+                                <span class="unchecked">Not checked</span>
+                            {% endif %}
+                        </span>
                     </div>
                     <div class="verify-row">
                         <span title="Verifies the Ed25519 signature over (record_hash, previous_hash, timestamp) using the proof's public key. Catches forgery of the proof envelope.">Signature</span>
-                        {% if local_verification %}
-                            <span class="{{ 'check' if local_verification.signature_valid else 'cross' }}">{{ 'PASS' if local_verification.signature_valid else 'FAIL' }}</span>
-                        {% else %}
-                            <span class="unchecked">Not checked</span>
-                        {% endif %}
+                        <span data-verify-cell="signature_valid">
+                            {% if local_verification %}
+                                <span class="{{ 'check' if local_verification.signature_valid else 'cross' }}">{{ 'PASS' if local_verification.signature_valid else 'FAIL' }}</span>
+                            {% else %}
+                                <span class="unchecked">Not checked</span>
+                            {% endif %}
+                        </span>
                     </div>
                     <div class="verify-row">
                         <span title="The proof envelope was fetched from the ar.io gateway by tx_id. Confirms the data is reachable and gateway-rendered as a coherent proof.">Anchored on ar.io</span>
-                        {% if anchored_on_arweave %}
-                            <span class="check">YES</span>
-                        {% else %}
-                            <span class="unchecked">Not anchored</span>
-                        {% endif %}
+                        <span data-verify-cell="anchored_on_arweave">
+                            {% if anchored_on_arweave %}
+                                <span class="check">YES</span>
+                            {% else %}
+                                <span class="unchecked">Not anchored</span>
+                            {% endif %}
+                        </span>
                     </div>
                     <div class="verify-row">
                         <span title="An independent ar.io Verify operator has run their own checks on this tx and signed the result with their wallet. Their attestation level (1, 2, or 3) reflects how much they verified.">Attestation</span>
-                        {% if attestation and attestation.attestation_level %}
-                            <span>
-                                {% if attestation.attestation_level == 3 %}
-                                    <span class="badge badge-green" title="ar.io Verify Level 3 — the digital signature on this record has been independently verified using the original signer's public key. This is a mathematical proof, not a trust claim: the record is intact and attributable to the stated signer."><span class="badge-dot"></span> Cryptographically verified</span>
-                                    <span style="margin-left:0.4rem;font-size:0.72rem;color:var(--muted);">Level 3</span>
-                                {% elif attestation.attestation_level == 2 %}
-                                    <span class="badge badge-yellow" title="ar.io Verify Level 2 — ar.io downloaded the raw record and independently recomputed its SHA-256 fingerprint."><span class="badge-dot"></span> Content integrity confirmed</span>
-                                    <span style="margin-left:0.4rem;font-size:0.72rem;color:var(--muted);">Level 2</span>
-                                {% elif attestation.attestation_level == 1 %}
-                                    <span class="badge badge-yellow" title="ar.io Verify Level 1 — the record was found in a confirmed block on Arweave."><span class="badge-dot"></span> Finalized on Arweave</span>
-                                    <span style="margin-left:0.4rem;font-size:0.72rem;color:var(--muted);">Level 1</span>
-                                {% endif %}
-                            </span>
-                        {% elif attestation %}
-                            <span class="badge badge-yellow">Pending</span>
-                        {% elif anchored_on_arweave %}
-                            <span class="unchecked">Not requested</span>
-                        {% else %}
-                            <span class="unchecked">Not anchored</span>
-                        {% endif %}
+                        <span data-verify-cell="attestation">
+                            {% if attestation and attestation.attestation_level %}
+                                <span>
+                                    {% if attestation.attestation_level == 3 %}
+                                        <span class="badge badge-green" title="ar.io Verify Level 3 — the digital signature on this record has been independently verified using the original signer's public key. This is a mathematical proof, not a trust claim: the record is intact and attributable to the stated signer."><span class="badge-dot"></span> Cryptographically verified</span>
+                                        <span style="margin-left:0.4rem;font-size:0.72rem;color:var(--muted);">Level 3</span>
+                                    {% elif attestation.attestation_level == 2 %}
+                                        <span class="badge badge-yellow" title="ar.io Verify Level 2 — ar.io downloaded the raw record and independently recomputed its SHA-256 fingerprint."><span class="badge-dot"></span> Content integrity confirmed</span>
+                                        <span style="margin-left:0.4rem;font-size:0.72rem;color:var(--muted);">Level 2</span>
+                                    {% elif attestation.attestation_level == 1 %}
+                                        <span class="badge badge-yellow" title="ar.io Verify Level 1 — the record was found in a confirmed block on Arweave."><span class="badge-dot"></span> Finalized on Arweave</span>
+                                        <span style="margin-left:0.4rem;font-size:0.72rem;color:var(--muted);">Level 1</span>
+                                    {% endif %}
+                                </span>
+                            {% elif attestation %}
+                                <span class="badge badge-yellow">Pending</span>
+                            {% elif anchored_on_arweave %}
+                                <span class="unchecked">Not requested</span>
+                            {% else %}
+                                <span class="unchecked">Not anchored</span>
+                            {% endif %}
+                        </span>
                     </div>
 
                     {% if attestation and attestation.attested_by %}
@@ -299,15 +313,17 @@
                     {% if prediction_integrity %}
                     <div class="verify-row">
                         <span title="Re-derives input/output hashes from MLflow's recorded span data and compares to the values anchored on Arweave. Catches any post-anchor mutation of the trace.">Prediction Integrity</span>
-                        {% if prediction_integrity.error %}
-                            <span class="cross" title="{{ prediction_integrity.error }}">Not checked</span>
-                        {% elif prediction_integrity.overall_match %}
-                            <span class="check">PASS — recorded inputs/outputs match anchored hashes</span>
-                        {% elif prediction_integrity.overall_match is false %}
-                            <span class="cross">FAIL — recorded data differs from anchored hashes</span>
-                        {% else %}
-                            <span class="unchecked">Not checked</span>
-                        {% endif %}
+                        <span data-verify-cell="prediction_integrity">
+                            {% if prediction_integrity.error %}
+                                <span class="cross" title="{{ prediction_integrity.error }}">Not checked</span>
+                            {% elif prediction_integrity.overall_match %}
+                                <span class="check">PASS — recorded inputs/outputs match anchored hashes</span>
+                            {% elif prediction_integrity.overall_match is false %}
+                                <span class="cross">FAIL — recorded data differs from anchored hashes</span>
+                            {% else %}
+                                <span class="unchecked">Not checked</span>
+                            {% endif %}
+                        </span>
                     </div>
                     {% if prediction_integrity.overall_match is false %}
                     <div class="verify-note verify-note-warn" style="margin-top: 0.5rem;">
@@ -327,16 +343,22 @@
 
                     <div class="verify-row verify-divider">
                         <strong>Overall</strong>
-                        {% set overall_pass = local_verification and local_verification.hash_valid and local_verification.signature_valid and anchored_on_arweave %}
-                        {% if local_verification and not local_verification.hash_valid and anchored_on_arweave %}
-                            <strong class="cross" title="The local proof envelope no longer matches the signed record_hash — the Arweave-anchored version is still intact.">LOCAL COPY CHANGED</strong>
-                        {% elif overall_pass %}
-                            <strong class="check" title="Proof envelope verified locally and confirmed reachable on Arweave.">PROOF CONFIRMED</strong>
-                        {% elif anchored_on_arweave %}
-                            <strong class="cross">FAILED</strong>
-                        {% else %}
-                            <span class="unchecked">Not anchored yet</span>
-                        {% endif %}
+                        <span data-verify-cell="overall">
+                            {% set overall_pass = local_verification and local_verification.hash_valid and local_verification.signature_valid and anchored_on_arweave %}
+                            {% if local_verification and not local_verification.hash_valid and anchored_on_arweave %}
+                                <strong class="cross" title="The local proof envelope no longer matches the signed record_hash — the Arweave-anchored version is still intact.">LOCAL COPY CHANGED</strong>
+                            {% elif overall_pass %}
+                                <strong class="check" title="Proof envelope verified locally and confirmed reachable on Arweave.">PROOF CONFIRMED</strong>
+                            {% elif anchored_on_arweave %}
+                                <strong class="cross">FAILED</strong>
+                            {% else %}
+                                <span class="unchecked">Not anchored yet</span>
+                            {% endif %}
+                        </span>
+                    </div>
+                    <div class="verify-row" id="reverified-at-row" style="display:none; border-top: 1px solid var(--border); margin-top: 0.5rem; padding-top: 0.5rem;">
+                        <span style="font-size: 0.75rem; color: var(--muted);">Re-verified at</span>
+                        <span id="reverified-at-value" class="mono mono-sm" style="font-size: 0.75rem; color: var(--muted);"></span>
                     </div>
 
                     {% if attestation and attestation.report_url %}
@@ -824,4 +846,140 @@
     })();
     </script>
     {% endif %}
+    <script>
+(function() {
+    const btn = document.querySelector(".reverify-btn");
+    if (!btn) return;
+
+    function makeBadge(cls, text, title) {
+        const span = document.createElement("span");
+        span.className = cls;
+        span.textContent = text;
+        if (title) span.title = title;
+        return span;
+    }
+
+    function setCell(key, contents) {
+        const cell = document.querySelector(`[data-verify-cell="${key}"]`);
+        if (!cell) return;
+        cell.replaceChildren(contents);
+    }
+
+    function applyResult(data) {
+        // Hash Integrity
+        const lv = data.local_verification;
+        if (lv) {
+            setCell("hash_valid", makeBadge(
+                lv.hash_valid ? "check" : "cross",
+                lv.hash_valid ? "PASS" : "FAIL"
+            ));
+            setCell("signature_valid", makeBadge(
+                lv.signature_valid ? "check" : "cross",
+                lv.signature_valid ? "PASS" : "FAIL"
+            ));
+        } else {
+            setCell("hash_valid", makeBadge("unchecked", "Not checked"));
+            setCell("signature_valid", makeBadge("unchecked", "Not checked"));
+        }
+
+        // Anchored on ar.io
+        setCell("anchored_on_arweave",
+            data.anchored_on_arweave
+                ? makeBadge("check", "YES")
+                : makeBadge("unchecked", "Not anchored")
+        );
+
+        // Attestation
+        const att = data.attestation;
+        if (att && att.attestation_level) {
+            const wrapper = document.createElement("span");
+            const level = att.attestation_level;
+            const labels = {
+                3: ["badge badge-green", "Cryptographically verified"],
+                2: ["badge badge-yellow", "Content integrity confirmed"],
+                1: ["badge badge-yellow", "Finalized on Arweave"],
+            };
+            const [cls, text] = labels[level] || ["badge badge-yellow", `Level ${level}`];
+            const badge = document.createElement("span");
+            badge.className = cls;
+            const dot = document.createElement("span");
+            dot.className = "badge-dot";
+            badge.appendChild(dot);
+            badge.appendChild(document.createTextNode(" " + text));
+            wrapper.appendChild(badge);
+            const lvl = document.createElement("span");
+            lvl.style.marginLeft = "0.4rem";
+            lvl.style.fontSize = "0.72rem";
+            lvl.style.color = "var(--muted)";
+            lvl.textContent = `Level ${level}`;
+            wrapper.appendChild(lvl);
+            setCell("attestation", wrapper);
+        } else if (data.anchored_on_arweave) {
+            setCell("attestation", makeBadge("badge badge-yellow", "Pending"));
+        } else {
+            setCell("attestation", makeBadge("unchecked", "Not anchored"));
+        }
+
+        // Prediction Integrity
+        const pi = data.prediction_integrity;
+        if (pi && pi.error) {
+            setCell("prediction_integrity",
+                makeBadge("cross", "Not checked", pi.error));
+        } else if (pi && pi.overall_match === true) {
+            setCell("prediction_integrity",
+                makeBadge("check", "PASS — recorded inputs/outputs match anchored hashes"));
+        } else if (pi && pi.overall_match === false) {
+            setCell("prediction_integrity",
+                makeBadge("cross", "FAIL — recorded data differs from anchored hashes"));
+        } else {
+            setCell("prediction_integrity", makeBadge("unchecked", "Not checked"));
+        }
+
+        // Overall
+        if (lv && !lv.hash_valid && data.anchored_on_arweave) {
+            setCell("overall", makeBadge("cross",
+                "LOCAL COPY CHANGED",
+                "The local proof envelope no longer matches the signed record_hash."));
+        } else if (lv && lv.hash_valid && lv.signature_valid && data.anchored_on_arweave) {
+            setCell("overall", makeBadge("check", "PROOF CONFIRMED"));
+        } else if (data.anchored_on_arweave) {
+            setCell("overall", makeBadge("cross", "FAILED"));
+        } else {
+            setCell("overall", makeBadge("unchecked", "Not anchored yet"));
+        }
+
+        // Re-verified at row
+        const row = document.getElementById("reverified-at-row");
+        const val = document.getElementById("reverified-at-value");
+        if (row && val && data.verified_at) {
+            const t = new Date(data.verified_at);
+            val.textContent = t.toLocaleTimeString();
+            row.style.display = "";
+        }
+    }
+
+    btn.addEventListener("click", async () => {
+        const decisionId = btn.dataset.decisionId;
+        const original = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = btn.dataset.loadingText || "Re-verifying…";
+        try {
+            const resp = await fetch(`/api/verify/decision/${encodeURIComponent(decisionId)}`, {
+                method: "POST",
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || `HTTP ${resp.status}`);
+            }
+            const data = await resp.json();
+            applyResult(data);
+        } catch (e) {
+            alert(`Re-verify failed: ${e.message}`);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = original;
+        }
+    });
+})();
+    </script>
 {% endblock %}

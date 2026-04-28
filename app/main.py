@@ -556,6 +556,37 @@ def api_tamper_decision(request: Request, decision_id: str):
     }
 
 
+@app.post("/api/verify/decision/{decision_id}")
+def api_reverify_decision(request: Request, decision_id: str):
+    """Live re-verification trigger for the demo's "Verify with ar.io (live)"
+    button. Busts caches so the round-trip is visibly fresh, then runs the
+    same verification chain the page load uses (single source of truth).
+
+    Returns the flat verification dict — the JS handler updates rows in
+    place from this response.
+    """
+    from app.ui import _decision_envelope_by_id, _compute_decision_verification
+
+    envelope = _decision_envelope_by_id(request.app, decision_id)
+    if envelope is None:
+        raise HTTPException(status_code=404, detail="Decision not found.")
+
+    # Bust caches BEFORE re-verifying so the round-trip is real.
+    tx_id = envelope.get("arweave_tx_id")
+    if tx_id:
+        request.app.state.ario_verify_cache.pop(tx_id, None)
+    # decision_verify_cache is initialised in Phase C; pop conditionally
+    # so this code is forward-compatible without depending on Phase C
+    # ordering.
+    decision_cache = getattr(request.app.state, "decision_verify_cache", None)
+    if decision_cache is not None:
+        decision_cache.pop(decision_id, None)
+
+    verification = _compute_decision_verification(request.app, envelope, decision_id)
+    verification["decision_id"] = decision_id
+    return verification
+
+
 @app.post("/api/untamper/decision/{decision_id}")
 def api_untamper_decision(request: Request, decision_id: str):
     """Restore the trace data file from the tamper backup."""

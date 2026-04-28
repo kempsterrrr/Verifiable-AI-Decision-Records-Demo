@@ -1,14 +1,622 @@
-"""Three-level verification: local, Arweave, ar.io Verify."""
+"""Four-check verification helpers for the pure-commitment design.
 
+The four checks (see plan Part 3 verification flow):
+
+1. **Cryptographic signature.** Validate Ed25519 signature on the
+   envelope. Local, instant.
+2. **Anchored bytes intact.** Download ``ario/payload.json`` from MLflow,
+   re-hash, compare to the envelope's ``payload_hash``. Catches
+   tampering with the canonical witness in MLflow's artifact store.
+3. **Live MLflow matches anchored bytes.** Re-fetch the "live" fields
+   (params, metrics, artifact checksums) from MLflow and rebuild the
+   canonical payload, holding "snapshot" fields (caller metadata,
+   trace IDs) constant from the original. Compare bytes. Catches
+   tampering with MLflow's tracking-store data after anchoring.
+4. **(Optional) ar.io Verify Level 3 attestation.** Independent
+   third-party confirmation that the Arweave TX exists and is
+   permanently stored. Implemented by ``ArioVerifyClient`` — unchanged
+   from v1.
+
+Verifiers wanting only signature + envelope-internal consistency can
+call :func:`verify_signature` alone. Auditors with MLflow access run
+:func:`full_verify` to get all four. The legacy three-level helpers
+(``verify_record``, ``verify_arweave``, ``verify_ario``,
+``full_verify`` in their v1 form) are deleted in this redesign — they
+covered a different design where the proof carried the source data.
+"""
+
+import json
 import logging
 import os
 
 import requests
 
-from ario_mlflow.proof import ProofEngine, canonical_json, hash_data
+from ario_mlflow.proof import ProofEngine, canonical_json, hash_data, normalize_floats
 from ario_mlflow.arweave import ArweaveAnchor
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Live-field re-derivation per event type
+# ---------------------------------------------------------------------------
+#
+# For check 3 we need to know which fields in the canonical payload are
+# "live" (re-fetchable from MLflow at verify time) vs. "snapshot" (set at
+# anchor time and unchanged thereafter). The hash of the rebuilt payload
+# equals the original only if every live field still matches; any
+# tampered live field flips check 3 to FAIL.
+#
+# Snapshot fields (taken from the downloaded payload.json as-is): event_id,
+# event_type, signed_at, caller metadata (otel_trace_id, service_name,
+# etc.), mlflow_trace_id (per-call, can't be re-derived from the run).
+
+
+class LiveRefetchError(Exception):
+    """Raised when a live-field refetcher can't obtain all expected fields.
+
+    Treated as a check-3 FAIL by ``verify_source_of_truth`` — silently
+    falling back to anchored values would let check 3 falsely pass for
+    a tampered field whose refetch happens to fail. The caller knows
+    something genuinely couldn't be verified rather than seeing a green
+    check.
+    """
+
+
+# Per-event-type contracts for what fields the refetcher MUST produce.
+# A refetcher that can't produce all of these is treated as a failure
+# (raises LiveRefetchError); the silent-skip behaviour from before
+# allowed tampered fields to pass check 3 when their refetch failed.
+_TRAINING_REQUIRED_LIVE_FIELDS = frozenset({
+    "params", "metrics", "artifact_checksums", "source_name", "git_commit",
+})
+_REGISTRATION_REQUIRED_LIVE_FIELDS = frozenset({
+    "artifact_hash", "artifact_verified",
+})
+
+
+def _refetch_training_live_fields(payload: dict, mlflow_client) -> dict:
+    """Re-fetch the live training fields from MLflow's current state.
+
+    Raises ``LiveRefetchError`` if any required field can't be obtained.
+    Required fields are listed in ``_TRAINING_REQUIRED_LIVE_FIELDS``.
+    """
+    from ario_mlflow.anchoring import artifact_checksums, ArtifactAccessError, _logged_model_paths
+
+    run_id = payload.get("run_id")
+    if not run_id:
+        raise LiveRefetchError("payload missing run_id; cannot refetch training fields")
+
+    try:
+        run = mlflow_client.get_run(run_id)
+    except Exception as e:  # noqa: BLE001
+        raise LiveRefetchError(f"could not fetch run {run_id}: {e}") from e
+
+    # Resolve artifact path the same way anchor() did — from the run's
+    # logged-model history. Necessary for non-default paths.
+    logged_paths = list(dict.fromkeys(_logged_model_paths(run)))
+    if len(logged_paths) == 1:
+        artifact_path = logged_paths[0]
+    elif len(logged_paths) > 1:
+        # Multiple models logged: anchor() rejects this case at write
+        # time, so this branch is only hit for proofs anchored under a
+        # weaker guard. Fall back to "model" — the verifier compares
+        # bytes, so a mismatch will still surface as ok=False.
+        artifact_path = "model"
+    else:
+        artifact_path = "model"
+
+    fresh: dict = {
+        "params": dict(run.data.params),
+        "metrics": normalize_floats(dict(run.data.metrics), precision=6),
+        "source_name": run.data.tags.get("mlflow.source.name", ""),
+        "git_commit": run.data.tags.get("mlflow.source.git.commit", ""),
+    }
+    try:
+        fresh["artifact_checksums"] = artifact_checksums(run_id, artifact_path=artifact_path)
+    except ArtifactAccessError as e:
+        # Fail-loud rather than silently keeping the anchored value.
+        # Otherwise a tampered artifact_checksums field whose refetch
+        # happens to fail would let check 3 falsely pass.
+        raise LiveRefetchError(
+            f"could not re-hash artifacts for run {run_id}: {e}"
+        ) from e
+
+    missing = _TRAINING_REQUIRED_LIVE_FIELDS - set(fresh.keys())
+    if missing:
+        raise LiveRefetchError(
+            f"refetcher did not produce required field(s): {sorted(missing)}"
+        )
+    return fresh
+
+
+def _refetch_registration_live_fields(payload: dict, mlflow_client) -> dict:
+    """Re-fetch the live registration fields from MLflow's current state.
+
+    Raises ``LiveRefetchError`` if any required field can't be
+    obtained.
+    """
+    from ario_mlflow.anchoring import artifact_checksums, ArtifactAccessError, parse_runs_uri
+
+    source_run_id = payload.get("source_run_id")
+    if not source_run_id:
+        raise LiveRefetchError("payload missing source_run_id")
+
+    try:
+        run = mlflow_client.get_run(source_run_id)
+    except Exception as e:  # noqa: BLE001
+        raise LiveRefetchError(
+            f"could not fetch source run {source_run_id}: {e}"
+        ) from e
+
+    expected_hash = run.data.tags.get("ario.artifact_hash")
+    fresh: dict = {"artifact_hash": expected_hash}
+
+    src_run_id, src_artifact_path = parse_runs_uri(payload.get("source"))
+    artifact_path = src_artifact_path or "model"
+    try:
+        checksums = artifact_checksums(source_run_id, artifact_path=artifact_path)
+    except ArtifactAccessError as e:
+        raise LiveRefetchError(
+            f"could not re-hash artifacts for source run {source_run_id}: {e}"
+        ) from e
+
+    if expected_hash is None:
+        # Source run has no anchored artifact_hash tag — likely an
+        # un-anchored or pre-v2 training run. We can't reproduce
+        # artifact_verified honestly.
+        raise LiveRefetchError(
+            f"source run {source_run_id} has no ario.artifact_hash tag; "
+            f"cannot derive artifact_verified"
+        )
+
+    computed = hash_data(canonical_json(checksums)) if checksums else None
+    fresh["artifact_verified"] = computed == expected_hash
+
+    missing = _REGISTRATION_REQUIRED_LIVE_FIELDS - set(fresh.keys())
+    if missing:
+        raise LiveRefetchError(
+            f"refetcher did not produce required field(s): {sorted(missing)}"
+        )
+    return fresh
+
+
+_LIVE_FIELD_REFETCHERS = {
+    "training_complete": _refetch_training_live_fields,
+    "model_registered": _refetch_registration_live_fields,
+    # Predictions have no plugin-level live fields. Their canonical
+    # payload contains hashes of input/output that can only be re-derived
+    # if the caller has the raw values. Auditors verifying predictions
+    # should run check 3 themselves by hashing their copy of the raw
+    # input/output and comparing to the payload's input_hash / output_hash.
+}
+
+
+# ---------------------------------------------------------------------------
+# Payload-download helpers per subject type
+# ---------------------------------------------------------------------------
+
+# Subject types that the v2 design REQUIRES to have a persisted
+# payload.json artifact. For these, a missing artifact is a verification
+# FAILURE, not a "not applicable." Legacy v1 subject types
+# (mlflow_trace, mlflow_decision) are tracked separately so they
+# correctly degrade to "not applicable" rather than failing.
+_SUBJECT_TYPES_WITH_REQUIRED_ARTIFACT = frozenset({
+    "mlflow_run",            # training
+    "mlflow_model_version",  # registration / promotion
+    "mlflow_prediction",     # v2 predictions
+})
+
+_LEGACY_PREDICTION_SUBJECT_TYPES = frozenset({
+    "mlflow_trace",
+    "mlflow_decision",
+})
+
+
+def _download_payload_for_envelope(
+    envelope: dict, mlflow_client
+) -> tuple[bytes | None, bool, str | None]:
+    """Download the ``ario/payload.json`` artifact for an envelope's subject.
+
+    Returns a tuple ``(payload_bytes, artifact_expected, reason)``:
+
+    - ``payload_bytes``: the raw bytes on success, ``None`` on miss.
+    - ``artifact_expected``: ``True`` if the v2 design requires this
+      envelope to have a persisted payload artifact (a miss should fail
+      check 2), ``False`` for legacy subject types where no artifact
+      ever existed (a miss is "not applicable" / informational).
+    - ``reason``: short string describing why bytes are absent when they
+      are; ``None`` on success.
+
+    Returning the raw bytes (vs. parsed JSON) lets the caller hash them
+    directly without risking re-canonicalization drift.
+    """
+    import mlflow
+
+    subject = envelope.get("subject", {})
+    subject_type = subject.get("type")
+    event_type = envelope.get("event_type")
+    expected = subject_type in _SUBJECT_TYPES_WITH_REQUIRED_ARTIFACT
+
+    # Resolve (run_id, artifact_path) per subject shape.
+    run_id: str | None = None
+    artifact_path: str | None = None
+
+    if subject_type == "mlflow_run":
+        run_id = subject.get("run_id")
+        artifact_path = "ario/payload.json"
+    elif subject_type == "mlflow_model_version":
+        name = subject.get("name")
+        version = subject.get("version")
+        if not name or not version:
+            return None, expected, "subject_missing_name_or_version"
+        try:
+            mv = mlflow_client.get_model_version(name, str(version))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Could not resolve {name}/v{version} during verify: {e}")
+            return None, expected, f"could_not_resolve_model_version: {e}"
+        run_id = mv.run_id
+        if event_type == "model_registered":
+            artifact_path = "ario/registration_payload.json"
+        elif event_type == "stage_transition":
+            # Promotion artifacts are now keyed by event_id (not version)
+            # to avoid overwrite when a model version is promoted
+            # multiple times. Subject must carry event_id; envelope's
+            # event_id field is the fallback.
+            event_id = subject.get("event_id") or envelope.get("event_id")
+            if not event_id:
+                return None, expected, "subject_missing_event_id"
+            artifact_path = f"ario/promotions/{event_id}/payload.json"
+        else:
+            artifact_path = "ario/payload.json"
+    elif subject_type == "mlflow_prediction":
+        decision_id = subject.get("decision_id")
+        run_id = subject.get("model_run_id")
+        if not decision_id or not run_id:
+            return None, expected, "subject_missing_decision_id_or_run_id"
+        artifact_path = f"ario/predictions/{decision_id}/payload.json"
+    elif subject_type in _LEGACY_PREDICTION_SUBJECT_TYPES:
+        # v1 predictions had no payload artifact. Caller should treat
+        # this as "not applicable", not "failure."
+        return None, False, "legacy_subject_type_no_artifact"
+    else:
+        logger.warning(f"Unknown subject type for download: {subject_type!r}")
+        return None, expected, f"unknown_subject_type: {subject_type!r}"
+
+    if not run_id:
+        return None, expected, "subject_missing_run_id"
+
+    try:
+        local_path = mlflow.artifacts.download_artifacts(
+            run_id=run_id, artifact_path=artifact_path,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            f"Could not download {artifact_path} for run {run_id} during verify: {e}"
+        )
+        return None, expected, f"download_failed: {e}"
+
+    try:
+        with open(local_path, "rb") as f:
+            return f.read(), expected, None
+    except OSError as e:
+        logger.warning(f"Could not read downloaded payload at {local_path}: {e}")
+        return None, expected, f"read_failed: {e}"
+
+
+# ---------------------------------------------------------------------------
+# The four checks
+# ---------------------------------------------------------------------------
+
+def verify_signature(envelope: dict, proof_engine: ProofEngine) -> dict:
+    """Check 1: cryptographic signature on the envelope.
+
+    Wraps :meth:`ProofEngine.verify_commitment` (without payload bytes —
+    that's check 2). Returns ``{ok: bool, ...}`` for uniform composition
+    with the other checks.
+    """
+    result = proof_engine.verify_commitment(envelope)
+    return {
+        "ok": result["signature_valid"],
+        "signature_valid": result["signature_valid"],
+    }
+
+
+def verify_anchored_bytes(envelope: dict, mlflow_client) -> dict:
+    """Check 2: anchored bytes intact.
+
+    Downloads ``ario/payload.json`` from MLflow, re-hashes the bytes,
+    compares to ``envelope["payload_hash"]``. Catches tampering with
+    the canonical witness in MLflow's artifact store.
+
+    Result semantics:
+
+    - ``ok=True`` — artifact downloaded, hash matches.
+    - ``ok=False`` — either the hash doesn't match (tampering) **or**
+      the artifact is missing for an event type that's required to
+      have one (training, registration, promotion, v2 prediction).
+      Missing-when-required is treated as a failure because that's
+      precisely the regression check 2 is meant to catch — without
+      this, a wiped artifact would silently pass.
+    - ``ok=None`` — only for legacy v1 subject types
+      (``mlflow_trace`` / ``mlflow_decision``) where no payload
+      artifact ever existed. Here ``None`` is honest "not applicable",
+      not "couldn't verify."
+    """
+    payload_bytes, artifact_expected, reason = _download_payload_for_envelope(
+        envelope, mlflow_client,
+    )
+    stored = envelope.get("payload_hash")
+
+    if payload_bytes is None:
+        # Differentiate "expected but missing" (FAILURE) from "not
+        # expected for this subject type" (legitimate not-applicable).
+        return {
+            "ok": False if artifact_expected else None,
+            "reason": reason or "payload_artifact_not_available",
+            "computed_hash": None,
+            "stored_hash": stored,
+            "payload_bytes": None,
+            "artifact_expected": artifact_expected,
+        }
+
+    computed = hash_data(payload_bytes)
+    return {
+        "ok": computed == stored,
+        "computed_hash": computed,
+        "stored_hash": stored,
+        "payload_bytes": payload_bytes,
+        "artifact_expected": artifact_expected,
+    }
+
+
+def verify_source_of_truth(
+    envelope: dict,
+    payload_bytes: bytes,
+    mlflow_client,
+) -> dict:
+    """Check 3: live MLflow data still matches anchored bytes.
+
+    Parses ``payload_bytes`` (from check 2's download), re-fetches the
+    "live" fields from MLflow's current state, and compares the rebuilt
+    canonical bytes to the original. Catches MLflow-side tampering after
+    anchoring — the central guarantee of the redesign.
+
+    Args:
+        envelope: The signed envelope (for event_type / subject).
+        payload_bytes: The canonical bytes downloaded by check 2. Must
+            be the exact bytes — re-canonicalizing parsed JSON could
+            produce different output if the parsed dict's iteration
+            order differs.
+        mlflow_client: An ``MlflowClient`` for live re-fetching.
+    """
+    if not payload_bytes:
+        return {"ok": None, "reason": "no_payload_to_compare"}
+
+    event_type = envelope.get("event_type")
+    refetcher = _LIVE_FIELD_REFETCHERS.get(event_type)
+    if refetcher is None:
+        return {
+            "ok": None,
+            "reason": "no_live_fields_for_event_type",
+            "event_type": event_type,
+            "note": (
+                "Predictions commit to hashes of input/output. To run check 3 "
+                "for a prediction, hash your copy of the raw input/output and "
+                "compare to the payload's input_hash / output_hash directly."
+            ),
+        }
+
+    try:
+        original_payload = json.loads(payload_bytes)
+    except (ValueError, TypeError) as e:
+        return {"ok": False, "reason": f"payload_parse_failed: {e}"}
+
+    try:
+        fresh_fields = refetcher(original_payload, mlflow_client)
+    except LiveRefetchError as e:
+        # The refetcher raises when it can't completely refetch — that
+        # means we can't confirm the live MLflow state, full stop.
+        # Treating this as ok=False prevents the silent-fall-through
+        # bug where a tampered field whose refetch fails would still
+        # let check 3 pass against the anchored value.
+        return {"ok": False, "reason": "live_refetch_incomplete", "detail": str(e)}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "reason": f"live_refetch_failed: {e}"}
+
+    # Build the rebuilt payload: original + live overrides. Snapshot
+    # fields (anything not in fresh_fields) flow through unchanged.
+    rebuilt = dict(original_payload)
+    rebuilt.update(fresh_fields)
+    rebuilt_bytes = canonical_json(rebuilt)
+
+    return {
+        "ok": rebuilt_bytes == payload_bytes,
+        "rebuilt_bytes": rebuilt_bytes,
+        "live_fields_refetched": sorted(fresh_fields.keys()),
+    }
+
+
+# Default minimum ar.io Verify attestation level for ``ok=True``.
+#
+# ar.io Verify reports the maturity of an Arweave transaction as it
+# settles through the network:
+# - Level 1: indexed, not yet validated. Common for fresh TXs (seconds
+#   to minutes after anchor).
+# - Level 2: at least one gateway has downloaded and validated the
+#   data + signature. Reached within minutes for most TXs.
+# - Level 3: multi-gateway consensus. Strongest assurance; can take
+#   hours or longer to reach.
+#
+# Default of 2 balances "false-pass risk" (Level 1 alone is a weak
+# signal — TX appears in the index but no one has validated it) against
+# "false-fail risk" (Level 3 only would fail every fresh anchor for
+# hours). Audit / compliance use cases should pass
+# ``min_attestation_level=3`` for stricter checks. Continuous-verification
+# tooling that runs immediately after anchor can pass 1 to accept
+# "indexed" as good enough.
+#
+# See ROADMAP "Receipts vs. attestation as a two-stage verify UX" for
+# the longer-term refinement that surfaces this maturity explicitly
+# rather than as a single pass/fail bar.
+DEFAULT_MIN_ATTESTATION_LEVEL = 2
+
+
+def verify_ario_attestation(
+    envelope: dict,
+    ario_client: "ArioVerifyClient | None",
+    *,
+    min_attestation_level: int = DEFAULT_MIN_ATTESTATION_LEVEL,
+) -> dict:
+    """Check 4 (optional): ar.io Verify attestation level.
+
+    Calls the ar.io Verify service to confirm the Arweave TX exists and
+    is being attested. Returns the attestation result (``level``,
+    ``attested_by``, ``report_url``, ...) regardless of pass/fail —
+    callers can surface the level explicitly to differentiate
+    "passing strict bar" from "below threshold but maturing."
+
+    Args:
+        envelope: The signed envelope. Must carry ``_tx_id`` or
+            ``arweave_tx_id`` so the call can be routed.
+        ario_client: An ``ArioVerifyClient``. ``None`` or disabled
+            client returns ``ok=None`` ("not applicable" / "not
+            checked").
+        min_attestation_level: Threshold below which ``ok=False``.
+            Defaults to ``DEFAULT_MIN_ATTESTATION_LEVEL`` (2). Pass
+            ``3`` for strict audit. Pass ``1`` to accept "TX is at
+            least indexed."
+
+    Returns:
+        Dict with ``ok``, ``attestation_level``, ``attested_by``,
+        ``attested_at``, ``report_url``, ``pdf_url``,
+        ``min_attestation_level`` (the threshold used), and ``reason``
+        on failure.
+    """
+    if ario_client is None or not getattr(ario_client, "enabled", False):
+        return {"ok": None, "reason": "ario_verify_not_enabled"}
+
+    # Pull the Arweave TX ID from wherever it's stored. The envelope
+    # itself doesn't carry the TX (the TX is the address ON Arweave) —
+    # callers passing an envelope here are expected to also know the
+    # TX, typically from MLflow tags (ario.training_tx, etc.). For now
+    # we accept it via a special key the caller adds; future API may
+    # split the envelope and the TX more cleanly.
+    tx_id = envelope.get("_tx_id") or envelope.get("arweave_tx_id")
+    if not tx_id:
+        return {"ok": None, "reason": "no_tx_id_provided"}
+
+    result = ario_client.submit_verification(tx_id)
+    if not result:
+        return {"ok": False, "reason": "ario_verify_returned_no_result"}
+
+    level = result.get("attestation_level") or 0
+    base = {
+        "attestation_level": level,
+        "attested_by": result.get("attested_by"),
+        "attested_at": result.get("attested_at"),
+        "report_url": result.get("report_url"),
+        "pdf_url": result.get("pdf_url"),
+        "min_attestation_level": min_attestation_level,
+    }
+
+    if level >= min_attestation_level:
+        return {"ok": True, **base}
+    return {
+        "ok": False,
+        "reason": "attestation_level_below_threshold",
+        **base,
+    }
+
+
+# Event types whose v2 contract requires both check 2 (anchored bytes
+# intact) AND check 3 (live MLflow matches anchored payload) to pass for
+# overall_ok=True. ok=None on either of these for these event types is a
+# FAIL — silent neutrality would hide regressions check 2/3 are meant to
+# catch.
+_REQUIRES_FULL_MLFLOW_VERIFICATION = frozenset({
+    "training_complete",
+    "model_registered",
+})
+
+
+def _compute_overall_ok(envelope: dict, sig: dict, bytes_check: dict, sot: dict, ario: dict) -> bool | None:
+    """Combine the four check results into an overall pass/fail.
+
+    Rules:
+    - If any check is explicitly ``False``: overall=False.
+    - For event types in ``_REQUIRES_FULL_MLFLOW_VERIFICATION``,
+      ``ok=None`` on signature / anchored_bytes / source_of_truth is
+      treated as a FAIL — these checks are required, and a None result
+      means "we couldn't actually verify this." Silent neutrality here
+      would hide exactly the regressions the redesign was built to catch.
+    - For other event types (predictions, legacy subjects), ``ok=None``
+      stays neutral — these have weaker verification contracts where a
+      missing artifact is genuinely "not applicable."
+    - If at least one True and no False/required-None: overall=True.
+    - Otherwise: overall=None (nothing meaningful was checked).
+    """
+    event_type = envelope.get("event_type")
+    requires_full = event_type in _REQUIRES_FULL_MLFLOW_VERIFICATION
+
+    statuses = [sig["ok"], bytes_check["ok"], sot["ok"], ario["ok"]]
+
+    # Hard fail on any explicit False.
+    if any(s is False for s in statuses):
+        return False
+
+    # For envelope types with a strict v2 contract, ok=None on a
+    # required check (signature, anchored bytes, source of truth) is
+    # also a fail. ar.io is genuinely optional — None is acceptable.
+    if requires_full:
+        required_checks = [sig["ok"], bytes_check["ok"], sot["ok"]]
+        if any(s is None for s in required_checks):
+            return False
+
+    # If at least one explicit True, overall is True.
+    if any(s is True for s in statuses):
+        return True
+
+    # Nothing meaningful checked.
+    return None
+
+
+def full_verify(
+    envelope: dict,
+    *,
+    proof_engine: ProofEngine,
+    mlflow_client=None,
+    ario_client: "ArioVerifyClient | None" = None,
+) -> dict:
+    """Run all four checks and return a combined result.
+
+    Each check is independent — failures in one don't short-circuit the
+    others, so the caller sees the complete state. ``overall`` follows
+    the rules in :func:`_compute_overall_ok`: training and registration
+    envelopes require all three local checks to pass; other event types
+    are more permissive about None results.
+    """
+    sig = verify_signature(envelope, proof_engine)
+    bytes_check = (
+        verify_anchored_bytes(envelope, mlflow_client) if mlflow_client else
+        {"ok": None, "reason": "no_mlflow_client"}
+    )
+    sot = (
+        verify_source_of_truth(envelope, bytes_check.get("payload_bytes") or b"", mlflow_client)
+        if mlflow_client and bytes_check.get("payload_bytes")
+        else {"ok": None, "reason": "no_payload_to_compare"}
+    )
+    ario = verify_ario_attestation(envelope, ario_client) if ario_client else {"ok": None, "reason": "no_ario_client"}
+
+    overall = _compute_overall_ok(envelope, sig, bytes_check, sot, ario)
+
+    return {
+        "signature": sig,
+        "anchored_bytes": bytes_check,
+        "source_of_truth": sot,
+        "ario_attestation": ario,
+        "overall": overall,
+    }
 
 
 class ArioVerifyClient:
@@ -45,8 +653,14 @@ class ArioVerifyClient:
             return None
 
     def _normalize(self, data: dict) -> dict:
-        links = data.get("links", {})
-        attestation = data.get("attestation", {})
+        # ar.io Verify returns explicit nulls for sub-objects when no
+        # attestation is yet available (e.g. for fresh TXs not yet
+        # indexed). dict.get(key, {}) returns the key's actual value
+        # when present — None, not the {} default. Use ``or {}`` to
+        # collapse both None and missing into {}.
+        links = data.get("links") or {}
+        attestation = data.get("attestation") or {}
+        existence = data.get("existence") or {}
 
         def resolve(path):
             if not path:
@@ -55,7 +669,7 @@ class ArioVerifyClient:
 
         return {
             "verification_id": data.get("verificationId"),
-            "status": data.get("existence", {}).get("status", "unknown"),
+            "status": existence.get("status", "unknown"),
             "attestation_level": data.get("level"),
             "report_url": resolve(links.get("dashboard")),
             "pdf_url": resolve(links.get("pdf")),
@@ -64,49 +678,12 @@ class ArioVerifyClient:
         }
 
 
-def verify_record(envelope: dict, proof_engine: ProofEngine) -> dict:
-    """Level 1: Local verification — re-hash and check signature."""
-    return proof_engine.verify_local(envelope)
-
-
-def verify_arweave(envelope: dict, anchor: ArweaveAnchor) -> dict:
-    """Level 2: Fetch from Arweave gateway and compare hashes."""
-    tx_id = envelope.get("arweave_tx_id")
-    if not tx_id:
-        return {"arweave_data_found": False, "reason": "no_tx_id"}
-
-    arweave_data = anchor.fetch_proof(tx_id)
-    if not arweave_data:
-        return {"arweave_data_found": False, "reason": "fetch_failed"}
-
-    arweave_hash = hash_data(canonical_json(arweave_data.get("record", {})))
-    return {
-        "arweave_data_found": True,
-        "arweave_record_hash": arweave_hash,
-        "hash_match": arweave_hash == arweave_data.get("record_hash"),
-    }
-
-
-def verify_ario(envelope: dict, ario_client: ArioVerifyClient) -> dict | None:
-    """Level 3: ar.io Verify attestation."""
-    tx_id = envelope.get("arweave_tx_id")
-    if not tx_id:
-        return None
-    return ario_client.submit_verification(tx_id)
-
-
-def full_verify(envelope: dict, proof_engine: ProofEngine, anchor: ArweaveAnchor, ario_client: ArioVerifyClient) -> dict:
-    """Run all three verification levels and return a combined result."""
-    local = verify_record(envelope, proof_engine)
-    arweave = verify_arweave(envelope, anchor)
-    ario = verify_ario(envelope, ario_client)
-
-    return {
-        "local": local,
-        "arweave": arweave,
-        "ario": ario,
-        "overall": (
-            local.get("overall", False)
-            and arweave.get("hash_match", False)
-        ),
-    }
+# Note on deleted v1 helpers: the legacy three-level helpers
+# (verify_record / verify_arweave / verify_ario / legacy full_verify)
+# lived at the bottom of this module in v1. They covered the v1
+# envelope shape where source data was inside the proof itself; the
+# pure-commitment design needs different checks (download payload.json,
+# compare hash, re-derive from MLflow). The new helpers near the top
+# of this file (verify_signature / verify_anchored_bytes /
+# verify_source_of_truth / verify_ario_attestation / new full_verify)
+# are the replacements. CLI consumers updated in Phase 1.9.

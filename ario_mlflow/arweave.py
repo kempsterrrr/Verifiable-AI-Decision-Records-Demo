@@ -68,6 +68,79 @@ class ArweaveAnchor:
         except Exception as e:
             logger.warning(f"Failed to initialize Arweave anchor: {e}")
 
+    def _build_default_tags(
+        self,
+        proof: dict,
+        extra_tags: dict[str, str] | None = None,
+    ) -> list[dict]:
+        """Build the conservative baseline Arweave tag set for a proof.
+
+        Baseline (always-on, derivable from the envelope, non-PII):
+        - ``Content-Type``: ``application/json``
+        - ``App-Name``: ``ario-mlflow``
+        - ``App-Version``: installed plugin version
+        - ``Event-Type``: from envelope (``training_complete`` /
+          ``model_registered`` / ``stage_transition`` / ``prediction``)
+        - ``Event-Id``: the envelope's ``event_id``
+        - ``Chain-Prev``: the envelope's ``previous_hash``
+
+        Caller-opt-in tags merge in via ``extra_tags``. The plugin never
+        auto-writes ``experiment-name``, ``mlflow.source.name``,
+        ``git-commit``, or any field that may contain absolute filesystem
+        paths or business-sensitive identifiers. See plan Part 3 tag
+        policy for the rationale.
+
+        Both pure-commitment envelopes (new shape) and legacy
+        record-bearing envelopes (old shape, used by the demo until
+        Phase 2) are handled — fields are derived from whichever shape
+        the caller passed in.
+        """
+        # Detect envelope shape. The new pure-commitment envelope has
+        # event_type / event_id / previous_hash at the top level. The
+        # legacy envelope stores those inside record / record_hash.
+        if "payload_hash" in proof:
+            event_type = proof.get("event_type", "unknown")
+            event_id = proof.get("event_id", "unknown")
+            chain_prev = proof.get("previous_hash", "GENESIS")
+        else:
+            record = proof.get("record", {})
+            event_type = record.get("event_type", "unknown")
+            event_id = record.get("event_id", record.get("decision_id", "unknown"))
+            chain_prev = proof.get("previous_hash", "GENESIS")
+
+        try:
+            from importlib.metadata import version
+            app_version = version("ario-mlflow")
+        except Exception:  # noqa: BLE001
+            app_version = "unknown"
+
+        baseline = [
+            {"name": "Content-Type", "value": "application/json"},
+            {"name": "App-Name", "value": "ario-mlflow"},
+            {"name": "App-Version", "value": app_version},
+            {"name": "Event-Type", "value": str(event_type)},
+            {"name": "Event-Id", "value": str(event_id)},
+            {"name": "Chain-Prev", "value": str(chain_prev)},
+        ]
+
+        if extra_tags:
+            # Refuse to silently shadow baseline tag keys — caller must
+            # use a different key if they want to add something. Avoids
+            # confusion where (e.g.) a caller's ``Event-Type`` overwrites
+            # the envelope-derived one.
+            baseline_keys = {t["name"] for t in baseline}
+            for key, value in extra_tags.items():
+                if key in baseline_keys:
+                    logger.warning(
+                        f"extra_tags key {key!r} collides with a baseline "
+                        f"tag; ignoring caller-supplied value to keep the "
+                        f"envelope-derived value canonical."
+                    )
+                    continue
+                baseline.append({"name": str(key), "value": str(value)})
+
+        return baseline
+
     @classmethod
     def _load_or_create_wallet(cls, wallet_path: str) -> tuple[dict, str]:
         """Return ``(jwk, mode)`` for the wallet to use.
@@ -155,7 +228,31 @@ class ArweaveAnchor:
             "qi": to_b64(pn.iqmp),
         }
 
-    def upload_proof(self, proof: dict, tags: list[dict] | None = None) -> dict | None:
+    def upload_proof(
+        self,
+        proof: dict,
+        tags: list[dict] | None = None,
+        extra_tags: dict[str, str] | None = None,
+    ) -> dict | None:
+        """Upload a proof envelope to Arweave with conservative default tags.
+
+        Args:
+            proof: Either a pure-commitment envelope (event_id, event_type,
+                payload_hash, previous_hash, ...) or a legacy record-bearing
+                envelope (record, record_hash, ...). Both shapes are
+                supported during Phase 1; legacy support goes away in
+                Phase 2 with the demo refactor.
+            tags: Raw Arweave tag list (``[{"name": ..., "value": ...}, ...]``).
+                If supplied, replaces the default tag set entirely. Used by
+                callers who already know exactly what tags they want.
+            extra_tags: Caller-opt-in tags merged with the conservative
+                baseline. Use this for ``model-name``, ``mlflow-run-id``,
+                ``signer-fingerprint``, or any other indexable metadata
+                the caller has decided is safe to expose publicly.
+                **Never include PII, internal hostnames, filesystem
+                paths, or business-sensitive identifiers** — Arweave tags
+                are public, queryable, and permanent.
+        """
         if not self.enabled or not self._signer:
             return None
 
@@ -163,18 +260,10 @@ class ArweaveAnchor:
             from turbo_sdk.bundle import create_data, sign
 
             data_bytes = canonical_json(proof)
-            record = proof.get("record", {})
-            event_type = record.get("event_type", record.get("decision_id", "unknown"))
-            record_hash = proof.get("record_hash", "unknown")
 
-            default_tags = [
-                {"name": "Content-Type", "value": "application/json"},
-                {"name": "App-Name", "value": "ario-mlflow"},
-                {"name": "Record-Type", "value": event_type},
-                {"name": "Record-Hash", "value": record_hash},
-            ]
+            arweave_tags = tags if tags is not None else self._build_default_tags(proof, extra_tags)
 
-            data_item = create_data(bytearray(data_bytes), self._signer, tags or default_tags)
+            data_item = create_data(bytearray(data_bytes), self._signer, arweave_tags)
             sign(data_item, self._signer)
 
             url = f"{self._upload_url}/tx/{self._token}"

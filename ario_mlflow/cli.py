@@ -1,4 +1,9 @@
-"""CLI: ario-mlflow verify and audit commands."""
+"""CLI: ario-mlflow verify and audit commands.
+
+Updated for the pure-commitment redesign \u2014 runs the four-check
+verification flow (signature / anchored bytes / live MLflow / ar.io
+Verify Level 3) instead of the legacy three-level helpers.
+"""
 
 import argparse
 import json
@@ -10,7 +15,14 @@ import mlflow
 
 from ario_mlflow.proof import ProofEngine, canonical_json, hash_data
 from ario_mlflow.arweave import ArweaveAnchor
-from ario_mlflow.verify import ArioVerifyClient, verify_record, verify_arweave, verify_ario
+from ario_mlflow.verify import (
+    ArioVerifyClient,
+    verify_signature,
+    verify_anchored_bytes,
+    verify_source_of_truth,
+    verify_ario_attestation,
+    _compute_overall_ok,
+)
 from ario_mlflow.report import generate_verification_html
 
 
@@ -24,36 +36,126 @@ def _get_components():
     return proof_engine, anchor, ario
 
 
-def _print_verification(label: str, local: dict, arweave: dict, ario: dict | None):
-    """Print a verification result block."""
+def _print_check(label: str, result: dict, value_when_ok: str | None = None):
+    """Print one check line. Status: \u2713 / \u2717 / ? (not applicable)."""
     check = "\033[32m\u2713\033[0m"
     cross = "\033[31m\u2717\033[0m"
     pending = "\033[33m?\033[0m"
 
-    hash_ok = local.get("hash_valid", False)
-    sig_ok = local.get("signature_valid", False)
-    print(f"  Local:    {check if hash_ok else cross} hash {'valid' if hash_ok else 'INVALID'}, "
-          f"{check if sig_ok else cross} signature {'valid' if sig_ok else 'INVALID'}")
-
-    if arweave.get("arweave_data_found"):
-        match = arweave.get("hash_match", False)
-        print(f"  Arweave:  {check if match else cross} permanent copy {'matches' if match else 'MISMATCH'}")
-    elif arweave.get("reason") == "no_tx_id":
-        print(f"  Arweave:  {pending} not anchored")
+    ok = result.get("ok")
+    if ok is True:
+        symbol = check
+        suffix = value_when_ok or "passed"
+    elif ok is False:
+        symbol = cross
+        suffix = result.get("reason", "FAILED")
     else:
-        print(f"  Arweave:  {pending} fetch failed")
+        symbol = pending
+        suffix = result.get("reason", "not applicable")
+    print(f"  {label:<22} {symbol} {suffix}")
 
-    if ario:
-        level = ario.get("attestation_level")
-        attester = ario.get("attested_by", "unknown")
-        if level:
-            print(f"  ar.io:    {check} attested (Level {level}) by {attester}")
-            if ario.get("report_url"):
-                print(f"            Report: {ario['report_url']}")
-        else:
-            print(f"  ar.io:    {pending} attestation pending")
+
+def _print_four_checks(
+    sig: dict,
+    bytes_check: dict,
+    sot: dict,
+    ario_attestation: dict,
+):
+    """Print the four-check verification panel for a single envelope.
+
+    Always surfaces the ar.io Verify attestation level when present \u2014
+    even on a "below threshold" failure \u2014 so the user can see how the
+    TX is maturing. (Per ROADMAP "Receipts vs. attestation as a
+    two-stage verify UX", attestation level is fundamentally a maturity
+    gradient, not a binary pass/fail.)
+    """
+    _print_check("Cryptographic", sig, "signature valid")
+    _print_check("Anchored bytes", bytes_check, "intact")
+    _print_check("Source of truth", sot, "live MLflow matches anchored bytes")
+
+    # ar.io Verify \u2014 show the maturity level whenever the API returned
+    # something, regardless of whether it passed the threshold. Helps
+    # users see "Level 1, growing" vs. "TX missing" at a glance.
+    check = "\033[32m\u2713\033[0m"
+    cross = "\033[31m\u2717\033[0m"
+    pending = "\033[33m?\033[0m"
+    ok = ario_attestation.get("ok")
+    level = ario_attestation.get("attestation_level")
+    attester = ario_attestation.get("attested_by") or "unknown"
+    threshold = ario_attestation.get("min_attestation_level")
+
+    if ok is True and level is not None:
+        print(f"  {'ar.io Verify':<22} {check} Level {level} by {attester}")
+        if ario_attestation.get("report_url"):
+            print(f"  {'':>22} report: {ario_attestation['report_url']}")
+    elif ok is False and ario_attestation.get("reason") == "attestation_level_below_threshold":
+        # Show the actual level + the threshold so the user knows the
+        # TX is maturing, just hasn't reached the bar yet.
+        print(
+            f"  {'ar.io Verify':<22} {cross} Level {level} (below threshold "
+            f"{threshold}) by {attester}"
+        )
+        print(
+            f"  {'':>22} TX is indexed but not yet at the configured "
+            f"attestation bar. Re-run later to check progression."
+        )
+        if ario_attestation.get("report_url"):
+            print(f"  {'':>22} report: {ario_attestation['report_url']}")
+    elif ok is False:
+        print(f"  {'ar.io Verify':<22} {cross} {ario_attestation.get('reason', 'FAILED')}")
     else:
-        print(f"  ar.io:    {pending} not checked")
+        # ok is None: not applicable / not checked
+        print(f"  {'ar.io Verify':<22} {pending} {ario_attestation.get('reason', 'not checked')}")
+
+
+def _verify_envelope_for_tx(
+    tx_id: str,
+    proof_engine: ProofEngine,
+    anchor: ArweaveAnchor,
+    ario_client: ArioVerifyClient,
+    mlflow_client,
+) -> tuple[dict, bool]:
+    """Fetch an envelope from Arweave and run all four checks.
+
+    Returns ``(combined_result, overall_ok)``. ``combined_result`` has
+    keys ``signature`` / ``anchored_bytes`` / ``source_of_truth`` /
+    ``ario_attestation`` for callers that want to programmatically
+    inspect; the printed output goes to stdout.
+    """
+    envelope = anchor.fetch_proof(tx_id)
+    if not envelope:
+        print(f"  Could not fetch envelope from Arweave for TX {tx_id}.")
+        return {}, False
+
+    sig = verify_signature(envelope, proof_engine)
+    bytes_check = verify_anchored_bytes(envelope, mlflow_client)
+    sot = (
+        verify_source_of_truth(envelope, bytes_check.get("payload_bytes") or b"", mlflow_client)
+        if bytes_check.get("payload_bytes")
+        else {"ok": None, "reason": bytes_check.get("reason", "no_payload_to_compare")}
+    )
+    # For ar.io Verify, inject the TX ID the caller already knows. The
+    # envelope itself doesn't carry it (the TX IS its address).
+    envelope_with_tx = dict(envelope)
+    envelope_with_tx["_tx_id"] = tx_id
+    ario_result = verify_ario_attestation(envelope_with_tx, ario_client)
+
+    _print_four_checks(sig, bytes_check, sot, ario_result)
+
+    # Use the shared overall-ok logic so CLI and full_verify() agree.
+    # For training/registration envelopes, ok=None on signature /
+    # anchored_bytes / source_of_truth fails overall \u2014 None means
+    # "couldn't verify", not "fine."
+    overall = _compute_overall_ok(envelope, sig, bytes_check, sot, ario_result)
+    overall_ok = bool(overall)  # CLI returns bool; None coerces to False
+
+    return {
+        "envelope": envelope,
+        "signature": sig,
+        "anchored_bytes": bytes_check,
+        "source_of_truth": sot,
+        "ario_attestation": ario_result,
+    }, overall_ok
 
 
 def _verification_run_tags(verification: dict | None) -> dict[str, str]:
@@ -105,7 +207,7 @@ def _regenerate_html(
 
 
 def cmd_verify_run(args):
-    """Verify a training run's proof record and write attestation back to MLflow."""
+    """Verify a training run's commitment via the four-check flow."""
     proof_engine, anchor, ario_client = _get_components()
     client = mlflow.tracking.MlflowClient()
 
@@ -119,41 +221,22 @@ def cmd_verify_run(args):
     print(f"Verifying training run {args.run_id}")
     print(f"  TX: {tx_id}")
 
-    # Fetch the proof from Arweave
-    proof_data = anchor.fetch_proof(tx_id)
-    if not proof_data:
-        print("  Could not fetch proof from Arweave.")
+    result, ok = _verify_envelope_for_tx(tx_id, proof_engine, anchor, ario_client, client)
+    if not result:
         return 1
 
-    local = proof_engine.verify_local(proof_data)
-    arweave_result = {"arweave_data_found": True, "hash_match": local.get("hash_valid", False)}
-    ario_result = verify_ario({"arweave_tx_id": tx_id}, ario_client)
-
-    _print_verification("Training Run", local, arweave_result, ario_result)
-
-    tags = _verification_run_tags(ario_result)
+    ario = result.get("ario_attestation", {})
+    tags = _verification_run_tags(ario)
     if tags:
         for key, value in tags.items():
             client.set_tag(args.run_id, key, value)
-        artifact_hash = run.data.tags.get("ario.artifact_hash")
-        _regenerate_html(
-            args.run_id,
-            proof_data,
-            tx_id,
-            run.data.tags.get("ario.arweave_url"),
-            artifact_hash,
-            None,
-            ario_result,
-            "verification.html",
-            cli_verify_cmd=f"ario-mlflow verify run {args.run_id}",
-        )
-        print(f"  → updated {len(tags)} MLflow tag(s) on run; refreshed ario/verification.html")
+        print(f"  -> updated {len(tags)} MLflow tag(s) on run")
 
-    return 0 if local.get("overall", False) else 1
+    return 0 if ok else 1
 
 
 def cmd_verify_model(args):
-    """Verify a model version's registration proof and write attestation back to MLflow."""
+    """Verify a model version's registration commitment via the four-check flow."""
     proof_engine, anchor, ario_client = _get_components()
     client = mlflow.tracking.MlflowClient()
 
@@ -171,57 +254,32 @@ def cmd_verify_model(args):
     print(f"Verifying model registration {name}/v{version}")
     print(f"  TX: {tx_id}")
 
-    proof_data = anchor.fetch_proof(tx_id)
-    if not proof_data:
-        print("  Could not fetch proof from Arweave.")
+    result, ok = _verify_envelope_for_tx(tx_id, proof_engine, anchor, ario_client, client)
+    if not result:
         return 1
 
-    local = proof_engine.verify_local(proof_data)
-    arweave_result = {"arweave_data_found": True, "hash_match": local.get("hash_valid", False)}
-    ario_result = verify_ario({"arweave_tx_id": tx_id}, ario_client)
-
-    _print_verification("Registration", local, arweave_result, ario_result)
-
-    tags = _verification_run_tags(ario_result)
+    ario = result.get("ario_attestation", {})
+    tags = _verification_run_tags(ario)
     if tags:
         for key, value in tags.items():
             client.set_model_version_tag(name, version, key, value)
-        artifact_verified_tag = mv.tags.get("ario.artifact_verified")
-        artifact_verified: bool | None = None
-        if artifact_verified_tag is not None:
-            artifact_verified = artifact_verified_tag.lower() == "true"
-        if mv.run_id:
-            try:
-                run = client.get_run(mv.run_id)
-                # Only use the model-version's Arweave URL here. The training
-                # run's ario.arweave_url points to a different transaction and
-                # would produce a mismatched link on the registration report.
-                _regenerate_html(
-                    mv.run_id,
-                    proof_data,
-                    tx_id,
-                    mv.tags.get("ario.arweave_url"),
-                    run.data.tags.get("ario.artifact_hash"),
-                    artifact_verified,
-                    ario_result,
-                    "registration_verification.html",
-                    cli_verify_cmd=f"ario-mlflow verify model {name}/{version}",
-                )
-                print(f"  → updated {len(tags)} MLflow tag(s) on model version; refreshed ario/registration_verification.html on run {mv.run_id}")
-            except Exception as e:
-                print(
-                    f"  → updated {len(tags)} MLflow tag(s) on model version; "
-                    f"could not refresh ario/registration_verification.html on run {mv.run_id}: {e}"
-                )
-        else:
-            print(f"  → updated {len(tags)} MLflow tag(s) on model version (no source run — skipped HTML refresh)")
+        print(f"  -> updated {len(tags)} MLflow tag(s) on model version")
 
-    return 0 if local.get("overall", False) else 1
+    return 0 if ok else 1
 
 
 def cmd_verify_trace(args):
-    """Verify an inference trace's proof record and write attestation back to MLflow."""
+    """Verify a prediction trace's commitment via the four-check flow.
+
+    Note: predictions don't write a payload.json artifact (per the
+    privacy-preserving design — canonical fields are mirrored as trace
+    tags). Check 2 (anchored bytes intact) and check 3 (live MLflow
+    matches) report as not-applicable. Check 1 (signature) and check 4
+    (ar.io Verify) work normally. Auditors with the raw input/output
+    can verify input_hash / output_hash directly.
+    """
     proof_engine, anchor, ario_client = _get_components()
+    client = mlflow.tracking.MlflowClient()
 
     try:
         trace = mlflow.get_trace(args.trace_id)
@@ -234,36 +292,33 @@ def cmd_verify_trace(args):
         return 1
 
     tags = getattr(trace.info, "tags", {}) or {}
-    tx_id = tags.get("ario.arweave_tx")
+    # Prefer the new tag name (ario.prediction_tx); accept the legacy
+    # (ario.arweave_tx) for backwards compat with any traces anchored
+    # under v1 still in MLflow.
+    tx_id = tags.get("ario.prediction_tx") or tags.get("ario.arweave_tx")
 
     if not tx_id:
-        print(f"Trace {args.trace_id}: no ario.arweave_tx tag found. Not anchored yet.")
+        print(f"Trace {args.trace_id}: no ario.prediction_tx tag found. Not anchored yet.")
         return 1
 
     print(f"Verifying trace {args.trace_id}")
     print(f"  TX: {tx_id}")
 
-    proof_data = anchor.fetch_proof(tx_id)
-    if not proof_data:
-        print("  Could not fetch proof from Arweave.")
+    result, ok = _verify_envelope_for_tx(tx_id, proof_engine, anchor, ario_client, client)
+    if not result:
         return 1
 
-    local = proof_engine.verify_local(proof_data)
-    arweave_result = {"arweave_data_found": True, "hash_match": local.get("hash_valid", False)}
-    ario_result = verify_ario({"arweave_tx_id": tx_id}, ario_client)
-
-    _print_verification("Trace", local, arweave_result, ario_result)
-
-    back_tags = _verification_run_tags(ario_result)
+    ario = result.get("ario_attestation", {})
+    back_tags = _verification_run_tags(ario)
     if back_tags:
         for key, value in back_tags.items():
             try:
                 mlflow.set_trace_tag(args.trace_id, key, value)
             except Exception as e:
                 print(f"  ! failed to set trace tag {key}: {e}")
-        print(f"  → updated {len(back_tags)} MLflow trace tag(s)")
+        print(f"  -> updated {len(back_tags)} MLflow trace tag(s)")
 
-    return 0 if local.get("overall", False) else 1
+    return 0 if ok else 1
 
 
 def cmd_audit(args):
@@ -292,15 +347,8 @@ def cmd_audit(args):
 
     print(f"\nTraining (run {mv.run_id or 'unknown'}):")
     if training_tx:
-        proof_data = anchor.fetch_proof(training_tx)
-        if proof_data:
-            local = proof_engine.verify_local(proof_data)
-            ario_result = verify_ario({"arweave_tx_id": training_tx}, ario_client)
-            _print_verification("Training", local, {"arweave_data_found": True, "hash_match": local.get("hash_valid")}, ario_result)
-            if not local.get("overall"):
-                all_ok = False
-        else:
-            print("  Could not fetch proof from Arweave.")
+        _, ok = _verify_envelope_for_tx(training_tx, proof_engine, anchor, ario_client, client)
+        if not ok:
             all_ok = False
     else:
         print("  Not anchored.")
@@ -309,15 +357,8 @@ def cmd_audit(args):
     registration_tx = mv.tags.get("ario.registration_tx")
     print(f"\nRegistration (v{version}):")
     if registration_tx:
-        proof_data = anchor.fetch_proof(registration_tx)
-        if proof_data:
-            local = proof_engine.verify_local(proof_data)
-            ario_result = verify_ario({"arweave_tx_id": registration_tx}, ario_client)
-            _print_verification("Registration", local, {"arweave_data_found": True, "hash_match": local.get("hash_valid")}, ario_result)
-            if not local.get("overall"):
-                all_ok = False
-        else:
-            print("  Could not fetch proof from Arweave.")
+        _, ok = _verify_envelope_for_tx(registration_tx, proof_engine, anchor, ario_client, client)
+        if not ok:
             all_ok = False
     else:
         print("  Not anchored.")
@@ -326,15 +367,8 @@ def cmd_audit(args):
     promotion_tx = mv.tags.get("ario.promotion_tx")
     print(f"\nPromotion ({mv.current_stage}):")
     if promotion_tx:
-        proof_data = anchor.fetch_proof(promotion_tx)
-        if proof_data:
-            local = proof_engine.verify_local(proof_data)
-            ario_result = verify_ario({"arweave_tx_id": promotion_tx}, ario_client)
-            _print_verification("Promotion", local, {"arweave_data_found": True, "hash_match": local.get("hash_valid")}, ario_result)
-            if not local.get("overall"):
-                all_ok = False
-        else:
-            print("  Could not fetch proof from Arweave.")
+        _, ok = _verify_envelope_for_tx(promotion_tx, proof_engine, anchor, ario_client, client)
+        if not ok:
             all_ok = False
     else:
         print("  Not anchored.")

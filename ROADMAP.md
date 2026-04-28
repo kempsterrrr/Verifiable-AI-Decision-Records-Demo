@@ -17,9 +17,10 @@ Both goals landed on branch `phase3/harden-plugin-broaden-demo`. What follows is
 
 When we come back to this project, the highest-leverage next moves are:
 
-1. **Input-side anchoring** — include dataset hash, source-code SHA, and container digest in the training proof. This closes the biggest honesty gap in the current offering ("we hash the model output, not the training inputs").
-2. **External identity binding** — sign with something linkable to a real organization, not an auto-generated key at `~/.ario-mlflow/keys/`. Even a registered-public-keys directory is a step up.
-3. **Continuous verification** — a background job that re-checks every anchored proof on a cadence and alerts when attestation doesn't land. Today "anchored" can silently mean "we called an API that may or may not have worked three weeks ago."
+1. **Receipts vs. attestation as a two-stage verify UX** *(fast follow after Phase 1 lands)* — the plugin currently treats ar.io Verify as a pass/fail check, but the underlying reality is two separate things: (a) the **Turbo receipt** comes back synchronously at anchor time and proves the upload was received; (b) the **ar.io Verify attestation level** matures asynchronously over hours/days as the network settles and gateways pick it up. The verify UX should surface both: receipt as a synchronous "did it land" check, attestation level as an explicit maturity gradient (Level 1 → 2 → 3) with appropriate context. Phase 1 ships a configurable threshold (default Level 2) as an interim — this is the cleaner refactor that follows.
+2. **Input-side anchoring** — include dataset hash, source-code SHA, and container digest in the training proof. This closes the biggest honesty gap in the current offering ("we hash the model output, not the training inputs").
+3. **External identity binding** — sign with something linkable to a real organization, not an auto-generated key at `~/.ario-mlflow/keys/`. Even a registered-public-keys directory is a step up.
+4. **Continuous verification** — a background job that re-checks every anchored proof on a cadence and alerts when attestation doesn't land. Today "anchored" can silently mean "we called an API that may or may not have worked three weeks ago."
 
 Each of these would be its own branch + plan. The plugin's current API surface doesn't need to change to accommodate any of them.
 

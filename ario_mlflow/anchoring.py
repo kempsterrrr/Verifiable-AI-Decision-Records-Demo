@@ -10,11 +10,68 @@ from datetime import datetime, timezone
 
 import mlflow
 
-from ario_mlflow.proof import ProofEngine, canonical_json, hash_data
+from ario_mlflow.proof import ProofEngine, canonical_json, hash_data, normalize_floats
 from ario_mlflow.arweave import ArweaveAnchor
 from ario_mlflow.report import generate_verification_html
 
 logger = logging.getLogger(__name__)
+
+
+# Tag key for the per-registered-model chain head pointer. Each new training
+# proof for a model reads this tag for its ``previous_hash`` and writes the
+# new ``payload_hash`` back. See plan Part 3 design principle 5 and Part 4
+# plugin change item 2 for the per-event-type chain semantics.
+TAG_LAST_TRAINING_HASH = "ario.last_training_hash"
+
+
+# OTel auto-capture opt-out env var. Set to "false" / "0" / "no" / "off"
+# to disable auto-capture process-wide. Per-call opt-out is via the
+# ``capture_otel=False`` parameter on ``anchor()``,
+# ``VerifiedModel.predict()``, and ``ArioMlflowClient`` registration
+# paths.
+ENV_CAPTURE_OTEL = "ARIO_MLFLOW_CAPTURE_OTEL"
+
+
+def capture_otel_context() -> dict:
+    """Auto-capture OTel trace_id / span_id from an active span if present.
+
+    Returns an empty dict when:
+    - ``opentelemetry-api`` is not installed.
+    - No active OTel span / invalid span context.
+    - ``ARIO_MLFLOW_CAPTURE_OTEL`` env var is set to ``false`` / ``0`` /
+      ``no`` / ``off``.
+
+    Otherwise returns ``{"otel_trace_id": <32-hex>, "otel_span_id":
+    <16-hex>}`` suitable for merging into the canonical payload. Caller-
+    supplied ``metadata={"otel_trace_id": ...}`` wins over the auto-
+    captured value (see ``_build_training_payload`` and the equivalent
+    builders in ``client.py`` / ``model.py``).
+
+    Why default-on: the plugin already auto-captures MLflow ``trace_id``
+    when present; OTel is the more universally-adopted observability
+    system. Default-off would silently produce proofs without
+    cross-stack correlation in production deployments. Privacy-conscious
+    deployments can opt out via env var or the ``capture_otel=False``
+    parameter on the entry points. Soft-imports OTel — no hard
+    dependency on ``opentelemetry-api``.
+    """
+    optout = os.environ.get(ENV_CAPTURE_OTEL, "").lower()
+    if optout in ("false", "0", "no", "off"):
+        return {}
+    try:
+        from opentelemetry import trace as _otel_trace  # noqa: PLC0415
+    except ImportError:
+        return {}
+    try:
+        ctx = _otel_trace.get_current_span().get_span_context()
+    except Exception:  # noqa: BLE001
+        return {}
+    if not getattr(ctx, "is_valid", False):
+        return {}
+    return {
+        "otel_trace_id": format(ctx.trace_id, "032x"),
+        "otel_span_id": format(ctx.span_id, "016x"),
+    }
 
 
 class ArtifactAccessError(RuntimeError):
@@ -104,42 +161,139 @@ def artifact_checksums(client_or_run_id, run_id: str | None = None, artifact_pat
     return checksums
 
 
+def _find_registered_model_for_run(client, run_id: str) -> str | None:
+    """Find the registered model name (if any) whose source is this run.
+
+    Used to locate the per-model chain-head tag (``ario.last_training_hash``)
+    so a new training proof can chain to the previous training of the same
+    model. Returns the first match's name, or ``None`` if no registered
+    model points at this run.
+
+    A run can in principle have multiple registered models (e.g. logged
+    several models then registered each). For the chain-head linkage we
+    use the first match deterministically; truly multi-model training
+    runs are uncommon and the audit chain still works (each registration
+    chains to ``ario.training_tx`` on the run).
+    """
+    try:
+        results = client.search_model_versions(f"run_id='{run_id}'")
+    except Exception as e:  # noqa: BLE001
+        logger.debug(
+            f"search_model_versions for run {run_id} failed; "
+            f"chain-head update will be skipped: {e}"
+        )
+        return None
+    if not results:
+        return None
+    return results[0].name
+
+
+def _build_training_payload(
+    *,
+    run_id: str,
+    params: dict,
+    metrics: dict,
+    artifact_checksums_map: dict,
+    source_name: str,
+    git_commit: str,
+    mlflow_trace_id: str | None,
+    metadata: dict | None,
+    include_tracking_uri: bool,
+    tracking_uri: str | None,
+) -> dict:
+    """Assemble the canonical-payload dict for a training proof.
+
+    Sorted-key serialization happens in ``canonical_json``; this function
+    just decides which fields are committed to. ``metadata`` is merged
+    last so callers cannot accidentally overwrite the structural fields
+    above.
+    """
+    payload: dict = {
+        "event_type": "training_complete",
+        "run_id": run_id,
+        "params": params,
+        "metrics": metrics,
+        "artifact_checksums": artifact_checksums_map,
+        "source_name": source_name,
+        "git_commit": git_commit,
+    }
+    if mlflow_trace_id:
+        payload["mlflow_trace_id"] = mlflow_trace_id
+    if include_tracking_uri and tracking_uri:
+        payload["mlflow_tracking_uri"] = tracking_uri
+    if metadata:
+        # Caller metadata (e.g. service_name, otel_trace_id) merges in.
+        # Structural keys above win on collision so the canonical shape
+        # is predictable across callers.
+        for k, v in metadata.items():
+            if k in payload:
+                logger.debug(
+                    f"Caller metadata key {k!r} collides with a structural "
+                    f"field; keeping the structural value."
+                )
+                continue
+            payload[k] = v
+    return payload
+
+
 def anchor(
     proof_engine: ProofEngine | None = None,
     arweave: ArweaveAnchor | None = None,
     artifact_path: str | None = None,
+    metadata: dict | None = None,
+    capture_otel: bool = True,
 ) -> dict:
-    """Create a verifiable proof of the current training run.
+    """Create a verifiable commitment for the current training run.
 
     Must be called inside an active ``mlflow.start_run()`` block, after
-    artifacts have been logged. Signs a proof envelope, optionally uploads
-    to Arweave, and writes rich tags + artifacts to the run.
+    artifacts have been logged. Builds a canonical payload from the
+    run's params, metrics, artifact checksums, source metadata, and
+    caller metadata; writes the canonical bytes as the
+    ``ario/payload.json`` MLflow artifact; signs a small commitment
+    envelope (~500 bytes) over the payload's SHA-256; uploads the
+    envelope to Arweave; chains the proof via the registered model's
+    ``ario.last_training_hash`` tag.
+
+    See plan Part 3 (design principles) and Part 4 (plugin changes) for
+    the full design rationale.
 
     Args:
         proof_engine: Optional override for the signing engine.
         arweave: Optional override for the Arweave anchor client.
-        artifact_path: The MLflow artifact subdirectory that was logged
-            (e.g. ``"model"``, ``"sklearn-model"``). When ``None`` (the
-            default), the path is auto-resolved from MLflow's
-            ``mlflow.log-model.history`` tag — which records exactly what
-            was logged — so callers who used a custom path no longer need
-            to re-specify it. Falls back to ``"model"`` if no model was
-            logged. Pass explicitly to hash a non-model subdirectory, or
-            to pick one path when multiple models were logged.
+        artifact_path: MLflow artifact subdirectory to hash. If ``None``,
+            auto-resolved from MLflow's ``mlflow.log-model.history`` tag.
+        metadata: Optional dict of additional fields to commit to.
+            Examples: ``{"service_name": "...", "otel_trace_id": "...",
+            "otel_span_id": "..."}`` for OpenTelemetry correlation,
+            ``{"include_tracking_uri": True}`` to opt the
+            ``mlflow_tracking_uri`` into the payload (off by default to
+            avoid leaking internal infra in proofs). Caller fields are
+            merged into the canonical payload after the structural fields
+            (event_type, run_id, params, metrics, etc.) so structural
+            fields cannot be overwritten.
 
     Returns:
-        A dict with keys:
+        Dict with keys:
 
-        - ``proof`` — the signed proof envelope
-        - ``anchor_result`` — Turbo upload result (``None`` if disabled/failed)
+        - ``envelope`` — the signed pure-commitment envelope (what's on
+          Arweave)
+        - ``payload`` — the canonical-payload dict (what's hashed)
+        - ``payload_bytes`` — the JCS-canonicalized bytes of ``payload``
+        - ``payload_hash`` — SHA-256 hex of ``payload_bytes`` (also in
+          ``envelope["payload_hash"]``)
+        - ``previous_hash`` — chain link used (the prior training's
+          ``payload_hash`` for this registered model, or ``"GENESIS"``)
+        - ``registered_model`` — name of the registered model whose
+          chain head was updated, or ``None`` if no registered model
+          points to this run yet
+        - ``anchor_result`` — Turbo upload result (``None`` if disabled
+          or failed)
         - ``tags`` — the MLflow tags written on the run
         - ``artifact_path`` — the path actually used for hashing
-        - ``artifact_status`` — one of ``"hashed"`` (artifacts hashed
-          successfully), ``"no_artifacts"`` (no files found at the path),
-          or ``"hash_failed"`` (download/read error; details in
-          ``artifact_error``)
-        - ``artifact_error`` — the error message when
-          ``artifact_status == "hash_failed"``, otherwise ``None``
+        - ``artifact_status`` — ``"hashed"`` / ``"no_artifacts"`` /
+          ``"hash_failed"``
+        - ``artifact_error`` — error message when
+          ``artifact_status == "hash_failed"``, else ``None``
     """
     active = mlflow.active_run()
     if active is None:
@@ -163,9 +317,6 @@ def anchor(
     # caller logged under a different name.
     resolved_path = artifact_path
     if resolved_path is None:
-        # Dedupe while preserving order — a run can legitimately log the
-        # same artifact path twice (e.g. re-log overwrites), which is
-        # still unambiguous and shouldn't trip the fail-fast guard.
         logged_paths = list(dict.fromkeys(_logged_model_paths(run_data)))
         if len(logged_paths) == 1:
             resolved_path = logged_paths[0]
@@ -178,42 +329,117 @@ def anchor(
         else:
             resolved_path = "model"
 
+    # Hash the model artifacts. Round metrics for cross-rerun stability —
+    # JCS itself preserves exact float values, so the rounding is the
+    # caller's choice and we apply it explicitly here (matches v1
+    # behaviour).
     params = dict(run_data.data.params)
-    metrics = {k: round(v, 6) if isinstance(v, float) else v for k, v in run_data.data.metrics.items()}
+    metrics = normalize_floats(dict(run_data.data.metrics), precision=6)
     artifact_status = "no_artifacts"
     artifact_error: str | None = None
     try:
         checksums = artifact_checksums(run_id, artifact_path=resolved_path)
         artifact_status = "hashed" if checksums else "no_artifacts"
     except ArtifactAccessError as e:
-        # Artifact download/read failed. Anchor params/metrics as a record of
-        # the run, but flag the status so callers can surface the failure.
         logger.warning(f"Skipping artifact_hash in proof for run {run_id}: {e}")
         checksums = {}
         artifact_status = "hash_failed"
         artifact_error = str(e)
     art_hash = hash_data(canonical_json(checksums)) if checksums else None
 
-    record = {
-        "event_id": str(uuid.uuid4()),
-        "event_type": "training_complete",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "run_id": run_id,
-        "params": params,
-        "metrics": metrics,
-        "artifact_checksums": checksums,
-        "artifact_hash": art_hash,
-        "source_name": run_data.data.tags.get("mlflow.source.name", ""),
-        "git_commit": run_data.data.tags.get("mlflow.source.git.commit", ""),
-    }
+    # MLflow trace correlation when a trace is active around the training
+    # call. Uncommon for training but free when present. OTel correlation
+    # is the caller's job via metadata={"otel_trace_id": ...}.
+    try:
+        mlflow_trace_id = mlflow.get_active_trace_id()
+    except Exception:  # noqa: BLE001
+        mlflow_trace_id = None
 
-    proof = proof_engine.create_proof(record, "GENESIS")
+    include_tracking_uri = bool(
+        metadata and metadata.get("include_tracking_uri", False)
+    )
+    tracking_uri = mlflow.get_tracking_uri()
 
-    anchor_result = arweave.upload_proof(proof) if arweave.enabled else None
+    # Auto-capture OTel context when default-on (capture_otel=True) and a
+    # recording span is active. Caller-supplied metadata={"otel_trace_id":
+    # ...} wins over auto-capture (handled in _build_training_payload's
+    # merge order).
+    auto_otel = capture_otel_context() if capture_otel else {}
 
-    tags = {
-        "ario.public_key": proof["public_key"],
+    # Caller metadata merges with auto-OTel; caller wins on collision.
+    merged_metadata = {**auto_otel, **{
+        k: v for k, v in (metadata or {}).items() if k != "include_tracking_uri"
+    }}
+
+    # Build canonical payload (what's hashed and committed to).
+    payload = _build_training_payload(
+        run_id=run_id,
+        params=params,
+        metrics=metrics,
+        artifact_checksums_map=checksums,
+        source_name=run_data.data.tags.get("mlflow.source.name", ""),
+        git_commit=run_data.data.tags.get("mlflow.source.git.commit", ""),
+        mlflow_trace_id=mlflow_trace_id,
+        metadata=merged_metadata,
+        include_tracking_uri=include_tracking_uri,
+        tracking_uri=tracking_uri,
+    )
+    payload_bytes = canonical_json(payload)
+    payload_hash = hash_data(payload_bytes)
+
+    # Find the registered model (if any) that points at this run, so we
+    # can chain to its previous training proof and update the chain
+    # head after a successful anchor.
+    registered_model = _find_registered_model_for_run(client, run_id)
+    previous_hash = "GENESIS"
+    if registered_model:
+        try:
+            rm = client.get_registered_model(registered_model)
+            existing = rm.tags.get(TAG_LAST_TRAINING_HASH) if rm and rm.tags else None
+            if existing:
+                previous_hash = existing
+        except Exception as e:  # noqa: BLE001
+            logger.debug(
+                f"Could not read {TAG_LAST_TRAINING_HASH} on registered "
+                f"model {registered_model!r}; using GENESIS: {e}"
+            )
+
+    # Build subject — opt-in tracking_uri respects the privacy default.
+    subject: dict = {"type": "mlflow_run", "run_id": run_id}
+    if include_tracking_uri:
+        subject["tracking_uri"] = tracking_uri
+
+    envelope = proof_engine.create_commitment(
+        event_type="training_complete",
+        subject=subject,
+        payload_bytes=payload_bytes,
+        previous_hash=previous_hash,
+    )
+
+    # Wrap upload_proof so a transient Turbo/Arweave outage degrades to
+    # a "signed-only" outcome (anchor_result=None) rather than aborting
+    # the whole anchor() call. Tags + artifacts must still be written so
+    # the run carries a valid signed proof even when the upload failed.
+    if arweave.enabled:
+        try:
+            anchor_result = arweave.upload_proof(envelope)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"Arweave upload raised for run {run_id}; keeping signed-only "
+                f"proof: {e}"
+            )
+            anchor_result = None
+    else:
+        anchor_result = None
+
+    # Tags written on the run. ario.artifact_hash keeps its v1 semantics
+    # (hash of artifact_checksums dict only) so VerifiedModel's load-time
+    # integrity check is unchanged. ario.payload_hash is the new full
+    # commitment hash.
+    tags: dict = {
+        "ario.public_key": envelope["public_key"],
         "ario.verify_status": "anchored" if anchor_result else "signed",
+        "ario.payload_hash": payload_hash,
     }
     if art_hash is not None:
         tags["ario.artifact_hash"] = art_hash
@@ -227,37 +453,79 @@ def anchor(
     for key, value in tags.items():
         client.set_tag(run_id, key, value)
 
+    # Chain head update: only after the upload succeeded so an upload
+    # failure doesn't poison the head pointer with a payload that isn't
+    # on Arweave. Skipped silently if no registered model exists yet —
+    # the next registration via ArioMlflowClient picks up the chain
+    # then.
+    if registered_model and anchor_result:
+        try:
+            client.set_registered_model_tag(
+                registered_model, TAG_LAST_TRAINING_HASH, payload_hash,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"Could not write {TAG_LAST_TRAINING_HASH} on registered "
+                f"model {registered_model!r} after anchor; chain may fork "
+                f"on the next training of this model: {e}"
+            )
+
+    # Write artifacts: the canonical bytes (the source of truth for
+    # check 2 of the verification flow), the envelope (matches what's on
+    # Arweave), the Turbo receipt, and the human-readable HTML report.
     with tempfile.TemporaryDirectory() as tmpdir:
         ario_dir = os.path.join(tmpdir, "ario")
         os.makedirs(ario_dir)
 
-        # proof.json — only the cryptographic proof (matches what's on Arweave)
-        with open(os.path.join(ario_dir, "proof.json"), "w") as f:
-            json.dump(proof, f, indent=2)
+        # payload.json — the canonical bytes that were committed to.
+        # This is the AgentSystems-style witness: a verifier with this
+        # file plus the Arweave envelope can re-hash and confirm intact.
+        with open(os.path.join(ario_dir, "payload.json"), "wb") as f:
+            f.write(payload_bytes)
 
-        # receipt.json — Turbo upload receipt (independent timestamp witness)
+        # proof.json — the signed envelope (matches what's on Arweave
+        # exactly, byte-for-byte after JCS canonicalization).
+        with open(os.path.join(ario_dir, "proof.json"), "w") as f:
+            json.dump(envelope, f, indent=2)
+
         if anchor_result and anchor_result.get("receipt"):
             with open(os.path.join(ario_dir, "receipt.json"), "w") as f:
                 json.dump(anchor_result["receipt"], f, indent=2)
 
-        # verification.html — human-readable report
-        html_content = generate_verification_html(
-            proof, anchor_result,
-            artifact_hash=art_hash,
-            wallet_mode=wallet_mode,
-        )
-        with open(os.path.join(ario_dir, "verification.html"), "w") as f:
-            f.write(html_content)
+        # verification.html — best-effort. The legacy report renderer
+        # expects the v1 envelope shape; if it raises, log and continue
+        # rather than failing the whole anchor. Phase 3 polishes this.
+        try:
+            html_content = generate_verification_html(
+                envelope, anchor_result,
+                artifact_hash=art_hash,
+                wallet_mode=wallet_mode,
+            )
+            with open(os.path.join(ario_dir, "verification.html"), "w") as f:
+                f.write(html_content)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"verification.html generation failed (non-fatal); legacy "
+                f"renderer is incompatible with the new envelope shape and "
+                f"will be updated in a later phase: {e}"
+            )
 
         mlflow.log_artifacts(ario_dir, "ario")
 
     logger.info(
         f"Run {run_id} anchor complete: status={tags['ario.verify_status']}, "
-        f"artifacts={artifact_status} (path={resolved_path!r})"
+        f"artifacts={artifact_status} (path={resolved_path!r}), "
+        f"chain={previous_hash!r}->{payload_hash!r}, "
+        f"registered_model={registered_model!r}"
     )
 
     return {
-        "proof": proof,
+        "envelope": envelope,
+        "payload": payload,
+        "payload_bytes": payload_bytes,
+        "payload_hash": payload_hash,
+        "previous_hash": previous_hash,
+        "registered_model": registered_model,
         "anchor_result": anchor_result,
         "tags": tags,
         "artifact_path": resolved_path,

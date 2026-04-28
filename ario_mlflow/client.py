@@ -12,7 +12,12 @@ from mlflow.tracking import MlflowClient
 
 from ario_mlflow.proof import ProofEngine, canonical_json, hash_data
 from ario_mlflow.arweave import ArweaveAnchor
-from ario_mlflow.anchoring import artifact_checksums, parse_runs_uri, ArtifactAccessError
+from ario_mlflow.anchoring import (
+    artifact_checksums,
+    parse_runs_uri,
+    ArtifactAccessError,
+    capture_otel_context,
+)
 from ario_mlflow.report import generate_verification_html
 
 logger = logging.getLogger(__name__)
@@ -135,34 +140,126 @@ class ArioMlflowClient(MlflowClient):
             return False
         return event.wait(timeout=timeout)
 
-    def create_model_version(self, name, source, run_id=None, **kwargs):
-        """Register a model version and anchor a proof record."""
+    def create_model_version(
+        self,
+        name,
+        source,
+        run_id=None,
+        *,
+        metadata=None,
+        capture_otel: bool = True,
+        **kwargs,
+    ):
+        """Register a model version and anchor a pure-commitment proof.
+
+        Args:
+            name: Registered model name.
+            source: ``runs:/<run_id>/<artifact_path>`` URI of the source.
+            run_id: Optional explicit run ID. If absent, parsed from
+                ``source``.
+            metadata: Optional extra fields merged into the canonical
+                payload (e.g. caller metadata, OTel correlation).
+                Structural fields cannot be overwritten.
+            **kwargs: Forwarded to ``MlflowClient.create_model_version``.
+
+        See plan Part 4 plugin change item 2 for the chain semantics:
+        registration proofs read ``ario.training_tx`` from the source
+        run and use it as ``previous_hash``. No tag write at
+        registration — the chain head pointer (``ario.last_training_hash``)
+        was set by ``anchor()``.
+        """
         mv = super().create_model_version(name, source, run_id=run_id, **kwargs)
         event = self._register_pending("registration", name, str(mv.version))
 
+        # Capture OTel context HERE on the calling thread — the daemon
+        # thread won't have the parent's OTel context, so we snapshot
+        # before dispatching.
+        auto_otel = capture_otel_context() if capture_otel else {}
+        merged_metadata = {**auto_otel, **(metadata or {})}
+
         threading.Thread(
             target=self._anchor_registration,
-            args=(name, str(mv.version), run_id, source, event),
+            args=(name, str(mv.version), run_id, source),
+            kwargs={"metadata": merged_metadata, "done_event": event},
             daemon=True,
         ).start()
 
         return mv
 
-    def transition_model_version_stage(self, name, version, stage, **kwargs):
-        """Transition a model stage and anchor a proof record."""
+    def transition_model_version_stage(
+        self,
+        name,
+        version,
+        stage,
+        *,
+        metadata=None,
+        capture_otel: bool = True,
+        **kwargs,
+    ):
+        """Transition a model stage and anchor a pure-commitment proof.
+
+        Args:
+            name: Registered model name.
+            version: Model version.
+            stage: Target stage.
+            metadata: Optional extra fields merged into the canonical
+                payload.
+            **kwargs: Forwarded to ``MlflowClient.transition_model_version_stage``.
+
+        Promotion proofs chain to ``ario.registration_tx`` on the model
+        version.
+        """
         current = self.get_model_version(name, version)
         from_stage = current.current_stage
 
         result = super().transition_model_version_stage(name, version, stage, **kwargs)
         event = self._register_pending("promotion", name, str(version))
 
+        # Snapshot OTel context on the calling thread — daemon thread
+        # has its own context.
+        auto_otel = capture_otel_context() if capture_otel else {}
+        merged_metadata = {**auto_otel, **(metadata or {})}
+
         threading.Thread(
             target=self._anchor_promotion,
-            args=(name, str(version), from_stage, stage, event),
+            args=(name, str(version), from_stage, stage),
+            kwargs={"metadata": merged_metadata, "done_event": event},
             daemon=True,
         ).start()
 
         return result
+
+    def _build_registration_payload(
+        self,
+        *,
+        model_name: str,
+        version: str,
+        source_run_id: str | None,
+        source: str | None,
+        artifact_verified: bool | None,
+        artifact_hash: str | None,
+        metadata: dict | None,
+    ) -> dict:
+        """Assemble the canonical payload for a registration commitment."""
+        payload: dict = {
+            "event_type": "model_registered",
+            "model_name": model_name,
+            "model_version": version,
+            "source_run_id": source_run_id,
+            "source": source,
+            "artifact_verified": artifact_verified,
+            "artifact_hash": artifact_hash,
+        }
+        if metadata:
+            for k, v in metadata.items():
+                if k in payload:
+                    logger.debug(
+                        f"Caller metadata key {k!r} collides with a structural "
+                        f"field; keeping the structural value."
+                    )
+                    continue
+                payload[k] = v
+        return payload
 
     def _anchor_registration(
         self,
@@ -170,19 +267,30 @@ class ArioMlflowClient(MlflowClient):
         version: str,
         run_id: str | None,
         source: str | None,
+        *,
+        metadata: dict | None = None,
         done_event: threading.Event | None = None,
     ):
-        """Background: verify artifact integrity, anchor a registration proof."""
+        """Background: verify artifact integrity, anchor a pure-commitment registration proof."""
         try:
             training_tx = None
             expected_hash = None
             artifact_verified = None
 
-            # create_model_version's run_id parameter is optional. When absent,
-            # derive it from the source URI so we still link the registration
-            # proof back to the training run (and its ario.training_tx) instead
-            # of fabricating a fresh GENESIS chain.
+            # When run_id is absent, derive it from the source URI so the
+            # registration proof still links to the training run rather
+            # than minting a fresh GENESIS chain. When BOTH are present
+            # and disagree, fail loudly: silently preferring run_id
+            # would mint a structurally inconsistent proof — the chain
+            # link would point to one run while the signed payload's
+            # ``source`` field claims a different one.
             src_run_id, src_artifact_path = parse_runs_uri(source)
+            if run_id and src_run_id and run_id != src_run_id:
+                raise ValueError(
+                    f"run_id {run_id!r} does not match source URI run_id "
+                    f"{src_run_id!r}; refusing to mint a proof with "
+                    f"inconsistent provenance"
+                )
             source_run_id = run_id or src_run_id
 
             if source_run_id:
@@ -191,10 +299,10 @@ class ArioMlflowClient(MlflowClient):
                     training_tx = run.data.tags.get("ario.training_tx")
                     expected_hash = run.data.tags.get("ario.artifact_hash")
                 except Exception as e:
-                    # A transient tracking-store failure must NOT silently drop
-                    # training_tx and cause us to mint a fresh GENESIS chain —
-                    # that would permanently break provenance for this model
-                    # version. Skip anchoring this attempt instead.
+                    # A transient tracking-store failure must NOT silently
+                    # drop training_tx and mint a fresh GENESIS chain —
+                    # that would permanently break provenance for this
+                    # model version. Skip anchoring this attempt instead.
                     logger.warning(
                         f"Skipping registration anchoring for {model_name}/v{version}: "
                         f"could not load source run {source_run_id}: {e}"
@@ -206,14 +314,13 @@ class ArioMlflowClient(MlflowClient):
                     )
                     return
 
-                # Hash the artifact path that was actually registered. MLflow's
-                # source URI (runs:/<run_id>/<artifact_path>) preserves the
-                # original path — it is not always "model".
                 try:
-                    checksums = artifact_checksums(source_run_id, artifact_path=src_artifact_path or "model")
+                    checksums = artifact_checksums(
+                        source_run_id, artifact_path=src_artifact_path or "model",
+                    )
                 except ArtifactAccessError as e:
-                    # We can't verify — leave artifact_verified as None (unknown)
-                    # and continue anchoring the registration event itself.
+                    # Can't verify — leave artifact_verified as None
+                    # (unknown) and continue anchoring the event itself.
                     logger.warning(
                         f"Could not re-hash artifacts for {model_name}/v{version}: {e}"
                     )
@@ -222,25 +329,52 @@ class ArioMlflowClient(MlflowClient):
                     computed_hash = hash_data(canonical_json(checksums))
                     artifact_verified = computed_hash == expected_hash
 
-            record = {
-                "event_id": str(uuid.uuid4()),
-                "event_type": "model_registered",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "model_name": model_name,
-                "model_version": version,
-                "source_run_id": source_run_id,
-                "source": source,
-                "artifact_verified": artifact_verified,
-                "artifact_hash": expected_hash,
-                "previous_tx": training_tx,
-            }
+            payload = self._build_registration_payload(
+                model_name=model_name,
+                version=version,
+                source_run_id=source_run_id,
+                source=source,
+                artifact_verified=artifact_verified,
+                artifact_hash=expected_hash,
+                metadata=metadata,
+            )
+            payload_bytes = canonical_json(payload)
+            payload_hash = hash_data(payload_bytes)
 
-            proof = self._proof_engine.create_proof(record, training_tx or "GENESIS")
-            result = self._anchor.upload_proof(proof) if self._anchor.enabled else None
+            envelope = self._proof_engine.create_commitment(
+                event_type="model_registered",
+                subject={
+                    "type": "mlflow_model_version",
+                    "name": model_name,
+                    "version": str(version),
+                },
+                payload_bytes=payload_bytes,
+                previous_hash=training_tx or "GENESIS",
+            )
+
+            # Defense in depth: wrap upload_proof so a transient
+            # Turbo/Arweave outage degrades to signed-only (result=None)
+            # rather than aborting the whole _anchor_registration body
+            # via the outer except. Tags + payload.json artifact must
+            # still be written so the model version carries a valid
+            # signed proof even when the upload failed. Symmetric with
+            # anchor()'s upload_proof wrapping.
+            if self._anchor.enabled:
+                try:
+                    result = self._anchor.upload_proof(envelope)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        f"Registration upload raised for {model_name}/v{version}; "
+                        f"keeping signed-only proof: {e}"
+                    )
+                    result = None
+            else:
+                result = None
 
             tags = {
                 "ario.verify_status": "anchored" if result else "signed",
-                "ario.public_key": proof["public_key"],
+                "ario.public_key": envelope["public_key"],
+                "ario.payload_hash": payload_hash,
             }
             if artifact_verified is not None:
                 tags["ario.artifact_verified"] = str(artifact_verified).lower()
@@ -258,28 +392,48 @@ class ArioMlflowClient(MlflowClient):
                 ario_dir = os.path.join(tmpdir, "ario")
                 os.makedirs(ario_dir)
 
+                # registration_payload.json — the canonical bytes (the
+                # AgentSystems-style witness for check 2).
+                with open(os.path.join(ario_dir, "registration_payload.json"), "wb") as f:
+                    f.write(payload_bytes)
+
+                # registration_proof.json — the signed envelope (matches
+                # what was uploaded to Arweave).
                 with open(os.path.join(ario_dir, "registration_proof.json"), "w") as f:
-                    json.dump(proof, f, indent=2)
+                    json.dump(envelope, f, indent=2)
 
                 if result and result.get("receipt"):
                     with open(os.path.join(ario_dir, "registration_receipt.json"), "w") as f:
                         json.dump(result["receipt"], f, indent=2)
 
-                report = generate_verification_html(
-                    proof, result,
-                    artifact_hash=expected_hash,
-                    artifact_verified=artifact_verified,
-                    cli_verify_cmd=f"ario-mlflow verify model {model_name}/{version}",
-                    wallet_mode=wallet_mode,
-                )
-                with open(os.path.join(ario_dir, "registration_verification.html"), "w") as f:
-                    f.write(report)
+                # verification.html — best-effort. Legacy renderer expects
+                # the v1 envelope shape; if it raises, log and continue
+                # rather than failing the whole anchor. Phase 3 will
+                # rebuild the report for the new shape.
+                try:
+                    report = generate_verification_html(
+                        envelope, result,
+                        artifact_hash=expected_hash,
+                        artifact_verified=artifact_verified,
+                        cli_verify_cmd=f"ario-mlflow verify model {model_name}/{version}",
+                        wallet_mode=wallet_mode,
+                    )
+                    with open(os.path.join(ario_dir, "registration_verification.html"), "w") as f:
+                        f.write(report)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        f"registration_verification.html generation failed (non-fatal): {e}"
+                    )
 
                 if source_run_id:
                     self.log_artifacts(source_run_id, ario_dir, "ario")
 
             status = "anchored" if result else "signed (anchoring disabled or upload failed)"
-            logger.info(f"Registration {model_name}/v{version} {status}: verified={artifact_verified}")
+            logger.info(
+                f"Registration {model_name}/v{version} {status}: "
+                f"verified={artifact_verified}, "
+                f"chain={training_tx or 'GENESIS'!r}->{payload_hash!r}"
+            )
 
             self._record_status(
                 "registration", model_name, version,
@@ -304,48 +458,125 @@ class ArioMlflowClient(MlflowClient):
         version: str,
         from_stage: str,
         to_stage: str,
+        *,
+        metadata: dict | None = None,
         done_event: threading.Event | None = None,
     ):
-        """Background: anchor a stage transition proof."""
+        """Background: anchor a pure-commitment stage-transition proof."""
         try:
             mv = self.get_model_version(model_name, version)
             registration_tx = mv.tags.get("ario.registration_tx")
 
-            record = {
-                "event_id": str(uuid.uuid4()),
+            payload: dict = {
                 "event_type": "stage_transition",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "model_name": model_name,
                 "model_version": version,
                 "from_stage": from_stage,
                 "to_stage": to_stage,
-                "previous_tx": registration_tx,
             }
+            if metadata:
+                for k, v in metadata.items():
+                    if k in payload:
+                        continue
+                    payload[k] = v
+            payload_bytes = canonical_json(payload)
+            payload_hash = hash_data(payload_bytes)
 
-            proof = self._proof_engine.create_proof(record, registration_tx or "GENESIS")
-            result = self._anchor.upload_proof(proof) if self._anchor.enabled else None
+            envelope = self._proof_engine.create_commitment(
+                event_type="stage_transition",
+                subject={
+                    "type": "mlflow_model_version",
+                    "name": model_name,
+                    "version": str(version),
+                },
+                payload_bytes=payload_bytes,
+                previous_hash=registration_tx or "GENESIS",
+            )
+
+            # Defense in depth: wrap upload_proof so a transient
+            # Turbo/Arweave outage degrades to signed-only (result=None)
+            # rather than aborting the whole _anchor_promotion body via
+            # the outer except. Symmetric with anchor() and
+            # _anchor_registration.
+            if self._anchor.enabled:
+                try:
+                    result = self._anchor.upload_proof(envelope)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        f"Promotion upload raised for {model_name}/v{version} "
+                        f"({from_stage}->{to_stage}); keeping signed-only proof: {e}"
+                    )
+                    result = None
+            else:
+                result = None
+
+            # Write the canonical bytes as an artifact on the source run
+            # so verifiers have an immutable witness for check 2. Keyed
+            # by the envelope's event_id (NOT just version) — a model
+            # version can be promoted multiple times (Staging -> Prod ->
+            # Archived), and version-only paths would overwrite each
+            # promotion's witness. Verifier resolves via the same
+            # event_id (carried in subject + envelope).
+            mv = self.get_model_version(model_name, version)
+            source_run_id = mv.run_id
+            event_id = envelope["event_id"]
+            if source_run_id:
+                try:
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        promotion_dir = os.path.join(
+                            tmpdir, "ario", "promotions", event_id,
+                        )
+                        os.makedirs(promotion_dir)
+                        with open(os.path.join(promotion_dir, "payload.json"), "wb") as f:
+                            f.write(payload_bytes)
+                        with open(os.path.join(promotion_dir, "proof.json"), "w") as f:
+                            json.dump(envelope, f, indent=2)
+                        # log_artifacts uploads tmpdir/ario/promotions/<event_id>/...
+                        # under the run's artifacts/ario/promotions/<event_id>/.
+                        self.log_artifacts(
+                            source_run_id, os.path.join(tmpdir, "ario"), "ario",
+                        )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        f"Could not write promotion payload artifact for "
+                        f"{model_name}/v{version} (event {event_id}): {e}"
+                    )
+
+            # Always write ario.promotion_payload_hash — it's the stable
+            # pointer to the payload artifact under
+            # promotions/<event_id>/payload.json regardless of upload
+            # outcome. ario.promotion_tx is only meaningful when the
+            # upload succeeded. Symmetric with how registration always
+            # writes ario.payload_hash and conditionally writes
+            # ario.registration_tx.
+            self.set_model_version_tag(
+                model_name, version, "ario.promotion_payload_hash", payload_hash,
+            )
 
             if result:
                 self.set_model_version_tag(model_name, version, "ario.promotion_tx", result["tx_id"])
-                logger.info(f"Promotion {model_name}/v{version} ({from_stage}->{to_stage}) anchored: tx={result['tx_id']}")
+                logger.info(
+                    f"Promotion {model_name}/v{version} "
+                    f"({from_stage}->{to_stage}) anchored: tx={result['tx_id']}"
+                )
                 self._record_status(
                     "promotion", model_name, version,
                     status="anchored", tx_id=result["tx_id"],
                 )
-            elif not self._anchor.enabled:
+            else:
+                # result=None covers three cases that all degrade to
+                # signed-only (consistent with anchor() and
+                # _anchor_registration): anchor disabled, upload returned
+                # no result, or upload raised an exception we caught
+                # above. The signed envelope and payload artifact are
+                # still in MLflow regardless.
                 logger.info(
                     f"Promotion {model_name}/v{version} ({from_stage}->{to_stage}) "
-                    "signed (anchoring disabled)"
+                    f"signed (anchor enabled={self._anchor.enabled})"
                 )
                 self._record_status(
                     "promotion", model_name, version,
                     status="signed",
-                )
-            else:
-                self._record_status(
-                    "promotion", model_name, version,
-                    status="failed",
-                    error="upload returned no result",
                 )
 
         except Exception as e:

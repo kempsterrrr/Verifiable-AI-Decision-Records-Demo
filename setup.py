@@ -13,6 +13,7 @@ setup(
         "PyNaCl>=1.5.0",
         "turbo-sdk>=0.0.5",
         "requests>=2.31.0",
+        "jcs>=0.2.1",  # RFC-8785 JSON Canonicalization Scheme — interop with Notary, Sigstore
     ],
     entry_points={
         "mlflow.run_context_provider": [

@@ -17,7 +17,21 @@ def __getattr__(name):
     if name == "ArioMlflowClient":
         from ario_mlflow.client import ArioMlflowClient
         return ArioMlflowClient
+    if name == "verify_prediction":
+        from ario_mlflow.decision_verify import verify_prediction
+        return verify_prediction
+    if name == "PredictionVerificationResult":
+        from ario_mlflow.decision_verify import PredictionVerificationResult
+        return PredictionVerificationResult
     raise AttributeError(f"module 'ario_mlflow' has no attribute {name!r}")
 
 
-__all__ = ["anchor", "anchor_dataset", "VerifiedModel", "IntegrityError", "ArioMlflowClient"]
+__all__ = [
+    "anchor",
+    "anchor_dataset",
+    "VerifiedModel",
+    "IntegrityError",
+    "ArioMlflowClient",
+    "verify_prediction",
+    "PredictionVerificationResult",
+]

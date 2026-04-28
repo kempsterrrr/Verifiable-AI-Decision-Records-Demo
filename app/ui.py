@@ -450,6 +450,32 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
         # NOTE: We don't persist last_verification anymore (no local store).
         # The verification result is just shown to the user this request.
 
+    # Re-derive prediction hashes from MLflow span data and compare to the
+    # anchored proof. This catches any post-anchor mutation of the trace's
+    # recorded input/output.
+    prediction_integrity = None
+    if envelope.get("arweave_tx_id"):
+        try:
+            from ario_mlflow.decision_verify import verify_prediction
+            result = verify_prediction(
+                decision_id=decision_id,
+                tracking_uri=app.state.settings.mlflow_tracking_uri,
+                arweave=app.state.anchor,
+            )
+            prediction_integrity = {
+                "match_input": result.match_input,
+                "match_output": result.match_output,
+                "overall_match": result.overall_match,
+                "anchored_input_hash": result.anchored_input_hash,
+                "recomputed_input_hash": result.recomputed_input_hash,
+                "anchored_output_hash": result.anchored_output_hash,
+                "recomputed_output_hash": result.recomputed_output_hash,
+                "error": result.error,
+            }
+        except Exception as e:
+            logger.warning(f"verify_prediction failed for {decision_id}: {e}")
+            prediction_integrity = {"error": str(e)}
+
     turbo_status = None
     if envelope.get("arweave_tx_id"):
         turbo_status = app.state.anchor.check_status(envelope["arweave_tx_id"])
@@ -462,6 +488,7 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
             "envelope": envelope,
             "local_verification": local,
             "turbo_status": turbo_status,
+            "prediction_integrity": prediction_integrity,
         },
     )
 

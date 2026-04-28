@@ -1676,3 +1676,159 @@ def test_tamper_then_untamper_endpoints_round_trip(monkeypatch, tmp_path):
     # Verify passes again.
     result = _verify_run_artifact_integrity("run-x", anchored_hash)
     assert result["match"] is True
+
+
+# --- predict-level verification (Layer 2) ---------------------------------
+
+
+def test_unwrap_span_inputs_strips_function_arg_wrapper():
+    """span.inputs comes wrapped as {'input_data': <actual>} due to function-arg
+    capture; verify_prediction must unwrap before hashing to match the proof."""
+    from ario_mlflow.decision_verify import _unwrap_span_inputs
+
+    actual = {"annual_income": 78000, "credit_score": 745}
+    wrapped = {"input_data": actual}
+    assert _unwrap_span_inputs(wrapped) == actual
+    # Doesn't strip when there's no wrapping.
+    assert _unwrap_span_inputs(actual) == actual
+    # Doesn't strip when the dict has multiple keys.
+    multi = {"input_data": actual, "other": "thing"}
+    assert _unwrap_span_inputs(multi) == multi
+
+
+def test_parse_span_output_prediction_recovers_list():
+    """span.outputs records prediction as a string repr ('[1]'); verify
+    must parse it back via ast.literal_eval to match what was hashed."""
+    from ario_mlflow.decision_verify import _parse_span_output_prediction
+
+    raw = {"prediction": "[1]", "decision_id": "d-1"}
+    out = _parse_span_output_prediction(raw)
+    assert out == {"prediction": [1]}
+
+    # Fallback when ast.literal_eval can't parse.
+    raw_bad = {"prediction": "not a literal"}
+    out_bad = _parse_span_output_prediction(raw_bad)
+    assert out_bad == {"prediction": "not a literal"}
+
+
+def test_verify_prediction_passes_on_intact_trace(monkeypatch, tmp_path):
+    """End-to-end: train + predict + anchor (stubbed Arweave). verify_prediction
+    re-derives from MLflow span data and confirms it matches the proof."""
+    import mlflow as _mlflow
+
+    monkeypatch.delenv("ARIO_MLFLOW_SIGNING_KEY", raising=False)
+    keys_dir = tmp_path / "keys"
+    keys_dir.mkdir()
+    monkeypatch.setenv("ED25519_PRIVATE_KEY_PATH", str(keys_dir / "priv.pem"))
+    monkeypatch.setenv("ED25519_PUBLIC_KEY_PATH", str(keys_dir / "pub.pem"))
+
+    _mlflow.set_tracking_uri(f"file://{tmp_path}/mlruns")
+    _mlflow.set_experiment("Default")
+
+    # Stub Arweave globally so we don't hit the network.
+    captured = {"proof": None}
+
+    def _fake_upload_proof(self, proof):
+        captured["proof"] = proof
+        return {"tx_id": "STUB_TX", "url": "https://stub/raw/STUB_TX", "receipt": None}
+
+    from ario_mlflow.arweave import ArweaveAnchor
+    monkeypatch.setattr(ArweaveAnchor, "upload_proof", _fake_upload_proof)
+    monkeypatch.setattr(ArweaveAnchor, "enabled", True, raising=False)
+    monkeypatch.setattr(ArweaveAnchor, "fetch_proof", lambda self, tx: captured["proof"])
+
+    from app.model import train_and_register_with_params
+    info = train_and_register_with_params(
+        tracking_uri=f"file://{tmp_path}/mlruns",
+        model_name="credit_verify",
+        max_iter=20,
+        random_state=13,
+    )
+
+    # Predict via the loaded model.
+    from ario_mlflow import VerifiedModel
+    vm = VerifiedModel(f"models:/credit_verify/{info['model_version']}")
+    vp = vm.predict({"annual_income": 78000.0, "credit_utilization": 0.18,
+                     "debt_to_income_ratio": 0.22, "months_employed": 72.0,
+                     "credit_score": 745.0})
+    vp.wait_for_anchor(timeout=10.0)
+    assert vp.tx_id == "STUB_TX"
+
+    from ario_mlflow.decision_verify import verify_prediction
+    result = verify_prediction(
+        decision_id=vp.decision_id,
+        tracking_uri=f"file://{tmp_path}/mlruns",
+    )
+    assert result.found, result.error
+    assert result.error is None, result.error
+    assert result.match_input is True, (result.recomputed_input_hash, result.anchored_input_hash)
+    assert result.match_output is True, (result.recomputed_output_hash, result.anchored_output_hash)
+    assert result.overall_match is True
+
+
+def test_verify_prediction_catches_input_mutation(monkeypatch, tmp_path):
+    """Mutate the recorded span input on disk → verify_prediction reports
+    match_input=False. This is the prediction-tamper detection path."""
+    import json as _json
+    import mlflow as _mlflow
+
+    monkeypatch.delenv("ARIO_MLFLOW_SIGNING_KEY", raising=False)
+    keys_dir = tmp_path / "keys"
+    keys_dir.mkdir()
+    monkeypatch.setenv("ED25519_PRIVATE_KEY_PATH", str(keys_dir / "priv.pem"))
+    monkeypatch.setenv("ED25519_PUBLIC_KEY_PATH", str(keys_dir / "pub.pem"))
+
+    _mlflow.set_tracking_uri(f"file://{tmp_path}/mlruns")
+    _mlflow.set_experiment("Default")
+
+    captured = {"proof": None}
+
+    def _fake_upload_proof(self, proof):
+        captured["proof"] = proof
+        return {"tx_id": "STUB_TX2", "url": "https://stub/raw/STUB_TX2", "receipt": None}
+
+    from ario_mlflow.arweave import ArweaveAnchor
+    monkeypatch.setattr(ArweaveAnchor, "upload_proof", _fake_upload_proof)
+    monkeypatch.setattr(ArweaveAnchor, "enabled", True, raising=False)
+    monkeypatch.setattr(ArweaveAnchor, "fetch_proof", lambda self, tx: captured["proof"])
+
+    from app.model import train_and_register_with_params
+    info = train_and_register_with_params(
+        tracking_uri=f"file://{tmp_path}/mlruns",
+        model_name="credit_tamper_test",
+        max_iter=20,
+        random_state=17,
+    )
+
+    from ario_mlflow import VerifiedModel
+    vm = VerifiedModel(f"models:/credit_tamper_test/{info['model_version']}")
+    vp = vm.predict({"annual_income": 78000.0, "credit_utilization": 0.18,
+                     "debt_to_income_ratio": 0.22, "months_employed": 72.0,
+                     "credit_score": 745.0})
+    vp.wait_for_anchor(timeout=10.0)
+
+    # Locate and mutate the trace's recorded inputs.
+    import os
+    traces_json = os.path.join(
+        str(tmp_path), "mlruns", "0", "traces", vp.trace_id, "artifacts", "traces.json"
+    )
+    assert os.path.isfile(traces_json), traces_json
+    with open(traces_json, "r") as f:
+        data = _json.load(f)
+    inputs = _json.loads(data["spans"][0]["attributes"]["mlflow.spanInputs"])
+    inputs["input_data"]["credit_score"] = 999.0  # tamper
+    data["spans"][0]["attributes"]["mlflow.spanInputs"] = _json.dumps(inputs)
+    with open(traces_json, "w") as f:
+        _json.dump(data, f)
+
+    from ario_mlflow.decision_verify import verify_prediction
+    result = verify_prediction(
+        decision_id=vp.decision_id,
+        tracking_uri=f"file://{tmp_path}/mlruns",
+    )
+    assert result.found
+    assert result.error is None, result.error
+    assert result.match_input is False  # caught the tamper
+    # Output is untouched, should still match.
+    assert result.match_output is True
+    assert result.overall_match is False

@@ -414,6 +414,165 @@ def api_untamper_training(request: Request, run_id: str):
     }
 
 
+@app.post("/api/tamper/decision/{decision_id}")
+def api_tamper_decision(request: Request, decision_id: str):
+    """Demo-only: mutate the trace's recorded input in MLflow's storage so
+    the prediction-integrity verification on Decision Detail catches it.
+
+    File-backend only. Backs up the original trace data file, rewrites it
+    with a mutated copy that flips one feature value (credit_score + 100).
+    """
+    settings = request.app.state.settings
+    import mlflow as _mlflow
+    _mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+    client = _mlflow.tracking.MlflowClient()
+
+    # Find the trace.
+    from app.ui import _escape_mlflow_filter_value
+    try:
+        experiments = client.search_experiments()
+        experiment_ids = [e.experiment_id for e in experiments] or ["0"]
+        traces = client.search_traces(
+            experiment_ids=experiment_ids,
+            filter_string=f"tags.`ario.decision_id` = '{_escape_mlflow_filter_value(decision_id)}'",
+            max_results=1,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Trace lookup failed: {e}")
+    if not traces:
+        raise HTTPException(status_code=404, detail="No trace for this decision.")
+
+    trace_info = traces[0].info
+    trace_id = getattr(trace_info, "trace_id", None) or getattr(trace_info, "request_id", None)
+    if not trace_id:
+        raise HTTPException(status_code=500, detail="Could not determine trace_id.")
+
+    # Locate the on-disk traces.json. File backend stores under
+    # mlruns/<exp_id>/traces/<trace_id>/artifacts/traces.json.
+    tracking_uri = settings.mlflow_tracking_uri
+    if tracking_uri.startswith("file://"):
+        mlruns_dir = tracking_uri[len("file://"):]
+    elif tracking_uri.startswith("file:"):
+        mlruns_dir = tracking_uri[len("file:"):]
+    else:
+        # For non-file backends we can't directly mutate trace storage.
+        raise HTTPException(
+            status_code=501,
+            detail=f"Tamper demo only supports file-based tracking stores (got {tracking_uri}).",
+        )
+    if not os.path.isabs(mlruns_dir):
+        mlruns_dir = os.path.abspath(mlruns_dir)
+
+    experiment_id = getattr(trace_info, "experiment_id", None)
+    if not experiment_id:
+        raise HTTPException(status_code=500, detail="Could not determine experiment_id for trace.")
+    traces_json = os.path.join(mlruns_dir, str(experiment_id), "traces", trace_id, "artifacts", "traces.json")
+    if not os.path.isfile(traces_json):
+        raise HTTPException(status_code=404, detail=f"Trace data file not found: {traces_json}")
+
+    backup = traces_json + ".tamper_backup"
+    if os.path.exists(backup):
+        raise HTTPException(status_code=409, detail="Already tampered — call /api/untamper/decision first.")
+
+    import shutil, json as _json
+    shutil.copyfile(traces_json, backup)
+
+    # Read, mutate, write.
+    with open(traces_json, "r") as f:
+        data = _json.load(f)
+    spans = data.get("spans") or []
+    if not spans:
+        # Restore and bail.
+        shutil.move(backup, traces_json)
+        raise HTTPException(status_code=500, detail="Trace has no spans to tamper.")
+
+    # The span attribute keys are JSON-encoded strings — parse, mutate, re-encode.
+    attrs = spans[0].get("attributes") or {}
+    raw_inputs_str = attrs.get("mlflow.spanInputs")
+    if not raw_inputs_str:
+        shutil.move(backup, traces_json)
+        raise HTTPException(status_code=500, detail="Trace span has no recorded inputs.")
+    try:
+        inputs = _json.loads(raw_inputs_str)
+    except _json.JSONDecodeError as e:
+        shutil.move(backup, traces_json)
+        raise HTTPException(status_code=500, detail=f"Could not parse span inputs: {e}")
+
+    # Mutate one feature so the recomputed hash diverges.
+    target = inputs.get("input_data")
+    if isinstance(target, dict) and "credit_score" in target:
+        try:
+            target["credit_score"] = float(target["credit_score"]) + 100.0
+        except (TypeError, ValueError):
+            target["credit_score"] = 999999.0
+    elif isinstance(target, dict):
+        # No credit_score? add a marker key.
+        target["__tampered__"] = True
+    else:
+        # Unknown input shape; just stuff a sentinel into the wrapper.
+        inputs["__tampered__"] = True
+
+    attrs["mlflow.spanInputs"] = _json.dumps(inputs)
+
+    with open(traces_json, "w") as f:
+        _json.dump(data, f)
+
+    return {
+        "decision_id": decision_id,
+        "trace_id": trace_id,
+        "tampered_path": traces_json,
+        "backup_path": backup,
+        "note": "Reload Decision Detail to see Prediction Integrity FAIL.",
+    }
+
+
+@app.post("/api/untamper/decision/{decision_id}")
+def api_untamper_decision(request: Request, decision_id: str):
+    """Restore the trace data file from the tamper backup."""
+    settings = request.app.state.settings
+    import mlflow as _mlflow
+    _mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+    client = _mlflow.tracking.MlflowClient()
+
+    from app.ui import _escape_mlflow_filter_value
+    try:
+        experiments = client.search_experiments()
+        experiment_ids = [e.experiment_id for e in experiments] or ["0"]
+        traces = client.search_traces(
+            experiment_ids=experiment_ids,
+            filter_string=f"tags.`ario.decision_id` = '{_escape_mlflow_filter_value(decision_id)}'",
+            max_results=1,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Trace lookup failed: {e}")
+    if not traces:
+        raise HTTPException(status_code=404, detail="No trace for this decision.")
+
+    trace_info = traces[0].info
+    trace_id = getattr(trace_info, "trace_id", None) or getattr(trace_info, "request_id", None)
+    experiment_id = getattr(trace_info, "experiment_id", None)
+    if not trace_id or not experiment_id:
+        raise HTTPException(status_code=500, detail="Could not resolve trace/experiment id.")
+
+    tracking_uri = settings.mlflow_tracking_uri
+    if tracking_uri.startswith("file://"):
+        mlruns_dir = tracking_uri[len("file://"):]
+    elif tracking_uri.startswith("file:"):
+        mlruns_dir = tracking_uri[len("file:"):]
+    else:
+        raise HTTPException(status_code=501, detail="File backend only.")
+    if not os.path.isabs(mlruns_dir):
+        mlruns_dir = os.path.abspath(mlruns_dir)
+
+    traces_json = os.path.join(mlruns_dir, str(experiment_id), "traces", trace_id, "artifacts", "traces.json")
+    backup = traces_json + ".tamper_backup"
+    if not os.path.exists(backup):
+        raise HTTPException(status_code=404, detail="No tamper backup found.")
+    import shutil
+    shutil.move(backup, traces_json)
+    return {"decision_id": decision_id, "restored_path": traces_json}
+
+
 @app.post("/api/activate/{model_name}/{version}")
 def activate_model(request: Request, model_name: str, version: str):
     """Switch the active model to a specific version."""

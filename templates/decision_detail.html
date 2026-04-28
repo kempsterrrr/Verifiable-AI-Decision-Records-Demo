@@ -176,7 +176,17 @@
             <div class="page-actions">
                 <a id="verify-btn" href="/ui/decisions/{{ envelope.record.decision_id }}?verify=true" class="btn btn-primary btn-sm" data-loading-text="Verifying..." {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>Verify with ar.io</a>
                 <a href="/api/export/{{ envelope.record.decision_id }}" class="btn btn-outline btn-sm">Download Proof</a>
-                {# Removed in Phase 4: tamper demo retired pending plugin integration. #}
+                {% if envelope.arweave_tx_id %}
+                <button type="button" class="btn btn-outline btn-sm tamper-decision-btn"
+                        data-decision-id="{{ envelope.record.decision_id }}"
+                        title="Demo: simulate someone modifying what feature values the model received. Verification catches the divergence between MLflow's recorded inputs and the anchored hash.">
+                    Tamper Decision
+                </button>
+                <button type="button" class="btn btn-outline btn-sm untamper-decision-btn"
+                        data-decision-id="{{ envelope.record.decision_id }}">
+                    Untamper
+                </button>
+                {% endif %}
             </div>
         </div>
 
@@ -305,6 +315,35 @@
                             {% endif %}
                         </span>
                     </div>
+                    {% endif %}
+
+                    {% if prediction_integrity %}
+                    <div class="verify-row">
+                        <span title="Re-derives input/output hashes from MLflow's recorded span data and compares to the values anchored on Arweave. Catches any post-anchor mutation of the trace.">Prediction Integrity</span>
+                        {% if prediction_integrity.error %}
+                            <span class="cross" title="{{ prediction_integrity.error }}">Not checked</span>
+                        {% elif prediction_integrity.overall_match %}
+                            <span class="check">PASS — recorded inputs/outputs match anchored hashes</span>
+                        {% elif prediction_integrity.overall_match is false %}
+                            <span class="cross">FAIL — recorded data differs from anchored hashes</span>
+                        {% else %}
+                            <span class="unchecked">Not checked</span>
+                        {% endif %}
+                    </div>
+                    {% if prediction_integrity.overall_match is false %}
+                    <div class="verify-note verify-note-warn" style="margin-top: 0.5rem;">
+                        {% if prediction_integrity.match_input is false %}
+                            <div style="font-size: 0.7rem;">
+                                Input mismatch — anchored: <span class="mono mono-sm">{{ prediction_integrity.anchored_input_hash[:16] }}…</span>, now: <span class="mono mono-sm">{{ prediction_integrity.recomputed_input_hash[:16] }}…</span>
+                            </div>
+                        {% endif %}
+                        {% if prediction_integrity.match_output is false %}
+                            <div style="font-size: 0.7rem; margin-top: 0.25rem;">
+                                Output mismatch — anchored: <span class="mono mono-sm">{{ prediction_integrity.anchored_output_hash[:16] }}…</span>, now: <span class="mono mono-sm">{{ prediction_integrity.recomputed_output_hash[:16] }}…</span>
+                            </div>
+                        {% endif %}
+                    </div>
+                    {% endif %}
                     {% endif %}
 
                     <div class="verify-row verify-divider">
@@ -578,6 +617,34 @@
 {% endblock %}
 
 {% block scripts %}
+    {% if envelope.arweave_tx_id %}
+    <script>
+    document.querySelectorAll(".tamper-decision-btn, .untamper-decision-btn").forEach(function(btn) {
+        btn.addEventListener("click", async function() {
+            var decisionId = btn.dataset.decisionId;
+            var isUntamper = btn.classList.contains("untamper-decision-btn");
+            var path = isUntamper ? "untamper" : "tamper";
+            var original = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = isUntamper ? "Restoring…" : "Tampering…";
+            try {
+                var resp = await fetch("/api/" + path + "/decision/" + encodeURIComponent(decisionId), {
+                    method: "POST",
+                });
+                if (!resp.ok) {
+                    var err = await resp.json().catch(function() { return {}; });
+                    throw new Error(err.detail || "HTTP " + resp.status);
+                }
+                window.location.reload();
+            } catch (e) {
+                btn.disabled = false;
+                btn.textContent = original;
+                alert((isUntamper ? "Untamper" : "Tamper") + " failed: " + e.message);
+            }
+        });
+    });
+    </script>
+    {% endif %}
     {% if arweave_enabled %}
     <script>
     (function() {

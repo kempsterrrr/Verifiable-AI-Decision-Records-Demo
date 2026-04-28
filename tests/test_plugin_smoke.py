@@ -2386,3 +2386,167 @@ def test_tamper_decision_busts_decision_verify_cache(monkeypatch, tmp_path):
     assert "d-1" not in fake_request.app.state.decision_verify_cache, (
         "Tamper must evict the per-decision cache entry."
     )
+
+
+# --- ario_mlflow.verify_model_lifecycle (Phase A) ---
+
+
+def _make_lifecycle_event(event_type, tx_id, previous_tx=None):
+    """Helper: build a lifecycle_for_model output event."""
+    return {
+        "event_type": event_type,
+        "tx_id": tx_id,
+        "previous_tx": previous_tx,
+        "run_id": "run-x",
+        "model_version": "1",
+    }
+
+
+def _make_proof(record_dict, previous_hash):
+    """Helper: build a coherent proof envelope where record_hash matches
+    the canonical hash of record_dict."""
+    from ario_mlflow.proof import canonical_json, hash_data
+    return {
+        "record": record_dict,
+        "record_hash": hash_data(canonical_json(record_dict)),
+        "previous_hash": previous_hash,
+        "signature": "deadbeef" * 16,  # mock; signature_valid will be None
+        "public_key": "abcd" * 16,
+    }
+
+
+def test_verify_model_lifecycle_all_events_intact(monkeypatch):
+    """Lifecycle with 4 events that chain cleanly -> all_intact=True."""
+    from unittest.mock import MagicMock
+    from ario_mlflow.decision_verify import verify_model_lifecycle
+
+    events = [
+        _make_lifecycle_event("dataset_anchored", "TX_DATA"),
+        _make_lifecycle_event("training_complete", "TX_TRAIN", previous_tx="TX_DATA"),
+        _make_lifecycle_event("model_registered", "TX_REG", previous_tx="TX_TRAIN"),
+        _make_lifecycle_event("stage_transition", "TX_PROMO", previous_tx="TX_REG"),
+    ]
+
+    proofs = {
+        "TX_DATA": _make_proof({"event_type": "dataset_anchored"}, "GENESIS"),
+        "TX_TRAIN": _make_proof({"event_type": "training_complete"}, "TX_DATA"),
+        "TX_REG": _make_proof({"event_type": "model_registered"}, "TX_TRAIN"),
+        "TX_PROMO": _make_proof({"event_type": "stage_transition"}, "TX_REG"),
+    }
+
+    client = MagicMock()
+    client.lifecycle_for_model.return_value = events
+
+    anchor = MagicMock()
+    anchor.fetch_proof.side_effect = lambda tx: proofs.get(tx)
+
+    result = verify_model_lifecycle("m", "1", anchor, client, proof_engine=None)
+
+    assert result["all_intact"] is True
+    assert len(result["events"]) == 4
+    for event in result["events"]:
+        assert event["found_on_arweave"] is True
+        assert event["content_hash_valid"] is True
+        assert event["intact"] is True
+    # Signature is None (no proof_engine).
+    assert all(e["signature_valid"] is None for e in result["events"])
+    # First event's link_valid is None (no prior).
+    assert result["events"][0]["link_valid"] is None
+    # Subsequent events have link_valid=True.
+    assert all(e["link_valid"] is True for e in result["events"][1:])
+    # Convenience fields.
+    assert result["registration_tx"] == "TX_REG"
+    assert result["promotion_tx"] == "TX_PROMO"
+
+
+def test_verify_model_lifecycle_missing_arweave_record(monkeypatch):
+    """An event whose fetch_proof returns None -> that event intact=False, all_intact=False."""
+    from unittest.mock import MagicMock
+    from ario_mlflow.decision_verify import verify_model_lifecycle
+
+    events = [
+        _make_lifecycle_event("dataset_anchored", "TX_DATA"),
+        _make_lifecycle_event("training_complete", "TX_GONE", previous_tx="TX_DATA"),
+    ]
+    proofs = {"TX_DATA": _make_proof({}, "GENESIS")}
+
+    client = MagicMock()
+    client.lifecycle_for_model.return_value = events
+    anchor = MagicMock()
+    anchor.fetch_proof.side_effect = lambda tx: proofs.get(tx)
+
+    result = verify_model_lifecycle("m", "1", anchor, client, proof_engine=None)
+    assert result["all_intact"] is False
+    train_event = next(e for e in result["events"] if e["event_type"] == "training_complete")
+    assert train_event["found_on_arweave"] is False
+    assert train_event["intact"] is False
+
+
+def test_verify_model_lifecycle_content_hash_mismatch(monkeypatch):
+    """fetch_proof returns a record whose canonical hash != record_hash -> content_hash_valid=False."""
+    from unittest.mock import MagicMock
+    from ario_mlflow.decision_verify import verify_model_lifecycle
+
+    bad_proof = {
+        "record": {"event_type": "training_complete"},
+        "record_hash": "definitely_not_the_hash",
+        "previous_hash": "GENESIS",
+        "signature": "x",
+        "public_key": "y",
+    }
+    events = [_make_lifecycle_event("training_complete", "TX")]
+    client = MagicMock()
+    client.lifecycle_for_model.return_value = events
+    anchor = MagicMock()
+    anchor.fetch_proof.return_value = bad_proof
+
+    result = verify_model_lifecycle("m", "1", anchor, client, proof_engine=None)
+    assert result["all_intact"] is False
+    e = result["events"][0]
+    assert e["content_hash_valid"] is False
+    assert e["intact"] is False
+
+
+def test_verify_model_lifecycle_link_break(monkeypatch):
+    """Second event's previous_hash doesn't match first event's tx_id -> link_valid=False."""
+    from unittest.mock import MagicMock
+    from ario_mlflow.decision_verify import verify_model_lifecycle
+
+    events = [
+        _make_lifecycle_event("dataset_anchored", "TX1"),
+        _make_lifecycle_event("training_complete", "TX2", previous_tx="TX1"),
+    ]
+    proofs = {
+        "TX1": _make_proof({"event_type": "dataset_anchored"}, "GENESIS"),
+        "TX2": _make_proof({"event_type": "training_complete"}, "WRONG_PREVIOUS"),
+    }
+    client = MagicMock()
+    client.lifecycle_for_model.return_value = events
+    anchor = MagicMock()
+    anchor.fetch_proof.side_effect = lambda tx: proofs.get(tx)
+
+    result = verify_model_lifecycle("m", "1", anchor, client, proof_engine=None)
+    assert result["all_intact"] is False
+    e = result["events"][1]
+    assert e["link_valid"] is False
+    assert e["intact"] is False
+    # First event still intact (no prior to chain to).
+    assert result["events"][0]["intact"] is True
+
+
+def test_verify_model_lifecycle_skips_signature_when_no_proof_engine(monkeypatch):
+    """proof_engine=None -> signature_valid=None for every event, but other checks still run."""
+    from unittest.mock import MagicMock
+    from ario_mlflow.decision_verify import verify_model_lifecycle
+
+    events = [_make_lifecycle_event("training_complete", "TX")]
+    proofs = {"TX": _make_proof({"event_type": "training_complete"}, "GENESIS")}
+
+    client = MagicMock()
+    client.lifecycle_for_model.return_value = events
+    anchor = MagicMock()
+    anchor.fetch_proof.side_effect = lambda tx: proofs.get(tx)
+
+    result = verify_model_lifecycle("m", "1", anchor, client, proof_engine=None)
+    assert result["events"][0]["signature_valid"] is None
+    assert result["events"][0]["intact"] is True  # other checks pass

@@ -18,6 +18,7 @@ import ast
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 import mlflow
@@ -232,3 +233,157 @@ def verify_prediction(
         recomputed_output_hash=recomputed_output_hash,
         error=None,
     )
+
+
+def verify_model_lifecycle(
+    model_name: str,
+    model_version: str,
+    anchor: ArweaveAnchor,
+    ario_client,  # ArioMlflowClient — typed via duck-typing to avoid circular import
+    proof_engine=None,  # ProofEngine | None
+) -> dict:
+    """Verify the full anchored lifecycle of a single model version.
+
+    For each event in the version's chain (dataset_anchored,
+    training_complete, model_registered, stage_transition), fetches the
+    proof from Arweave, re-derives the content hash, optionally verifies
+    the signature, and checks that the event's previous_hash links to the
+    prior event's tx_id (or to a recognized chain root for the first
+    event).
+
+    The caller passes ``ArweaveAnchor`` and ``ArioMlflowClient`` instances
+    — the plugin doesn't manage caching; that's the caller's choice.
+
+    Args:
+        model_name: Registered model name.
+        model_version: Specific model version (string).
+        anchor: ArweaveAnchor for fetching canonical proofs from the gateway.
+        ario_client: ArioMlflowClient for ``lifecycle_for_model`` traversal.
+        proof_engine: Optional. Required for signature checks; if ``None``,
+            ``signature_valid`` is reported as ``None`` for each event.
+
+    Returns:
+        A dict with keys:
+
+        - ``model_name``, ``model_version`` — echo back for caller convenience
+        - ``events`` — list of per-event status dicts (see below)
+        - ``all_intact`` — True iff every event in the lifecycle has
+          ``intact=True``. False if any event is missing on Arweave, has
+          a content hash mismatch, fails its signature, or fails its
+          chain link.
+        - ``verified_at`` — ISO-8601 of when this ran (for the demo's
+          "verified at HH:MM:SS" UI badge).
+        - ``registration_tx`` — convenience: the registration_tx if found
+          (for callers building chain-link checks downstream).
+        - ``promotion_tx`` — convenience: the latest promotion_tx if found.
+
+        Each event dict has:
+
+        - ``event_type`` — one of ``"dataset_anchored"``, ``"training_complete"``,
+          ``"model_registered"``, ``"stage_transition"``.
+        - ``tx_id`` — Arweave tx that anchors this event (from
+          ``lifecycle_for_model``).
+        - ``previous_tx`` — the tx_id this event chains to (from
+          ``lifecycle_for_model``).
+        - ``found_on_arweave`` — bool: did ``fetch_proof`` return a record?
+        - ``content_hash_valid`` — bool | None: does
+          ``hash_data(canonical_json(record)) == record_hash``? ``None``
+          if the proof wasn't fetched.
+        - ``signature_valid`` — bool | None: from
+          ``proof_engine.verify_local`` (when ``proof_engine`` provided).
+        - ``link_valid`` — bool | None: does
+          ``proof.previous_hash == prior_event.tx_id``? ``None`` for the
+          first event (no prior to chain to).
+        - ``intact`` — bool: AND of all checks (treating ``None`` as not
+          a failure for signature/link, BUT requiring
+          ``found_on_arweave AND content_hash_valid is not False``).
+    """
+    raw_events = ario_client.lifecycle_for_model(model_name, version=model_version)
+
+    events_returned = []
+    prior_tx_id = None
+    registration_tx = None
+    promotion_tx = None
+
+    for event in raw_events:
+        tx_id = event.get("tx_id")
+        previous_tx = event.get("previous_tx")
+        event_type = event.get("event_type", "")
+
+        # Skip events that were never anchored — not "broken," just not yet anchored.
+        if not tx_id:
+            continue
+
+        proof = anchor.fetch_proof(tx_id)
+
+        if proof is None:
+            event_status = {
+                "event_type": event_type,
+                "tx_id": tx_id,
+                "previous_tx": previous_tx,
+                "found_on_arweave": False,
+                "content_hash_valid": None,
+                "signature_valid": None,
+                "link_valid": None,
+                "intact": False,
+            }
+        else:
+            # Re-derive content hash.
+            record = proof.get("record", {}) or {}
+            recomputed = hash_data(canonical_json(record))
+            content_hash_valid = (recomputed == proof.get("record_hash"))
+
+            # Optional signature check.
+            if proof_engine is not None:
+                sig_result = proof_engine.verify_local(proof)
+                signature_valid = sig_result.get("signature_valid")
+            else:
+                signature_valid = None
+
+            # Chain-link check: previous_hash in proof must equal prior event's tx_id.
+            if prior_tx_id is None:
+                link_valid = None
+            else:
+                link_valid = (proof.get("previous_hash") == prior_tx_id)
+
+            # intact: all present checks must pass.
+            intact = (
+                content_hash_valid is True
+                and (signature_valid is not False)
+                and (link_valid is not False)
+            )
+
+            event_status = {
+                "event_type": event_type,
+                "tx_id": tx_id,
+                "previous_tx": previous_tx,
+                "found_on_arweave": True,
+                "content_hash_valid": content_hash_valid,
+                "signature_valid": signature_valid,
+                "link_valid": link_valid,
+                "intact": intact,
+            }
+
+        events_returned.append(event_status)
+
+        # Track convenience fields.
+        if event_type == "model_registered":
+            registration_tx = tx_id
+        if event_type == "stage_transition":
+            promotion_tx = tx_id  # keeps the latest one if multiple
+
+        # Advance the chain pointer only for found events so the next
+        # event's link check compares against the most recent anchored tx.
+        prior_tx_id = tx_id
+
+    all_intact = bool(events_returned) and all(e["intact"] for e in events_returned)
+
+    return {
+        "model_name": model_name,
+        "model_version": model_version,
+        "events": events_returned,
+        "all_intact": all_intact,
+        "verified_at": datetime.now(timezone.utc).isoformat(),
+        "registration_tx": registration_tx,
+        "promotion_tx": promotion_tx,
+    }

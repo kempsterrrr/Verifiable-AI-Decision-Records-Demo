@@ -23,6 +23,9 @@ def __getattr__(name):
     if name == "PredictionVerificationResult":
         from ario_mlflow.decision_verify import PredictionVerificationResult
         return PredictionVerificationResult
+    if name == "verify_model_lifecycle":
+        from ario_mlflow.decision_verify import verify_model_lifecycle
+        return verify_model_lifecycle
     if name == "verify_envelope":
         from ario_mlflow.verify import verify_envelope
         return verify_envelope
@@ -42,4 +45,5 @@ __all__ = [
     "PredictionVerificationResult",
     "verify_envelope",
     "verify_run_artifact_integrity",
+    "verify_model_lifecycle",
 ]

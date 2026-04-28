@@ -102,9 +102,13 @@ def train_and_register_with_params(
     # one the model was actually fit on.
     with tempfile.TemporaryDirectory() as data_dir:
         train_path = os.path.join(data_dir, "credit_train.csv")
-        header = ",".join(FEATURE_NAMES + ["label"])
+        header = ",".join([*FEATURE_NAMES, "label"])
         rows = np.column_stack([X_train, y_train])
-        np.savetxt(train_path, rows, delimiter=",", header=header, comments="", fmt="%.6f")
+        # Full-precision floats for the features (so the anchored dataset is
+        # the exact bytes used to fit the model, not a 6-dp rounded projection)
+        # + integer label.
+        fmts = ["%.17g"] * len(FEATURE_NAMES) + ["%d"]
+        np.savetxt(train_path, rows, delimiter=",", header=header, comments="", fmt=fmts)
 
         # Link 1: dataset.
         dataset_result = ario_mlflow.anchor_dataset(

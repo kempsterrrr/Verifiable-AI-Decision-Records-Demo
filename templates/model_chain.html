@@ -163,7 +163,7 @@
                     </div>
                     {% if dataset_event.tx_id %}
                     <div class="chain-card-footer">
-                        <a href="https://arweave.net/{{ dataset_event.tx_id }}" target="_blank" class="mono mono-sm">TX: {{ dataset_event.tx_id[:16] }}...</a>
+                        <a href="{{ dataset_event.arweave_url }}" target="_blank" rel="noopener noreferrer" class="mono mono-sm">TX: {{ dataset_event.tx_id[:16] }}...</a>
                     </div>
                     {% endif %}
                     {% else %}
@@ -265,7 +265,7 @@
                     </div>
                     {% if training.arweave_tx_id %}
                     <div class="chain-card-footer">
-                        <a href="{{ training.arweave_url }}" target="_blank" class="mono mono-sm">TX: {{ training.arweave_tx_id[:16] }}...</a>
+                        <a href="{{ training.arweave_url }}" target="_blank" rel="noopener noreferrer" class="mono mono-sm">TX: {{ training.arweave_tx_id[:16] }}...</a>
                         {% if training_turbo %}
                             {% if training_turbo.status == 'FINALIZED' %}
                                 <span class="badge badge-green"><span class="badge-dot"></span> Permanent</span>
@@ -379,7 +379,7 @@
                     </div>
                     {% if registration.arweave_tx_id %}
                     <div class="chain-card-footer">
-                        <a href="{{ registration.arweave_url }}" target="_blank" class="mono mono-sm">TX: {{ registration.arweave_tx_id[:16] }}...</a>
+                        <a href="{{ registration.arweave_url }}" target="_blank" rel="noopener noreferrer" class="mono mono-sm">TX: {{ registration.arweave_tx_id[:16] }}...</a>
                         {% if registration_turbo %}
                             {% if registration_turbo.status == 'FINALIZED' %}
                                 <span class="badge badge-green"><span class="badge-dot"></span> Permanent</span>
@@ -424,7 +424,7 @@
                     </div>
                     {% if promotion_event.tx_id %}
                     <div class="chain-card-footer">
-                        <a href="https://arweave.net/{{ promotion_event.tx_id }}" target="_blank" class="mono mono-sm">TX: {{ promotion_event.tx_id[:16] }}...</a>
+                        <a href="{{ promotion_event.arweave_url }}" target="_blank" rel="noopener noreferrer" class="mono mono-sm">TX: {{ promotion_event.tx_id[:16] }}...</a>
                     </div>
                     {% endif %}
                     {% else %}

@@ -2,7 +2,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import BackgroundTasks, FastAPI, Form, Request
+from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from opentelemetry import trace
@@ -160,7 +160,16 @@ def _run_prediction(app_state, features: list[float]):
     page reloads (which read from the trace, not from this response) show the
     same data.
     """
-    input_data = dict(zip(FEATURE_NAMES, features))
+    if app_state.verified_model is None:
+        info = getattr(app_state, "model_info", None) or {}
+        detail = "No verified model is loaded. Train a model first via /api/train."
+        if info.get("integrity_error"):
+            detail = (
+                "Predictions disabled: model artifact integrity check failed at startup. "
+                "Train a fresh model via /api/train to recover."
+            )
+        raise HTTPException(status_code=503, detail=detail)
+    input_data = dict(zip(FEATURE_NAMES, features, strict=True))
     vp = app_state.verified_model.predict(input_data)
 
     rich_prediction = _enrich_prediction(app_state.verified_model, features, vp.prediction)
@@ -268,16 +277,22 @@ def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
     try:
         run_tags = _client.get_run(info["run_id"]).data.tags
         training_tx = run_tags.get("ario.training_tx")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Could not fetch training_tx for run {info['run_id']}: {e}")
     try:
+        from app.ui import _escape_mlflow_filter_value
+        name_q = _escape_mlflow_filter_value(info["model_name"])
+        ver_q = _escape_mlflow_filter_value(info["model_version"])
         mv_list = _client.search_model_versions(
-            f"name='{info['model_name']}' and version='{info['model_version']}'"
+            f"name='{name_q}' and version='{ver_q}'"
         )
         if mv_list:
             registration_tx = (mv_list[0].tags or {}).get("ario.registration_tx")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(
+            f"Could not fetch registration_tx for "
+            f"{info['model_name']}/v{info['model_version']}: {e}"
+        )
 
     return {
         "run_id": info["run_id"],
@@ -444,8 +459,10 @@ def chain_integrity(request: Request):
     """
     from app.ui import _list_recent_decisions, _envelope_from_arweave
 
-    # Fetch lightweight trace-tag envelopes to find all decision IDs + tx IDs.
-    trace_envelopes = _list_recent_decisions(request.app)
+    # Pull a generous cap rather than paginate — this is a demo. The chain
+    # integrity claim is "all anchored decisions are correctly chained", so
+    # a hard cap of 50 was too low. 5000 covers any realistic demo state.
+    trace_envelopes = _list_recent_decisions(request.app, max_results=5000)
 
     # For chain integrity we need the full envelope (with record_hash, previous_hash,
     # record) which only exists on Arweave. Unanchored records are skipped.

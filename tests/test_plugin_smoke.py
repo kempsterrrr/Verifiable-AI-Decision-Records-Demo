@@ -1286,3 +1286,73 @@ def test_demo_train_and_register_is_idempotent_when_model_exists(monkeypatch, tm
     assert info1["model_version"] == "1"
     assert info2["model_version"] == "2"
     assert info1["run_id"] != info2["run_id"]
+
+
+def test_artifact_checksums_does_not_skip_user_files_named_registered_model_meta(tmp_path, monkeypatch):
+    """Path scoping: user-logged file with the same basename in a subdir
+    must NOT be excluded — only the registry's canonical model-root file.
+    """
+    import mlflow as _mlflow
+    from ario_mlflow.anchoring import artifact_checksums
+
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "MLmodel").write_text("artifact_path: model\n")
+    (model_dir / "model.pkl").write_bytes(b"pickle")
+    # MLflow registry's file at the model-dir root — should be excluded.
+    (model_dir / "registered_model_meta").write_text('{"name": "m"}\n')
+    # User-logged file with the same basename, but nested — should NOT be excluded.
+    nested = model_dir / "user_data"
+    nested.mkdir()
+    (nested / "registered_model_meta").write_bytes(b"user content")
+
+    monkeypatch.setattr(_mlflow.artifacts, "download_artifacts", lambda **kw: str(model_dir))
+
+    checksums = artifact_checksums("run-x", artifact_path="model")
+    assert "MLmodel" in checksums
+    assert "model.pkl" in checksums
+    assert "registered_model_meta" not in checksums  # excluded (root)
+    assert "user_data/registered_model_meta" in checksums  # kept (nested)
+
+
+def test_anchor_dataset_uses_posix_separators_for_keys(tmp_path):
+    """Cross-platform stability: keys for nested files must use '/' not '\\'.
+
+    Ensures Windows and Linux compute the same dataset hash for the same files.
+    """
+    from ario_mlflow.anchoring import anchor_dataset
+
+    class _DisabledArweave:
+        enabled = False
+        def upload_proof(self, *a, **kw):
+            return None
+
+    (tmp_path / "splits").mkdir()
+    (tmp_path / "splits" / "train.csv").write_bytes(b"x,y\n1,0\n")
+    (tmp_path / "splits" / "test.csv").write_bytes(b"x,y\n2,1\n")
+
+    result = anchor_dataset(name="ds", path=str(tmp_path), arweave=_DisabledArweave())
+    keys = set(result["proof"]["record"]["dataset_files"].keys())
+    # POSIX separators only — never any backslashes.
+    assert all("\\" not in k for k in keys), f"backslash in keys: {keys}"
+    assert "splits/train.csv" in keys
+    assert "splits/test.csv" in keys
+
+
+def test_run_prediction_returns_503_when_no_verified_model(monkeypatch):
+    """When startup left verified_model=None (integrity failure or no model
+    yet), prediction endpoints must surface a 503 with a helpful message
+    instead of a NoneType AttributeError 500.
+    """
+    from fastapi import HTTPException
+    from app.main import _run_prediction
+
+    class _State:
+        verified_model = None
+        model_info = {"integrity_error": "expected fb1f1b... got 527b3a..."}
+
+    import pytest
+    with pytest.raises(HTTPException) as ei:
+        _run_prediction(_State(), [1.0, 2.0, 3.0, 4.0, 5.0])
+    assert ei.value.status_code == 503
+    assert "integrity" in ei.value.detail.lower() or "no verified model" in ei.value.detail.lower()

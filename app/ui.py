@@ -97,6 +97,17 @@ def _envelope_from_arweave(app, tx_id: str | None) -> dict | None:
     }
 
 
+def _escape_mlflow_filter_value(value: str) -> str:
+    """Escape backslashes and single quotes in MLflow filter string values.
+
+    MLflow filter expressions are SQL-like, so user-derived values
+    (decision_id, model_name, version) interpolated into filter_string can
+    break the parse or alter matching if they contain quotes. Backslash is
+    escaped first to avoid double-escaping the escape itself.
+    """
+    return str(value).replace("\\", "\\\\").replace("'", "\\'")
+
+
 def _envelope_from_trace(trace_info) -> dict:
     """Build a partial envelope from an MLflow TraceInfo.
 
@@ -211,7 +222,7 @@ def _decision_envelope_by_id(app, decision_id: str) -> dict | None:
         experiment_ids = [e.experiment_id for e in experiments] or ["0"]
         traces = client.search_traces(
             experiment_ids=experiment_ids,
-            filter_string=f"tags.`ario.decision_id` = '{decision_id}'",
+            filter_string=f"tags.`ario.decision_id` = '{_escape_mlflow_filter_value(decision_id)}'",
             max_results=1,
         )
     except Exception as e:
@@ -502,6 +513,18 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
     dataset_event = by_type.get("dataset_anchored")
     promotion_event = by_type.get("stage_transition")
 
+    gateway_host = app.state.settings.ario_gateway_host
+    if dataset_event and dataset_event.get("tx_id"):
+        dataset_event = {
+            **dataset_event,
+            "arweave_url": f"https://{gateway_host}/raw/{dataset_event['tx_id']}",
+        }
+    if promotion_event and promotion_event.get("tx_id"):
+        promotion_event = {
+            **promotion_event,
+            "arweave_url": f"https://{gateway_host}/raw/{promotion_event['tx_id']}",
+        }
+
     # Materialize template-shape envelopes by fetching from Arweave.
     training_env = _envelope_from_arweave(app, training_event["tx_id"]) if training_event else None
     registration_env = _envelope_from_arweave(app, registration_event["tx_id"]) if registration_event else None
@@ -529,8 +552,8 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
         traces = client.search_traces(
             experiment_ids=experiment_ids,
             filter_string=(
-                f"tags.`ario.model_name` = '{model_name}' "
-                f"and tags.`ario.model_version` = '{version}'"
+                f"tags.`ario.model_name` = '{_escape_mlflow_filter_value(model_name)}' "
+                f"and tags.`ario.model_version` = '{_escape_mlflow_filter_value(version)}'"
             ),
             max_results=200,
         )

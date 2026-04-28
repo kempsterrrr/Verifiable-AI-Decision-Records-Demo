@@ -108,10 +108,10 @@ def artifact_checksums(client_or_run_id, run_id: str | None = None, artifact_pat
     checksums: dict[str, str] = {}
     for root, _dirs, files in os.walk(local_path):
         for fname in files:
-            if fname in _REGISTRY_META_FILES:
-                continue
             fpath = os.path.join(root, fname)
-            rel = os.path.relpath(fpath, local_path)
+            rel = os.path.relpath(fpath, local_path).replace(os.sep, "/")
+            if rel in _REGISTRY_META_FILES:
+                continue
             try:
                 with open(fpath, "rb") as f:
                     checksums[rel] = hashlib.sha256(f.read()).hexdigest()
@@ -333,7 +333,8 @@ def anchor_dataset(
         for root, _dirs, filenames in os.walk(path):
             for fname in filenames:
                 fpath = os.path.join(root, fname)
-                rel = os.path.relpath(fpath, path)
+                # POSIX-normalize so dataset hash is stable across Windows/Linux.
+                rel = os.path.relpath(fpath, path).replace(os.sep, "/")
                 with open(fpath, "rb") as f:
                     files[rel] = hashlib.sha256(f.read()).hexdigest()
 

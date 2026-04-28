@@ -7,6 +7,7 @@ or MLflow server required.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,65 @@ def test_canonical_json_and_hash_are_deterministic():
     assert hash_data(canonical_json(a)) == hash_data(canonical_json(b))
 
 
+def test_canonical_json_emits_utf8_not_ascii_escapes():
+    """RFC-8785 emits UTF-8 directly — non-ASCII characters are not \\uXXXX-escaped.
+
+    Distinguishes strict JCS from Python's default json.dumps with
+    ensure_ascii=True. An external JCS verifier in any language must produce
+    the same UTF-8 bytes.
+    """
+    out = canonical_json({"name": "café"})
+    assert out == b'{"name":"caf\xc3\xa9"}'
+
+
+def test_canonical_json_sorts_by_utf16_code_units():
+    """RFC-8785 sorts keys by UTF-16 code units, not Unicode code points.
+
+    For the BMP characters here both orderings agree, but the test pins the
+    contract — ö (U+00F6) must come before ü (U+00FC).
+    """
+    out = canonical_json({"ü": 1, "ö": 2})
+    assert out == b'{"\xc3\xb6":2,"\xc3\xbc":1}'
+
+
+def test_canonical_json_serializes_numbers_per_ecma_262():
+    """RFC-8785 numbers follow ECMA-262 Number.prototype.toString.
+
+    Vector adapted from RFC-8785 Appendix B: trailing zeros stripped, very
+    large / very small values use scientific notation.
+    """
+    out = canonical_json({"numbers": [333333333.33333329, 1e30, 4.50, 2e-3]})
+    assert out == b'{"numbers":[333333333.3333333,1e+30,4.5,0.002]}'
+
+
+def test_verify_helpers_reexported_from_top_level():
+    """Per plan Part 4 plugin change item 6: external users can import
+    the verify helpers without spelunking ario_mlflow.verify."""
+    import ario_mlflow
+
+    # Each helper resolves through the top-level package
+    assert callable(ario_mlflow.verify_signature)
+    assert callable(ario_mlflow.verify_anchored_bytes)
+    assert callable(ario_mlflow.verify_source_of_truth)
+    assert callable(ario_mlflow.verify_ario_attestation)
+    assert callable(ario_mlflow.full_verify)
+    # ArioVerifyClient too
+    assert isinstance(ario_mlflow.ArioVerifyClient, type)
+
+
+def test_canonical_json_does_not_round_floats_implicitly():
+    """Strict JCS serializes the exact float — callers that want rounded
+    behaviour must call ``normalize_floats`` first. Pin this contract so a
+    future regression that re-introduces silent rounding fails loudly.
+    """
+    from ario_mlflow.proof import normalize_floats
+
+    raw = {"accuracy": 0.91234567}
+    rounded = normalize_floats(raw, precision=6)
+    assert canonical_json(raw) == b'{"accuracy":0.91234567}'
+    assert canonical_json(rounded) == b'{"accuracy":0.912346}'
+
+
 def test_proof_engine_roundtrip_with_auto_generated_keys(tmp_path, monkeypatch):
     monkeypatch.setenv("ARIO_MLFLOW_KEYS_DIR", str(tmp_path))
     engine = ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub"))
@@ -45,7 +105,240 @@ def test_proof_engine_rejects_tampered_record(tmp_path):
     assert result["overall"] is False
 
 
+# --- pure-commitment envelope (new shape) ---------------------------------
+
+
+def test_create_commitment_produces_minimal_envelope(tmp_path):
+    """Envelope contains only commitment fields — no source data."""
+    engine = ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub"))
+    payload = canonical_json({"params": {"lr": 0.01}, "metrics": {"acc": 0.91}})
+    env = engine.create_commitment(
+        event_type="training_complete",
+        subject={"type": "mlflow_run", "run_id": "abc123"},
+        payload_bytes=payload,
+        previous_hash="GENESIS",
+    )
+    expected_keys = {
+        "event_id", "event_type", "subject",
+        "payload_hash", "previous_hash", "signed_at",
+        "public_key", "signature",
+    }
+    assert set(env.keys()) == expected_keys
+    # No source data in the envelope — only the hash.
+    assert "params" not in env
+    assert "metrics" not in env
+    assert env["payload_hash"] == hash_data(payload)
+
+
+def test_create_commitment_envelope_is_small(tmp_path):
+    """Sanity check: pure-commitment envelopes are bounded.
+
+    Actual size is ~500–550 bytes — dominated by hex-encoded Ed25519
+    public_key (64) and signature (128), plus a UUID, ISO timestamp,
+    subject, and JSON syntax. Still an order of magnitude smaller than
+    the legacy record-bearing envelope and well within Turbo's free tier.
+    The plan estimated ~300 bytes; the real number is the test below.
+    """
+    engine = ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub"))
+    env = engine.create_commitment(
+        event_type="prediction",
+        subject={"type": "mlflow_decision", "decision_id": "d-1"},
+        payload_bytes=b'{"input_hash":"abc","output_hash":"def"}',
+        previous_hash="GENESIS",
+    )
+    serialized = canonical_json(env)
+    assert 400 < len(serialized) < 700, f"envelope was {len(serialized)} bytes"
+
+
+def test_verify_commitment_signature_only(tmp_path):
+    """Without payload_bytes, only the signature is checked."""
+    engine = ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub"))
+    env = engine.create_commitment(
+        event_type="training_complete",
+        subject={"type": "mlflow_run", "run_id": "r"},
+        payload_bytes=b"hello",
+        previous_hash="GENESIS",
+    )
+    result = engine.verify_commitment(env)
+    assert result["signature_valid"] is True
+    assert result["payload_hash_valid"] is None
+    assert result["overall"] is True
+
+
+def test_verify_commitment_with_matching_payload(tmp_path):
+    """When payload_bytes match, both checks pass."""
+    engine = ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub"))
+    payload = b'{"k":"v"}'
+    env = engine.create_commitment(
+        event_type="prediction",
+        subject={"type": "mlflow_decision", "decision_id": "d"},
+        payload_bytes=payload,
+        previous_hash="GENESIS",
+    )
+    result = engine.verify_commitment(env, payload_bytes=payload)
+    assert result["signature_valid"] is True
+    assert result["payload_hash_valid"] is True
+    assert result["overall"] is True
+
+
+def test_verify_commitment_detects_tampered_payload(tmp_path):
+    """When payload_bytes don't match the anchor, overall fails."""
+    engine = ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub"))
+    env = engine.create_commitment(
+        event_type="prediction",
+        subject={"type": "mlflow_decision", "decision_id": "d"},
+        payload_bytes=b'{"original":"payload"}',
+        previous_hash="GENESIS",
+    )
+    result = engine.verify_commitment(env, payload_bytes=b'{"tampered":"payload"}')
+    assert result["signature_valid"] is True
+    assert result["payload_hash_valid"] is False
+    assert result["overall"] is False
+
+
+def test_verify_commitment_detects_tampered_envelope(tmp_path):
+    """Mutating any signed field invalidates the signature."""
+    engine = ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub"))
+    env = engine.create_commitment(
+        event_type="training_complete",
+        subject={"type": "mlflow_run", "run_id": "r"},
+        payload_bytes=b"hello",
+        previous_hash="GENESIS",
+    )
+    # Tamper with the previous_hash — should break signature.
+    env["previous_hash"] = "FAKE-PREDECESSOR"
+    result = engine.verify_commitment(env)
+    assert result["signature_valid"] is False
+    assert result["overall"] is False
+
+
+def test_verify_commitment_signature_covers_public_key(tmp_path):
+    """Public key is part of the signed body — swapping it breaks the
+    signature even if the new key is well-formed.
+
+    This documents the design: a verifier confirms 'the holder of this
+    public_key signed this'. Identity binding (whose key it is) must
+    come from out of band.
+    """
+    from nacl.signing import SigningKey as SK
+
+    engine = ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub"))
+    env = engine.create_commitment(
+        event_type="training_complete",
+        subject={"type": "mlflow_run", "run_id": "r"},
+        payload_bytes=b"hello",
+        previous_hash="GENESIS",
+    )
+    # Swap to a different valid public key — signature must fail.
+    other_vk = SK.generate().verify_key
+    env["public_key"] = bytes(other_vk).hex()
+    result = engine.verify_commitment(env)
+    assert result["signature_valid"] is False
+
+
+def test_create_commitment_event_id_and_signed_at_overrides(tmp_path):
+    """Caller may provide event_id / signed_at for deterministic tests."""
+    engine = ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub"))
+    env = engine.create_commitment(
+        event_type="training_complete",
+        subject={"type": "mlflow_run", "run_id": "r"},
+        payload_bytes=b"x",
+        previous_hash="GENESIS",
+        event_id="11111111-1111-1111-1111-111111111111",
+        signed_at="2026-04-28T00:00:00+00:00",
+    )
+    assert env["event_id"] == "11111111-1111-1111-1111-111111111111"
+    assert env["signed_at"] == "2026-04-28T00:00:00+00:00"
+
+
 # --- ArweaveAnchor wallet fallbacks (CodeRabbit #1) -----------------------
+
+
+def test_build_default_tags_for_new_envelope_is_conservative():
+    """Baseline tags are derivable from the envelope, non-PII, and don't
+    include experiment-name / source-name / git-commit."""
+    anchor = ArweaveAnchor.__new__(ArweaveAnchor)
+    envelope = {
+        "event_id": "ev-1",
+        "event_type": "training_complete",
+        "subject": {"type": "mlflow_run", "run_id": "r-1"},
+        "payload_hash": "0xabc",
+        "previous_hash": "GENESIS",
+        "signed_at": "2026-04-28T00:00:00+00:00",
+        "public_key": "PK",
+        "signature": "S",
+    }
+    tags = anchor._build_default_tags(envelope)
+
+    keys = {t["name"] for t in tags}
+    # Required baseline
+    assert {"Content-Type", "App-Name", "App-Version", "Event-Type",
+            "Event-Id", "Chain-Prev"}.issubset(keys)
+    # Forbidden auto-write keys (privacy / business-context leakage)
+    assert "Experiment-Name" not in keys
+    assert "Source-Name" not in keys
+    assert "Git-Commit" not in keys
+    assert "Tracking-URI" not in keys
+
+    by_name = {t["name"]: t["value"] for t in tags}
+    assert by_name["Event-Type"] == "training_complete"
+    assert by_name["Event-Id"] == "ev-1"
+    assert by_name["Chain-Prev"] == "GENESIS"
+    assert by_name["App-Name"] == "ario-mlflow"
+
+
+def test_build_default_tags_supports_legacy_envelope_shape():
+    """Legacy record-bearing envelopes still derive tags correctly during
+    Phase 1 (before the demo refactor lands)."""
+    anchor = ArweaveAnchor.__new__(ArweaveAnchor)
+    legacy = {
+        "record": {"event_id": "ev-2", "event_type": "training_complete"},
+        "record_hash": "0xrecord",
+        "previous_hash": "0xprev",
+    }
+    tags = anchor._build_default_tags(legacy)
+    by_name = {t["name"]: t["value"] for t in tags}
+    assert by_name["Event-Type"] == "training_complete"
+    assert by_name["Event-Id"] == "ev-2"
+    assert by_name["Chain-Prev"] == "0xprev"
+
+
+def test_build_default_tags_merges_extra_tags():
+    """Caller-opt-in tags get merged with baseline."""
+    anchor = ArweaveAnchor.__new__(ArweaveAnchor)
+    envelope = {
+        "event_id": "e", "event_type": "prediction",
+        "payload_hash": "h", "previous_hash": "p",
+    }
+    tags = anchor._build_default_tags(envelope, extra_tags={
+        "Model-Name": "fraud-detector",
+        "Mlflow-Run-Id": "run-abc",
+    })
+    by_name = {t["name"]: t["value"] for t in tags}
+    assert by_name["Model-Name"] == "fraud-detector"
+    assert by_name["Mlflow-Run-Id"] == "run-abc"
+    assert by_name["Event-Type"] == "prediction"
+
+
+def test_build_default_tags_refuses_extra_tag_key_collision():
+    """Caller cannot shadow baseline tag keys (would create ambiguity at
+    verification time about which value is authoritative)."""
+    anchor = ArweaveAnchor.__new__(ArweaveAnchor)
+    envelope = {
+        "event_id": "real-id", "event_type": "training_complete",
+        "payload_hash": "h", "previous_hash": "p",
+    }
+    tags = anchor._build_default_tags(envelope, extra_tags={
+        "Event-Id": "fake-id",  # attempt to shadow
+        "Event-Type": "fake-type",  # attempt to shadow
+        "Custom-Tag": "fine",  # not a baseline key — allowed
+    })
+    by_name = {t["name"]: t["value"] for t in tags}
+    # Baseline values win; caller's shadow attempt is ignored.
+    assert by_name["Event-Id"] == "real-id"
+    assert by_name["Event-Type"] == "training_complete"
+    # Non-collision extra tag is included.
+    assert by_name["Custom-Tag"] == "fine"
 
 
 def test_arweave_anchor_with_missing_wallet_generates_in_memory(monkeypatch):
@@ -98,9 +391,49 @@ def test_ario_verify_normalize_returns_attestation_level():
     out = client._normalize(raw)
     assert out["attestation_level"] == 3
     assert "level" not in out
+    # Relative report URL gets prefixed with base_url; already-absolute
+    # PDF URL is left alone. Attested_by maps to the gateway field.
     assert out["report_url"] == "https://example.test/dash/v-1"
-    assert out["pdf_url"] == "https://cdn/pdf"  # already absolute — not re-prefixed
+    assert out["pdf_url"] == "https://cdn/pdf"
     assert out["attested_by"] == "gw-1"
+
+
+def test_ario_verify_normalize_handles_null_sub_objects():
+    """Regression for 2026-04-28 bug: ar.io Verify returns explicit
+    ``null`` for ``attestation`` / ``links`` / ``existence`` sub-objects
+    when a TX is too fresh to attest. ``dict.get(key, default)`` returns
+    the actual ``None`` value when the key exists, not the default — so
+    we must use ``or {}`` to collapse null and missing into ``{}`` before
+    indexing into the sub-object.
+    """
+    client = ArioVerifyClient.__new__(ArioVerifyClient)
+    client.base_url = "https://example.test"
+
+    # Real-world response shape from the public ar.io Verify endpoint
+    # for a freshly-anchored TX (not yet propagated through the network).
+    raw = {
+        "verificationId": "vrf_xyz",
+        "txId": "TX-fresh",
+        "level": 1,
+        "existence": {"status": "not_found", "blockHeight": None},
+        "authenticity": {"status": "unverified"},
+        "owner": {"address": None, "publicKey": None},
+        "metadata": {"dataSize": None, "tags": []},
+        "bundle": {"isBundled": False},
+        "gatewayAssessment": {"verified": None},
+        "attestation": None,  # ← explicit null, not missing
+        "links": {"dashboard": None, "pdf": None, "rawData": None},
+    }
+
+    # Must not raise on ``attestation`` being None.
+    out = client._normalize(raw)
+    assert out["verification_id"] == "vrf_xyz"
+    assert out["attestation_level"] == 1
+    assert out["status"] == "not_found"
+    assert out["attested_by"] is None
+    assert out["attested_at"] is None
+    assert out["report_url"] is None
+    assert out["pdf_url"] is None
 
 
 # --- HTML report (CodeRabbit #5, #6) --------------------------------------
@@ -432,17 +765,23 @@ def test_artifact_checksums_raises_on_download_failure(monkeypatch):
 
 
 def test_anchor_omits_artifact_hash_when_artifacts_unavailable(monkeypatch, tmp_path):
-    """Regression: anchor() must not publish an empty-tree hash as ario.artifact_hash."""
+    """Regression: anchor() must not publish an empty-tree hash as ario.artifact_hash.
+
+    Adapted for the pure-commitment redesign: artifact_hash semantics are
+    unchanged (sha256 of artifact_checksums dict, used by VerifiedModel
+    for its load-time integrity check), and the rule that anchor() must
+    not publish a hash when artifacts are unavailable still holds. The
+    payload that's now committed-to via payload_hash also reflects the
+    empty checksums map honestly.
+    """
     import ario_mlflow.anchoring as anchoring
     from ario_mlflow.anchoring import anchor, ArtifactAccessError
 
     def _boom(run_id, artifact_path="model"):
         raise ArtifactAccessError("simulated failure")
 
-    # Stand in for artifact_checksums.
     monkeypatch.setattr(anchoring, "artifact_checksums", _boom)
 
-    # Minimal MLflow stubs for the rest of anchor().
     class _RunData:
         params: dict = {}
         metrics: dict = {}
@@ -461,6 +800,9 @@ def test_anchor_omits_artifact_hash_when_artifacts_unavailable(monkeypatch, tmp_
         def get_run(self, run_id): return _FakeRun()
         def set_tag(self, run_id, key, value):
             set_tags.setdefault(run_id, {})[key] = value
+        def search_model_versions(self, query): return []
+        def get_registered_model(self, name): return None
+        def set_registered_model_tag(self, *a, **kw): pass
 
     set_tags: dict = {}
 
@@ -471,8 +813,9 @@ def test_anchor_omits_artifact_hash_when_artifacts_unavailable(monkeypatch, tmp_
     monkeypatch.setattr(anchoring.mlflow, "active_run", lambda: _ActiveRun())
     monkeypatch.setattr(anchoring.mlflow.tracking, "MlflowClient", lambda: _FakeMlflowClient())
     monkeypatch.setattr(anchoring.mlflow, "log_artifacts", lambda *a, **kw: None)
+    monkeypatch.setattr(anchoring.mlflow, "get_active_trace_id", lambda: None)
+    monkeypatch.setattr(anchoring.mlflow, "get_tracking_uri", lambda: "file:./mlruns")
 
-    # Point ProofEngine / ArweaveAnchor at deterministic stubs.
     result = anchor(
         proof_engine=anchoring.ProofEngine(
             str(tmp_path / "priv"), str(tmp_path / "pub")
@@ -480,11 +823,13 @@ def test_anchor_omits_artifact_hash_when_artifacts_unavailable(monkeypatch, tmp_
         arweave=_FakeAnchor(),
     )
 
-    # The fatal assertion: no ario.artifact_hash tag was written.
+    # The fatal assertion: no ario.artifact_hash tag was written when
+    # artifacts could not be hashed.
     assert "ario.artifact_hash" not in set_tags.get("run-xyz", {}), set_tags
     assert "ario.artifact_hash" not in result["tags"]
-    # Record's artifact_hash is None — not the hash of an empty dict.
-    assert result["proof"]["record"]["artifact_hash"] is None
+    # Payload reflects empty checksums honestly — no fabricated hash.
+    assert result["payload"]["artifact_checksums"] == {}
+    assert result["artifact_status"] == "hash_failed"
 
 
 def test_anchor_accepts_custom_artifact_path(monkeypatch, tmp_path):
@@ -517,6 +862,9 @@ def test_anchor_accepts_custom_artifact_path(monkeypatch, tmp_path):
     class _FakeMlflowClient:
         def get_run(self, run_id): return _FakeRun()
         def set_tag(self, *a, **kw): pass
+        def search_model_versions(self, query): return []
+        def get_registered_model(self, name): return None
+        def set_registered_model_tag(self, *a, **kw): pass
 
     class _FakeAnchor:
         enabled = False
@@ -525,6 +873,8 @@ def test_anchor_accepts_custom_artifact_path(monkeypatch, tmp_path):
     monkeypatch.setattr(anchoring.mlflow, "active_run", lambda: _ActiveRun())
     monkeypatch.setattr(anchoring.mlflow.tracking, "MlflowClient", lambda: _FakeMlflowClient())
     monkeypatch.setattr(anchoring.mlflow, "log_artifacts", lambda *a, **kw: None)
+    monkeypatch.setattr(anchoring.mlflow, "get_active_trace_id", lambda: None)
+    monkeypatch.setattr(anchoring.mlflow, "get_tracking_uri", lambda: "file:./mlruns")
 
     anchor(
         proof_engine=anchoring.ProofEngine(
@@ -535,6 +885,409 @@ def test_anchor_accepts_custom_artifact_path(monkeypatch, tmp_path):
     )
 
     assert recorded["artifact_path"] == "sklearn-model"
+
+
+# --- OTel auto-capture (Phase 1.16) ---------------------------------------
+#
+# These tests monkeypatch capture_otel_context directly to avoid touching
+# OTel's global TracerProvider state (which doesn't reset cleanly between
+# tests and corrupts the test suite). The function-level test below
+# exercises the real helper without setting up OTel — it should return
+# {} when no span is active, which is the default in a fresh test
+# process.
+
+
+def test_capture_otel_context_returns_empty_when_no_active_span():
+    """No active OTel span (the default in a fresh test process) → {}.
+
+    Exercises the real helper end-to-end. We avoid setting up a real
+    OTel TracerProvider because OTel's global state doesn't reset
+    cleanly and corrupts neighbouring tests.
+    """
+    from ario_mlflow.anchoring import capture_otel_context
+
+    result = capture_otel_context()
+    assert result == {}
+
+
+def test_capture_otel_context_respects_env_var_optout(monkeypatch):
+    """ARIO_MLFLOW_CAPTURE_OTEL=false suppresses capture even if a span
+    might be active.
+
+    Same env-var-only test — short-circuits before any OTel import.
+    """
+    from ario_mlflow.anchoring import capture_otel_context
+
+    monkeypatch.setenv("ARIO_MLFLOW_CAPTURE_OTEL", "false")
+    assert capture_otel_context() == {}
+
+    # Other "off" spellings.
+    for value in ("0", "no", "off", "FALSE", "False"):
+        monkeypatch.setenv("ARIO_MLFLOW_CAPTURE_OTEL", value)
+        assert capture_otel_context() == {}, f"value={value!r} should opt out"
+
+
+def test_anchor_auto_captures_otel_when_helper_returns_ids(monkeypatch, tmp_path):
+    """anchor() merges capture_otel_context()'s return value into the
+    canonical payload by default. Verified by stubbing the helper to
+    return a known dict — avoids real OTel setup."""
+    import ario_mlflow.anchoring as anchoring
+
+    *_, fake_anchor = _make_anchor_stubs(monkeypatch)
+    monkeypatch.setattr(anchoring, "capture_otel_context", lambda: {
+        "otel_trace_id": "aa" * 16,
+        "otel_span_id": "bb" * 8,
+    })
+
+    result = anchoring.anchor(
+        proof_engine=anchoring.ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=fake_anchor,
+    )
+
+    assert result["payload"]["otel_trace_id"] == "aa" * 16
+    assert result["payload"]["otel_span_id"] == "bb" * 8
+
+
+def test_anchor_caller_otel_metadata_wins_over_auto_capture(monkeypatch, tmp_path):
+    """When both auto-capture AND caller metadata supply otel_trace_id,
+    the caller's value wins. Caller is the source of truth for what
+    they want signed."""
+    import ario_mlflow.anchoring as anchoring
+
+    *_, fake_anchor = _make_anchor_stubs(monkeypatch)
+    monkeypatch.setattr(anchoring, "capture_otel_context", lambda: {
+        "otel_trace_id": "aa" * 16,
+    })
+
+    explicit = "dd" * 16
+    result = anchoring.anchor(
+        proof_engine=anchoring.ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=fake_anchor,
+        metadata={"otel_trace_id": explicit},
+    )
+
+    assert result["payload"]["otel_trace_id"] == explicit
+
+
+def test_anchor_capture_otel_false_skips_helper_call(monkeypatch, tmp_path):
+    """Per-call capture_otel=False bypasses the helper entirely — even
+    if it would have returned IDs, none flow into the payload."""
+    import ario_mlflow.anchoring as anchoring
+
+    *_, fake_anchor = _make_anchor_stubs(monkeypatch)
+    helper_calls: list = []
+
+    def _helper_should_not_run():
+        helper_calls.append("called")
+        return {"otel_trace_id": "aa" * 16}
+
+    monkeypatch.setattr(anchoring, "capture_otel_context", _helper_should_not_run)
+
+    result = anchoring.anchor(
+        proof_engine=anchoring.ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=fake_anchor,
+        capture_otel=False,
+    )
+
+    assert helper_calls == [], "capture_otel_context should not be called"
+    assert "otel_trace_id" not in result["payload"]
+
+
+# --- anchor() pure-commitment behaviour (Phase 1.3) -----------------------
+
+
+def _make_anchor_stubs(monkeypatch, *, run_id="run-test", run_tags=None,
+                      registered_models_for_run=None, rm_tags=None,
+                      anchor_enabled=False, upload_returns=None):
+    """Helper to set up the MLflow stubs anchor() needs.
+
+    Returns (set_tags_dict, rm_set_tags_dict, log_artifacts_calls,
+    upload_calls) so tests can assert what anchor() did.
+    """
+    import ario_mlflow.anchoring as anchoring
+
+    set_tags: dict = {}
+    rm_set_tags: dict = {}
+    log_artifacts_calls: list = []
+    upload_calls: list = []
+
+    class _RunData:
+        params: dict = {}
+        metrics: dict = {}
+        tags: dict = run_tags or {}
+
+    class _RunInfo:
+        pass
+    _RunInfo.run_id = run_id
+
+    class _ActiveRun:
+        info = _RunInfo()
+
+    class _FakeRun:
+        data = _RunData()
+
+    class _FakeRegisteredModel:
+        def __init__(self, name):
+            self.name = name
+            self.tags = rm_tags or {}
+
+    class _FakeModelVersion:
+        def __init__(self, name):
+            self.name = name
+
+    class _FakeMlflowClient:
+        def get_run(self, rid): return _FakeRun()
+        def set_tag(self, rid, key, value):
+            set_tags.setdefault(rid, {})[key] = value
+        def search_model_versions(self, query):
+            return [_FakeModelVersion(n) for n in (registered_models_for_run or [])]
+        def get_registered_model(self, name):
+            return _FakeRegisteredModel(name)
+        def set_registered_model_tag(self, name, key, value):
+            rm_set_tags.setdefault(name, {})[key] = value
+
+    class _FakeAnchor:
+        enabled = anchor_enabled
+        wallet_mode = "user-configured"
+        def upload_proof(self, env, *a, **kw):
+            upload_calls.append(env)
+            return upload_returns
+
+    def _capture_artifacts(local_dir, ap):
+        # Snapshot file contents BEFORE the TemporaryDirectory context
+        # manager cleans up. Storing paths alone is useless because
+        # anchor() uses tempfile.TemporaryDirectory which is gone by the
+        # time the test inspects.
+        snapshot: dict[str, bytes] = {}
+        for root, _dirs, files in os.walk(local_dir):
+            for fname in files:
+                fpath = os.path.join(root, fname)
+                rel = os.path.relpath(fpath, local_dir)
+                with open(fpath, "rb") as f:
+                    snapshot[rel] = f.read()
+        log_artifacts_calls.append({"artifact_path": ap, "files": snapshot})
+
+    monkeypatch.setattr(anchoring.mlflow, "active_run", lambda: _ActiveRun())
+    monkeypatch.setattr(anchoring.mlflow.tracking, "MlflowClient", lambda: _FakeMlflowClient())
+    monkeypatch.setattr(anchoring.mlflow, "log_artifacts", _capture_artifacts)
+    monkeypatch.setattr(anchoring.mlflow, "get_active_trace_id", lambda: None)
+    monkeypatch.setattr(anchoring.mlflow, "get_tracking_uri", lambda: "file:./mlruns")
+    # Default no-op artifact_checksums for tests that don't override.
+    monkeypatch.setattr(anchoring, "artifact_checksums",
+                        lambda run_id, artifact_path="model": {f"{artifact_path}/m.pkl": "deadbeef"})
+
+    return set_tags, rm_set_tags, log_artifacts_calls, upload_calls, _FakeAnchor()
+
+
+def test_anchor_writes_payload_json_artifact(monkeypatch, tmp_path):
+    """anchor() must write the canonical bytes as ario/payload.json so a
+    verifier can recompute the payload_hash without depending on this
+    plugin's canonicalization function."""
+    import ario_mlflow.anchoring as anchoring
+
+    set_tags, _, log_artifacts_calls, _, fake_anchor = _make_anchor_stubs(monkeypatch)
+
+    result = anchoring.anchor(
+        proof_engine=anchoring.ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=fake_anchor,
+    )
+
+    assert log_artifacts_calls, "anchor() did not log_artifacts"
+    files = log_artifacts_calls[0]["files"]
+    assert "payload.json" in files, list(files.keys())
+    on_disk = files["payload.json"]
+    # The bytes on disk must be exactly the canonical bytes that were hashed.
+    assert on_disk == result["payload_bytes"]
+    # Hashing them reproduces the envelope's payload_hash — this is what
+    # check 2 of the verification flow does.
+    from ario_mlflow.proof import hash_data
+    assert hash_data(on_disk) == result["envelope"]["payload_hash"]
+    # Also: the proof.json artifact matches the envelope.
+    assert "proof.json" in files
+    proof_on_disk = json.loads(files["proof.json"])
+    assert proof_on_disk == result["envelope"]
+
+
+def test_anchor_envelope_is_pure_commitment_no_source_data(monkeypatch, tmp_path):
+    """The envelope on Arweave must not carry params, metrics, or
+    artifact_checksums — only the hash."""
+    import ario_mlflow.anchoring as anchoring
+
+    *_, fake_anchor = _make_anchor_stubs(monkeypatch)
+
+    result = anchoring.anchor(
+        proof_engine=anchoring.ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=fake_anchor,
+    )
+
+    env = result["envelope"]
+    assert env["event_type"] == "training_complete"
+    assert env["payload_hash"]
+    # Source data must NOT be in the envelope.
+    assert "params" not in env
+    assert "metrics" not in env
+    assert "artifact_checksums" not in env
+    assert "record" not in env  # ensure we didn't slip back to v1 shape
+
+
+def test_anchor_omits_tracking_uri_from_subject_by_default(monkeypatch, tmp_path):
+    """Privacy default: subject does not leak the tracking URI."""
+    import ario_mlflow.anchoring as anchoring
+
+    *_, fake_anchor = _make_anchor_stubs(monkeypatch)
+
+    result = anchoring.anchor(
+        proof_engine=anchoring.ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=fake_anchor,
+    )
+
+    assert result["envelope"]["subject"] == {"type": "mlflow_run", "run_id": "run-test"}
+    assert "tracking_uri" not in result["envelope"]["subject"]
+    assert "mlflow_tracking_uri" not in result["payload"]
+
+
+def test_anchor_includes_tracking_uri_when_caller_opts_in(monkeypatch, tmp_path):
+    """Caller explicitly opts in via metadata={'include_tracking_uri': True}."""
+    import ario_mlflow.anchoring as anchoring
+
+    *_, fake_anchor = _make_anchor_stubs(monkeypatch)
+
+    result = anchoring.anchor(
+        proof_engine=anchoring.ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=fake_anchor,
+        metadata={"include_tracking_uri": True},
+    )
+
+    assert result["envelope"]["subject"]["tracking_uri"] == "file:./mlruns"
+    assert result["payload"]["mlflow_tracking_uri"] == "file:./mlruns"
+
+
+def test_anchor_merges_caller_metadata_into_payload(monkeypatch, tmp_path):
+    """OTel correlation, service_name, etc. flow through metadata into the
+    canonical payload (and therefore into the signed commitment)."""
+    import ario_mlflow.anchoring as anchoring
+
+    *_, fake_anchor = _make_anchor_stubs(monkeypatch)
+
+    result = anchoring.anchor(
+        proof_engine=anchoring.ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=fake_anchor,
+        metadata={"otel_trace_id": "abc123", "service_name": "test-app"},
+    )
+
+    assert result["payload"]["otel_trace_id"] == "abc123"
+    assert result["payload"]["service_name"] == "test-app"
+
+
+def test_anchor_metadata_cannot_overwrite_structural_fields(monkeypatch, tmp_path):
+    """Caller metadata must not silently mutate event_type, run_id, params."""
+    import ario_mlflow.anchoring as anchoring
+
+    *_, fake_anchor = _make_anchor_stubs(monkeypatch)
+
+    result = anchoring.anchor(
+        proof_engine=anchoring.ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=fake_anchor,
+        metadata={"event_type": "ATTACKER", "run_id": "FAKE", "params": {"x": "y"}},
+    )
+
+    assert result["payload"]["event_type"] == "training_complete"
+    assert result["payload"]["run_id"] == "run-test"
+    assert result["payload"]["params"] == {}
+
+
+def test_anchor_chains_to_existing_last_training_hash(monkeypatch, tmp_path):
+    """When a registered model exists with ario.last_training_hash, the new
+    proof's previous_hash equals that tag."""
+    import ario_mlflow.anchoring as anchoring
+
+    set_tags, rm_set_tags, _, upload_calls, fake_anchor = _make_anchor_stubs(
+        monkeypatch,
+        registered_models_for_run=["fraud-detector"],
+        rm_tags={"ario.last_training_hash": "PRIOR-PAYLOAD-HASH"},
+        anchor_enabled=True,
+        upload_returns={"tx_id": "TX-NEW", "url": "https://example/TX-NEW", "receipt": {}},
+    )
+
+    result = anchoring.anchor(
+        proof_engine=anchoring.ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=fake_anchor,
+    )
+
+    assert result["previous_hash"] == "PRIOR-PAYLOAD-HASH"
+    assert result["envelope"]["previous_hash"] == "PRIOR-PAYLOAD-HASH"
+    assert result["registered_model"] == "fraud-detector"
+    # Chain head was updated to the new payload_hash after successful upload.
+    assert rm_set_tags["fraud-detector"]["ario.last_training_hash"] == result["payload_hash"]
+
+
+def test_anchor_starts_chain_at_genesis_when_no_prior_training(monkeypatch, tmp_path):
+    """First training of a model: previous_hash is GENESIS, chain head
+    written for next time."""
+    import ario_mlflow.anchoring as anchoring
+
+    _, rm_set_tags, _, _, fake_anchor = _make_anchor_stubs(
+        monkeypatch,
+        registered_models_for_run=["fresh-model"],
+        rm_tags={},  # no prior chain head
+        anchor_enabled=True,
+        upload_returns={"tx_id": "TX-1", "url": "https://example/TX-1", "receipt": {}},
+    )
+
+    result = anchoring.anchor(
+        proof_engine=anchoring.ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=fake_anchor,
+    )
+
+    assert result["previous_hash"] == "GENESIS"
+    assert rm_set_tags["fresh-model"]["ario.last_training_hash"] == result["payload_hash"]
+
+
+def test_anchor_skips_chain_head_when_no_registered_model(monkeypatch, tmp_path):
+    """If no registered model points to this run yet (e.g. log_model
+    without registered_model_name), the chain-head update is skipped —
+    the next registration via ArioMlflowClient picks it up."""
+    import ario_mlflow.anchoring as anchoring
+
+    _, rm_set_tags, _, _, fake_anchor = _make_anchor_stubs(
+        monkeypatch,
+        registered_models_for_run=[],
+        anchor_enabled=True,
+        upload_returns={"tx_id": "TX-X", "url": "https://example/TX-X", "receipt": {}},
+    )
+
+    result = anchoring.anchor(
+        proof_engine=anchoring.ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=fake_anchor,
+    )
+
+    assert result["previous_hash"] == "GENESIS"
+    assert result["registered_model"] is None
+    assert rm_set_tags == {}
+
+
+def test_anchor_does_not_update_chain_head_on_upload_failure(monkeypatch, tmp_path):
+    """If the upload fails, ario.last_training_hash must not be advanced
+    to a payload that isn't on Arweave — that would poison the next
+    proof's previous_hash."""
+    import ario_mlflow.anchoring as anchoring
+
+    _, rm_set_tags, _, _, fake_anchor = _make_anchor_stubs(
+        monkeypatch,
+        registered_models_for_run=["model-x"],
+        rm_tags={"ario.last_training_hash": "PRIOR"},
+        anchor_enabled=True,
+        upload_returns=None,  # simulate upload failure
+    )
+
+    anchoring.anchor(
+        proof_engine=anchoring.ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=fake_anchor,
+    )
+
+    # No tag write on the registered model — chain head stays at PRIOR
+    # for the next proof to chain from.
+    assert rm_set_tags == {}
 
 
 def test_verified_model_resolves_alias_uri(monkeypatch):
@@ -571,6 +1324,312 @@ def test_verified_model_resolves_alias_uri(monkeypatch):
     assert vm.model_name == "fraud-detector"
     assert vm.model_version == "7"
     assert vm.run_id == "run-alias"
+
+
+def test_verified_model_predict_produces_pure_commitment_envelope(monkeypatch):
+    """VerifiedModel.predict() must commit only hashes — no raw input/output
+    in the envelope. Privacy-by-construction."""
+    import ario_mlflow.model as model_module
+    from ario_mlflow.model import VerifiedModel
+
+    # No artifact integrity check (mv lookup fails → run_id stays "unknown")
+    monkeypatch.setattr(model_module, "_resolve_model_version", lambda c, u: None)
+    monkeypatch.setattr(model_module.mlflow.pyfunc, "load_model",
+                        lambda uri: type("M", (), {"predict": lambda self, x: [1]})())
+    monkeypatch.setattr(model_module.mlflow.tracking, "MlflowClient", lambda: type("C", (), {})())
+    monkeypatch.setattr(model_module.mlflow, "get_active_trace_id", lambda: None)
+
+    captured = {}
+
+    class _FakeAnchor:
+        enabled = False
+        def upload_proof(self, env, *a, **kw): return None
+
+    vm = VerifiedModel("models:/foo/1", anchor=_FakeAnchor())
+    result = vm.predict({"f1": 1.0, "f2": 2.0})
+
+    # The recorded "envelope" goes through to anchor — capture via the
+    # canonical payload that's exposed on the result.record (we kept this
+    # name for VerifiedPrediction back-compat).
+    payload = result.record
+    # Only hashes, no raw values
+    assert "input_hash" in payload
+    assert "output_hash" in payload
+    assert payload["event_type"] == "prediction"
+    assert "input" not in payload
+    assert "output" not in payload
+    assert "prediction" not in payload  # raw prediction must not be in canonical bytes
+
+
+def test_verified_model_predict_chains_to_registration_tx(monkeypatch):
+    """When mv has ario.registration_tx, predictions chain to it.
+
+    Verified by inspecting the canonical-payload internals via the ProofEngine
+    monkeypatch — we capture the previous_hash that VerifiedModel passes in.
+    """
+    import ario_mlflow.model as model_module
+    from ario_mlflow.model import VerifiedModel
+
+    captured = {"create_commitment_calls": []}
+
+    class _FakeMV:
+        name = "fraud-detector"
+        version = 3
+        run_id = "r"
+        source = "runs:/r/model"
+        tags = {"ario.registration_tx": "TX-REG-42"}
+
+    class _FakeRun:
+        data = type("D", (), {"tags": {}})()
+
+    class _FakeClient:
+        def get_run(self, rid): return _FakeRun()
+
+    monkeypatch.setattr(model_module, "_resolve_model_version", lambda c, u: _FakeMV())
+    monkeypatch.setattr(model_module.mlflow.tracking, "MlflowClient", lambda: _FakeClient())
+    monkeypatch.setattr(model_module, "artifact_checksums", lambda *a, **kw: {})
+    monkeypatch.setattr(model_module.mlflow.pyfunc, "load_model",
+                        lambda uri: type("M", (), {"predict": lambda self, x: [1]})())
+    monkeypatch.setattr(model_module.mlflow, "get_active_trace_id", lambda: None)
+
+    class _FakeProofEngine:
+        def create_commitment(self, *, event_type, subject, payload_bytes, previous_hash, **_):
+            captured["create_commitment_calls"].append({
+                "event_type": event_type,
+                "subject": subject,
+                "payload_bytes": payload_bytes,
+                "previous_hash": previous_hash,
+            })
+            return {
+                "event_type": event_type, "subject": subject,
+                "payload_hash": "PH", "previous_hash": previous_hash,
+                "public_key": "PK", "signature": "S",
+            }
+
+    class _FakeAnchor:
+        enabled = False
+        def upload_proof(self, *a, **kw): return None
+
+    vm = VerifiedModel("models:/fraud-detector/3",
+                      proof_engine=_FakeProofEngine(),
+                      anchor=_FakeAnchor())
+    vm.predict([1.0, 2.0])
+
+    assert captured["create_commitment_calls"], "no commitment minted"
+    last = captured["create_commitment_calls"][-1]
+    assert last["previous_hash"] == "TX-REG-42"
+    assert last["event_type"] == "prediction"
+
+
+def test_verified_model_predict_chains_to_genesis_when_no_registration_tx(monkeypatch):
+    """Without ario.registration_tx on the model version, predictions chain
+    at GENESIS for this VerifiedModel instance."""
+    import ario_mlflow.model as model_module
+    from ario_mlflow.model import VerifiedModel
+
+    captured = {"create_commitment_calls": []}
+
+    class _FakeMV:
+        name = "fresh"; version = 1; run_id = "r"
+        source = "runs:/r/model"
+        tags = {}  # no registration_tx
+
+    class _FakeRun:
+        data = type("D", (), {"tags": {}})()
+
+    monkeypatch.setattr(model_module, "_resolve_model_version", lambda c, u: _FakeMV())
+    monkeypatch.setattr(model_module.mlflow.tracking, "MlflowClient",
+                        lambda: type("C", (), {"get_run": lambda self, rid: _FakeRun()})())
+    monkeypatch.setattr(model_module, "artifact_checksums", lambda *a, **kw: {})
+    monkeypatch.setattr(model_module.mlflow.pyfunc, "load_model",
+                        lambda uri: type("M", (), {"predict": lambda self, x: [0]})())
+    monkeypatch.setattr(model_module.mlflow, "get_active_trace_id", lambda: None)
+
+    class _FakeProofEngine:
+        def create_commitment(self, *, previous_hash, **kw):
+            captured["create_commitment_calls"].append({"previous_hash": previous_hash})
+            return {"public_key": "PK", "signature": "S", "payload_hash": "PH",
+                    "event_type": kw["event_type"], "subject": kw["subject"],
+                    "previous_hash": previous_hash}
+
+    class _FakeAnchor:
+        enabled = False
+        def upload_proof(self, *a, **kw): return None
+
+    vm = VerifiedModel("models:/fresh/1",
+                      proof_engine=_FakeProofEngine(),
+                      anchor=_FakeAnchor())
+    vm.predict([1.0])
+
+    assert captured["create_commitment_calls"][-1]["previous_hash"] == "GENESIS"
+
+
+def test_verified_model_predict_writes_payload_artifact_to_source_run(monkeypatch):
+    """Per Phase 1.14: predictions write canonical bytes as
+    ario/predictions/<decision_id>/payload.json on the model's source run.
+
+    This is the per-prediction equivalent of training's payload.json,
+    giving check 2 (anchored bytes intact) something to compare against.
+    Trace tags exist for observability but are not authoritative.
+    """
+    import ario_mlflow.model as model_module
+    from ario_mlflow.model import VerifiedModel
+
+    artifacts_logged: list = []
+
+    class _FakeMV:
+        name = "m"; version = 1; run_id = "source-run-xyz"
+        source = "runs:/source-run-xyz/model"
+        tags = {"ario.registration_tx": "TX-REG"}
+
+    class _FakeRun:
+        data = type("D", (), {"tags": {}})()
+
+    monkeypatch.setattr(model_module, "_resolve_model_version", lambda c, u: _FakeMV())
+    monkeypatch.setattr(model_module.mlflow.tracking, "MlflowClient",
+                        lambda: type("C", (), {"get_run": lambda self, rid: _FakeRun()})())
+    monkeypatch.setattr(model_module, "artifact_checksums", lambda *a, **kw: {})
+    monkeypatch.setattr(model_module.mlflow.pyfunc, "load_model",
+                        lambda uri: type("M", (), {"predict": lambda self, x: [0]})())
+    monkeypatch.setattr(model_module.mlflow, "get_active_trace_id", lambda: None)
+
+    def _capture_artifacts(local_dir, artifact_path, run_id=None):
+        snapshot: dict[str, bytes] = {}
+        for root, _dirs, files in os.walk(local_dir):
+            for fname in files:
+                fpath = os.path.join(root, fname)
+                rel = os.path.relpath(fpath, local_dir)
+                with open(fpath, "rb") as f:
+                    snapshot[rel] = f.read()
+        artifacts_logged.append({
+            "run_id": run_id, "artifact_path": artifact_path, "files": snapshot,
+        })
+
+    monkeypatch.setattr(model_module.mlflow, "log_artifacts", _capture_artifacts)
+
+    class _FakeAnchor:
+        enabled = False
+        def upload_proof(self, *a, **kw): return None
+
+    vm = VerifiedModel("models:/m/1", anchor=_FakeAnchor())
+    result = vm.predict([1.0, 2.0])
+
+    # Artifact write happened to the source run, not a new run.
+    assert artifacts_logged, "VerifiedModel did not log_artifacts"
+    call = artifacts_logged[0]
+    assert call["run_id"] == "source-run-xyz"
+    assert call["artifact_path"] == "ario"
+
+    # The decision_id-keyed path holds payload.json with the canonical
+    # bytes we committed to.
+    decision_id = result.decision_id
+    rel_path = f"predictions/{decision_id}/payload.json"
+    assert rel_path in call["files"], list(call["files"].keys())
+    on_disk = call["files"][rel_path]
+    # Hashing the on-disk bytes reproduces the envelope's payload_hash —
+    # this is exactly what check 2 will do at verify time.
+    from ario_mlflow.proof import canonical_json
+    assert hash_data(on_disk) == hash_data(canonical_json(result.record))
+
+
+def test_verified_model_predict_subject_carries_run_id_and_decision_id(monkeypatch):
+    """Subject must contain enough for the verifier to find the artifact.
+
+    The new mlflow_prediction subject type includes model_run_id (where
+    payload.json lives) and decision_id (the path within ario/predictions/).
+    """
+    import ario_mlflow.model as model_module
+    from ario_mlflow.model import VerifiedModel
+
+    captured = {"subject": None}
+
+    class _FakeMV:
+        name = "m"; version = 1; run_id = "source-run-42"
+        source = "runs:/source-run-42/model"
+        tags = {}
+
+    class _FakeRun:
+        data = type("D", (), {"tags": {}})()
+
+    monkeypatch.setattr(model_module, "_resolve_model_version", lambda c, u: _FakeMV())
+    monkeypatch.setattr(model_module.mlflow.tracking, "MlflowClient",
+                        lambda: type("C", (), {"get_run": lambda self, rid: _FakeRun()})())
+    monkeypatch.setattr(model_module, "artifact_checksums", lambda *a, **kw: {})
+    monkeypatch.setattr(model_module.mlflow.pyfunc, "load_model",
+                        lambda uri: type("M", (), {"predict": lambda self, x: [0]})())
+    monkeypatch.setattr(model_module.mlflow, "get_active_trace_id", lambda: None)
+    monkeypatch.setattr(model_module.mlflow, "log_artifacts", lambda *a, **kw: None)
+
+    class _FakeProofEngine:
+        def create_commitment(self, *, subject, **kw):
+            captured["subject"] = subject
+            return {
+                "event_type": kw["event_type"], "subject": subject,
+                "payload_hash": "PH", "previous_hash": kw["previous_hash"],
+                "public_key": "PK", "signature": "S",
+            }
+
+    class _FakeAnchor:
+        enabled = False
+        def upload_proof(self, *a, **kw): return None
+
+    vm = VerifiedModel("models:/m/1",
+                      proof_engine=_FakeProofEngine(),
+                      anchor=_FakeAnchor())
+    result = vm.predict([1.0])
+
+    subject = captured["subject"]
+    assert subject["type"] == "mlflow_prediction"
+    assert subject["decision_id"] == result.decision_id
+    assert subject["model_run_id"] == "source-run-42"
+
+
+def test_verified_model_predict_passes_metadata_into_payload(monkeypatch):
+    """OTel correlation, service_name, etc. flow through metadata into the
+    canonical payload."""
+    import ario_mlflow.model as model_module
+    from ario_mlflow.model import VerifiedModel
+
+    captured = {"payload_bytes": None}
+
+    class _FakeMV:
+        name = "m"; version = 1; run_id = "r"
+        source = "runs:/r/model"
+        tags = {}
+
+    class _FakeRun:
+        data = type("D", (), {"tags": {}})()
+
+    monkeypatch.setattr(model_module, "_resolve_model_version", lambda c, u: _FakeMV())
+    monkeypatch.setattr(model_module.mlflow.tracking, "MlflowClient",
+                        lambda: type("C", (), {"get_run": lambda self, rid: _FakeRun()})())
+    monkeypatch.setattr(model_module, "artifact_checksums", lambda *a, **kw: {})
+    monkeypatch.setattr(model_module.mlflow.pyfunc, "load_model",
+                        lambda uri: type("M", (), {"predict": lambda self, x: [0]})())
+    monkeypatch.setattr(model_module.mlflow, "get_active_trace_id", lambda: None)
+
+    class _FakeProofEngine:
+        def create_commitment(self, *, payload_bytes, **kw):
+            captured["payload_bytes"] = payload_bytes
+            return {"public_key": "PK", "signature": "S", "payload_hash": "PH",
+                    "event_type": kw["event_type"], "subject": kw["subject"],
+                    "previous_hash": kw["previous_hash"]}
+
+    class _FakeAnchor:
+        enabled = False
+        def upload_proof(self, *a, **kw): return None
+
+    vm = VerifiedModel("models:/m/1",
+                      proof_engine=_FakeProofEngine(),
+                      anchor=_FakeAnchor())
+    vm.predict([1.0], metadata={"otel_trace_id": "ot", "service_name": "svc"})
+
+    payload = json.loads(captured["payload_bytes"])
+    assert payload["otel_trace_id"] == "ot"
+    assert payload["service_name"] == "svc"
+    # Structural fields not overwritten
+    assert payload["event_type"] == "prediction"
+    assert "input_hash" in payload
 
 
 def test_verified_model_resolves_stage_uri(monkeypatch):
@@ -613,13 +1672,18 @@ def test_verified_model_resolves_stage_uri(monkeypatch):
 
 def test_ario_client_uses_source_uri_for_run_id_fallback(monkeypatch):
     """When create_model_version is called with run_id=None but source is a runs:/
-    URI, the registration must still link to training (not mint a GENESIS proof)."""
+    URI, the registration must still link to training (not mint a GENESIS proof).
+
+    Adapted for the pure-commitment redesign: assertions now target
+    create_commitment instead of the legacy create_proof, but the
+    underlying contract — registration proofs chain to ario.training_tx
+    on the source run — is unchanged.
+    """
     import ario_mlflow.client as client_module
 
-    captured: dict = {"create_proof_calls": [], "upload_calls": 0}
+    captured: dict = {"commitment_calls": [], "upload_calls": 0}
 
     class _FakeRun:
-        # Include a training_tx so the registration record links back.
         data = type("D", (), {"tags": {
             "ario.training_tx": "TX-training-123",
             "ario.artifact_hash": "expected-hash",
@@ -627,15 +1691,26 @@ def test_ario_client_uses_source_uri_for_run_id_fallback(monkeypatch):
 
     class _Client(client_module.ArioMlflowClient):
         def __init__(self):
+            def _capture_commitment(*, event_type, subject, payload_bytes, previous_hash, **_):
+                captured["commitment_calls"].append({
+                    "event_type": event_type,
+                    "subject": subject,
+                    "payload_bytes": payload_bytes,
+                    "previous_hash": previous_hash,
+                })
+                return {
+                    "event_type": event_type,
+                    "subject": subject,
+                    "payload_hash": "H",
+                    "previous_hash": previous_hash,
+                    "public_key": "PK",
+                    "signature": "SIG",
+                }
+
             self._proof_engine = type(
                 "PE",
                 (),
-                {
-                    "create_proof": lambda self_, record, previous: (
-                        captured["create_proof_calls"].append({"record": record, "previous": previous})
-                        or {"public_key": "PK", "record_hash": "H", "record": record}
-                    ),
-                },
+                {"create_commitment": lambda self_, **kw: _capture_commitment(**kw)},
             )()
             self._anchor = type(
                 "A",
@@ -655,22 +1730,166 @@ def test_ario_client_uses_source_uri_for_run_id_fallback(monkeypatch):
         def set_model_version_tag(self, *a, **kw): pass
         def log_artifacts(self, *a, **kw): pass
 
-    # artifact_checksums returns empty (no artifacts) to keep the test fast
     monkeypatch.setattr(client_module, "artifact_checksums", lambda *a, **kw: {})
 
     c = _Client()
     c._anchor_registration("fraud", "1", run_id=None, source="runs:/train-abc/sklearn-model")
 
-    # The key assertions:
-    # - get_run must have been called with the run_id parsed from source
+    # Key assertions:
+    # - get_run was called with the run_id parsed from source
     assert captured.get("get_run_called_with") == "train-abc", captured
-    # - The registration proof must link back to the training tx (not GENESIS)
-    assert captured["create_proof_calls"], "No registration proof was minted"
-    last = captured["create_proof_calls"][-1]
-    assert last["previous"] == "TX-training-123", (
-        f"Expected registration proof to link to training tx; got previous={last['previous']!r}"
+    # - The registration commitment chains to the training_tx (not GENESIS)
+    assert captured["commitment_calls"], "No registration commitment was minted"
+    last = captured["commitment_calls"][-1]
+    assert last["previous_hash"] == "TX-training-123", (
+        f"Expected registration commitment to chain to training_tx; "
+        f"got previous_hash={last['previous_hash']!r}"
     )
-    assert last["record"]["source_run_id"] == "train-abc"
+    # Subject identifies the model version, not the run
+    assert last["subject"] == {"type": "mlflow_model_version", "name": "fraud", "version": "1"}
+    # The canonical bytes carry source_run_id (parsed from source URI)
+    payload = json.loads(last["payload_bytes"])
+    assert payload["source_run_id"] == "train-abc"
+    assert payload["event_type"] == "model_registered"
+
+
+def test_ario_client_registration_writes_payload_json_artifact(monkeypatch):
+    """Registration must persist the canonical bytes as ario/registration_payload.json
+    so verifiers can recompute the payload_hash without depending on this plugin."""
+    import ario_mlflow.client as client_module
+
+    artifacts_logged: list = []
+
+    class _FakeRun:
+        data = type("D", (), {"tags": {
+            "ario.training_tx": "TX-train",
+            "ario.artifact_hash": "h",
+        }})()
+
+    class _Client(client_module.ArioMlflowClient):
+        def __init__(self):
+            from ario_mlflow.proof import ProofEngine
+            import tempfile as _t
+            self._proof_engine = ProofEngine(
+                str(_t.mkdtemp() + "/priv"),
+                str(_t.mkdtemp() + "/pub"),
+            )
+            self._anchor = type("A", (), {"enabled": False, "upload_proof": lambda *a, **k: None})()
+
+        def get_run(self, run_id):
+            return _FakeRun()
+
+        def set_model_version_tag(self, *a, **kw): pass
+
+        def log_artifacts(self, source_run_id, local_dir, ap):
+            snapshot: dict[str, bytes] = {}
+            for root, _dirs, files in os.walk(local_dir):
+                for fname in files:
+                    fpath = os.path.join(root, fname)
+                    rel = os.path.relpath(fpath, local_dir)
+                    with open(fpath, "rb") as f:
+                        snapshot[rel] = f.read()
+            artifacts_logged.append({"run_id": source_run_id, "files": snapshot})
+
+    monkeypatch.setattr(client_module, "artifact_checksums", lambda *a, **kw: {})
+
+    c = _Client()
+    c._anchor_registration("fraud", "2", run_id="train-xyz", source="runs:/train-xyz/model")
+
+    assert artifacts_logged, "log_artifacts was not called"
+    files = artifacts_logged[0]["files"]
+    assert "registration_payload.json" in files, list(files.keys())
+    assert "registration_proof.json" in files
+    # Hashing the saved payload reproduces the envelope's payload_hash.
+    proof = json.loads(files["registration_proof.json"])
+    assert hash_data(files["registration_payload.json"]) == proof["payload_hash"]
+
+
+def test_ario_client_promotion_chains_to_registration_tx(monkeypatch):
+    """Promotion proofs must chain to ario.registration_tx on the model version."""
+    import ario_mlflow.client as client_module
+
+    captured: dict = {"commitment_calls": []}
+
+    class _FakeMV:
+        tags = {"ario.registration_tx": "TX-REG-99"}
+
+    class _Client(client_module.ArioMlflowClient):
+        def __init__(self):
+            def _capture(*, event_type, subject, payload_bytes, previous_hash, **_):
+                captured["commitment_calls"].append({
+                    "event_type": event_type,
+                    "subject": subject,
+                    "payload_bytes": payload_bytes,
+                    "previous_hash": previous_hash,
+                })
+                return {
+                    "event_type": event_type, "subject": subject,
+                    "payload_hash": "PH", "previous_hash": previous_hash,
+                    "public_key": "PK", "signature": "S",
+                }
+
+            self._proof_engine = type("PE", (), {
+                "create_commitment": lambda self_, **kw: _capture(**kw),
+            })()
+            self._anchor = type("A", (), {"enabled": False, "upload_proof": lambda *a, **k: None})()
+
+        def get_model_version(self, name, version): return _FakeMV()
+        def set_model_version_tag(self, *a, **kw): pass
+
+    c = _Client()
+    c._anchor_promotion("fraud", "5", "Staging", "Production")
+
+    assert captured["commitment_calls"], "no promotion commitment minted"
+    last = captured["commitment_calls"][-1]
+    assert last["event_type"] == "stage_transition"
+    assert last["previous_hash"] == "TX-REG-99"
+    payload = json.loads(last["payload_bytes"])
+    assert payload["from_stage"] == "Staging"
+    assert payload["to_stage"] == "Production"
+
+
+def test_ario_client_registration_passes_metadata_through(monkeypatch):
+    """create_model_version's metadata kwarg must reach the canonical payload."""
+    import ario_mlflow.client as client_module
+
+    captured: dict = {"commitment_calls": []}
+
+    class _FakeRun:
+        data = type("D", (), {"tags": {"ario.training_tx": "TX-T", "ario.artifact_hash": "h"}})()
+
+    class _Client(client_module.ArioMlflowClient):
+        def __init__(self):
+            def _capture(*, event_type, subject, payload_bytes, previous_hash, **_):
+                captured["commitment_calls"].append({"payload_bytes": payload_bytes})
+                return {
+                    "event_type": event_type, "subject": subject,
+                    "payload_hash": "PH", "previous_hash": previous_hash,
+                    "public_key": "PK", "signature": "S",
+                }
+            self._proof_engine = type("PE", (), {
+                "create_commitment": lambda self_, **kw: _capture(**kw),
+            })()
+            self._anchor = type("A", (), {"enabled": False, "upload_proof": lambda *a, **k: None})()
+
+        def get_run(self, rid): return _FakeRun()
+        def set_model_version_tag(self, *a, **kw): pass
+        def log_artifacts(self, *a, **kw): pass
+
+    monkeypatch.setattr(client_module, "artifact_checksums", lambda *a, **kw: {})
+
+    c = _Client()
+    c._anchor_registration(
+        "m", "1", run_id="r", source="runs:/r/model",
+        metadata={"otel_trace_id": "ot-1", "service_name": "s"},
+    )
+
+    payload = json.loads(captured["commitment_calls"][-1]["payload_bytes"])
+    assert payload["otel_trace_id"] == "ot-1"
+    assert payload["service_name"] == "s"
+    # Structural fields not overwritten
+    assert payload["event_type"] == "model_registered"
+    assert payload["model_name"] == "m"
 
 
 def test_arweave_upload_proof_sets_post_timeout(monkeypatch):

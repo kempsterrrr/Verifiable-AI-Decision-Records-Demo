@@ -4,12 +4,19 @@ import base64
 import hashlib
 import json
 import os
+import uuid
+from datetime import datetime, timezone
 
+import jcs
 from nacl.signing import SigningKey, VerifyKey
 
 
 def normalize_floats(obj, precision=6):
-    """Recursively round floats for deterministic hashing."""
+    """Recursively round floats. Use BEFORE canonical_json when hashing values
+    that may differ at floating-point precision across measurements (e.g.
+    metrics re-derived from MLflow). Not applied automatically — strict JCS
+    serializes the actual float value, so rounding is the caller's choice.
+    """
     if isinstance(obj, float):
         return round(obj, precision)
     if isinstance(obj, dict):
@@ -19,12 +26,20 @@ def normalize_floats(obj, precision=6):
     return obj
 
 
-def canonical_json(obj: dict) -> bytes:
-    """Deterministic JSON serialization: sorted keys, compact, UTF-8."""
-    normalized = normalize_floats(obj)
-    return json.dumps(
-        normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
+def canonical_json(obj) -> bytes:
+    """RFC-8785 (JSON Canonicalization Scheme) serialization.
+
+    Strict JCS — produces deterministic UTF-8 bytes that any RFC-8785
+    verifier in any language can reproduce without depending on this
+    function. Matches AgentSystems Notary, Sigstore, and the broader
+    RFC-8785 ecosystem. See https://www.rfc-editor.org/rfc/rfc8785.
+
+    Numbers are serialized per ECMA-262 Number.prototype.toString (no
+    trailing zeros, scientific notation for very large / small values).
+    Floats are NOT pre-rounded — callers that need precision-controlled
+    hashing should call ``normalize_floats`` first.
+    """
+    return jcs.canonicalize(obj)
 
 
 def hash_data(data: bytes) -> str:
@@ -81,6 +96,23 @@ class ProofEngine:
             pub = public_key_path or os.path.expanduser("~/.ario-mlflow/keys/ed25519_public.json")
             self._sk, self._vk = generate_keypair(priv, pub)
 
+    # ------------------------------------------------------------------
+    # DEPRECATED LEGACY METHODS (Phase 1 only — delete in Phase 2).
+    #
+    # These produce the v1 record-bearing envelope shape. Kept alive
+    # during Phase 1 because the demo's hand-rolled flow imports
+    # ProofEngine and calls these directly. When Phase 2 refactors the
+    # demo to use the plugin's headline API (anchor / VerifiedModel /
+    # ArioMlflowClient), these methods become unused and should be
+    # deleted together with the demo's lifecycle.py / decision_record.py
+    # / hand-rolled _verify_envelope.
+    #
+    # Tracked in:
+    #   - ~/.claude/plans/conduct-an-analysis-of-zany-kahn.md (Part 4,
+    #     "Demo changes" item 1)
+    #   - memory/project_redesign_2026_04_28.md (deprecation marker)
+    # ------------------------------------------------------------------
+
     def create_proof(self, record: dict, previous_hash: str) -> dict:
         record_hash = hash_data(canonical_json(record))
         sign_payload = canonical_json({
@@ -122,4 +154,125 @@ class ProofEngine:
             "computed_hash": computed_hash,
             "stored_hash": stored_hash,
             "overall": hash_valid and sig_valid,
+        }
+
+    # ------------------------------------------------------------------
+    # Pure-commitment envelope (new shape, ~300 bytes on Arweave).
+    #
+    # Lives alongside create_proof / verify_local during Phase 1 so the
+    # demo's hand-rolled flow (which calls create_proof directly) keeps
+    # working. The plugin's headline API (anchor, ArioMlflowClient,
+    # VerifiedModel) uses the methods below. Phase 2 deletes the legacy
+    # methods after the demo migrates.
+    # ------------------------------------------------------------------
+
+    def create_commitment(
+        self,
+        *,
+        event_type: str,
+        subject: dict,
+        payload_bytes: bytes,
+        previous_hash: str,
+        event_id: str | None = None,
+        signed_at: str | None = None,
+    ) -> dict:
+        """Create a pure-commitment proof envelope.
+
+        Args:
+            event_type: One of ``"training_complete"``, ``"model_registered"``,
+                ``"prediction"``.
+            subject: Identifies the source of the canonical bytes — e.g.
+                ``{"type": "mlflow_run", "run_id": "..."}`` or
+                ``{"type": "mlflow_model_version", "name": "...",
+                "version": "..."}``. Verifiers use this to find the source
+                data when re-deriving the commitment.
+            payload_bytes: The exact canonical bytes that were committed to
+                (caller produces these via :func:`canonical_json` of whatever
+                it wants to commit). The SHA-256 hex digest becomes
+                ``payload_hash``.
+            previous_hash: Hash of the predecessor in the chain, or
+                ``"GENESIS"``. For training proofs, the prior training
+                proof's ``payload_hash`` of the same registered model. For
+                registration, the source run's ``ario.training_tx``. For
+                predictions, the model version's ``ario.registration_tx``.
+            event_id: Optional caller-provided UUID; auto-generated if
+                omitted.
+            signed_at: Optional ISO8601 timestamp; current UTC if omitted.
+
+        Returns:
+            The signed envelope: ``event_id``, ``event_type``, ``subject``,
+            ``payload_hash``, ``previous_hash``, ``signed_at``,
+            ``public_key``, ``signature``. ~300 bytes.
+
+        Note:
+            The signature covers the full envelope minus the signature
+            field itself (including ``public_key``). A verifier with no
+            external trust anchor can confirm only "the holder of the
+            private key matching ``public_key`` produced this signature";
+            trust in *whose* key it is must come from out of band.
+        """
+        envelope = {
+            "event_id": event_id or str(uuid.uuid4()),
+            "event_type": event_type,
+            "subject": subject,
+            "payload_hash": hash_data(payload_bytes),
+            "previous_hash": previous_hash,
+            "signed_at": signed_at or datetime.now(timezone.utc).isoformat(),
+            "public_key": bytes(self._vk).hex(),
+        }
+        signed = self._sk.sign(canonical_json(envelope))
+        envelope["signature"] = signed.signature.hex()
+        return envelope
+
+    def verify_commitment(
+        self,
+        envelope: dict,
+        payload_bytes: bytes | None = None,
+    ) -> dict:
+        """Verify a pure-commitment proof envelope.
+
+        Always checks the signature. If ``payload_bytes`` is provided,
+        also re-hashes them and compares to ``envelope["payload_hash"]``
+        — this is check 2 of the four-check verification flow. To run
+        check 3 (live MLflow vs. anchored payload), the caller re-derives
+        canonical bytes from current MLflow state and passes them here.
+
+        Args:
+            envelope: The signed envelope.
+            payload_bytes: Optional bytes to hash and compare. If
+                ``None``, only the signature is checked.
+
+        Returns:
+            ``signature_valid`` (bool); ``payload_hash_valid`` (bool or
+            ``None`` when not checked); ``computed_payload_hash`` (str
+            or ``None``); ``stored_payload_hash`` (str); ``overall``
+            (bool — ``True`` only when signature valid *and* hash valid
+            if checked).
+        """
+        sig_valid = False
+        try:
+            body = {k: v for k, v in envelope.items() if k != "signature"}
+            vk = VerifyKey(bytes.fromhex(envelope["public_key"]))
+            vk.verify(canonical_json(body), bytes.fromhex(envelope["signature"]))
+            sig_valid = True
+        except Exception:
+            pass
+
+        payload_hash_valid: bool | None = None
+        computed_hash: str | None = None
+        if payload_bytes is not None:
+            computed_hash = hash_data(payload_bytes)
+            payload_hash_valid = computed_hash == envelope.get("payload_hash")
+
+        # overall is True only if signature is valid AND (payload not
+        # checked OR payload check passed). A failed payload check is a
+        # hard fail; an unchecked payload is a soft pass.
+        overall = sig_valid and (payload_hash_valid is not False)
+
+        return {
+            "signature_valid": sig_valid,
+            "payload_hash_valid": payload_hash_valid,
+            "computed_payload_hash": computed_hash,
+            "stored_payload_hash": envelope.get("payload_hash"),
+            "overall": overall,
         }

@@ -214,7 +214,144 @@
         tbody tr:last-child td { border-bottom: none; }
 
         /* ── Actions ── */
-        .actions { display: flex; gap: 0.35rem; align-items: center; }
+        .actions {
+            display: flex;
+            gap: 0.35rem;
+            align-items: center;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+        .actions .btn { white-space: nowrap; }
+
+        /* ── Chain integrity widget ── */
+        .chain-widget {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.25rem 1.5rem;
+            background: var(--surface);
+            margin-bottom: 1.5rem;
+            transition: border-color 0.2s ease, background 0.2s ease;
+        }
+        .chain-widget.intact {
+            border-color: var(--green);
+            background: var(--green-bg);
+        }
+        .chain-widget.broken {
+            border-color: var(--red);
+            background: var(--red-bg);
+        }
+        .chain-widget.pending {
+            border-color: var(--yellow);
+            background: var(--yellow-bg);
+        }
+        .chain-verdict {
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            margin-bottom: 0.6rem;
+        }
+        .chain-widget.intact .chain-verdict { color: var(--green); }
+        .chain-widget.broken .chain-verdict { color: var(--red); }
+        .chain-widget.pending .chain-verdict { color: var(--yellow); }
+        .chain-summary {
+            font-size: 0.95rem;
+            line-height: 1.55;
+            color: var(--black);
+        }
+        .chain-summary code,
+        .chain-summary .mono {
+            font-family: 'JetBrains Mono', 'SF Mono', monospace;
+            font-size: 0.85rem;
+            color: var(--muted);
+        }
+        .chain-toggle {
+            margin-top: 0.75rem;
+            font-size: 0.78rem;
+            color: var(--muted);
+            cursor: pointer;
+            user-select: none;
+            display: inline-block;
+        }
+        .chain-toggle::before {
+            content: "▸ ";
+            display: inline-block;
+            width: 1em;
+        }
+        .chain-widget[data-expanded="true"] .chain-toggle::before {
+            content: "▾ ";
+        }
+        .chain-detail {
+            display: none;
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--border);
+        }
+        .chain-widget[data-expanded="true"] .chain-detail,
+        .chain-widget.broken .chain-detail {
+            display: block;
+        }
+        .chain-row {
+            display: grid;
+            grid-template-columns: 3rem 1fr auto 12px;
+            gap: 1rem;
+            align-items: baseline;
+            padding: 0.5rem 0;
+            font-size: 0.85rem;
+        }
+        .chain-row + .chain-row {
+            border-top: 1px dashed var(--border);
+        }
+        .chain-row .chain-version { font-weight: 600; }
+        .chain-row .chain-root {
+            font-family: 'JetBrains Mono', 'SF Mono', monospace;
+            font-size: 0.75rem;
+            color: var(--muted);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .chain-row .chain-count {
+            color: var(--muted);
+            font-size: 0.8rem;
+            white-space: nowrap;
+        }
+        .chain-status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            align-self: center;
+        }
+        .chain-status-dot.intact { background: var(--green); }
+        .chain-status-dot.broken { background: var(--red); }
+        .chain-status-dot.pending { background: var(--yellow); animation: chain-pulse 2s ease-in-out infinite; }
+        @keyframes chain-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+        .chain-broken-detail {
+            margin-top: 0.4rem;
+            padding: 0.5rem 0.75rem;
+            background: var(--red-bg);
+            border-radius: 4px;
+            color: var(--red);
+            font-size: 0.78rem;
+            line-height: 1.45;
+        }
+        .chain-explanation {
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--border);
+            font-size: 0.78rem;
+            line-height: 1.55;
+            color: var(--muted);
+        }
+        .chain-widget.broken .chain-explanation { color: var(--red); opacity: 0.85; }
+        .chain-explanation code {
+            font-family: 'JetBrains Mono', 'SF Mono', monospace;
+            font-size: 0.85em;
+        }
 
         /* ── Button loading state ── */
         .btn-loading {

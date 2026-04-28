@@ -145,16 +145,21 @@ def _envelope_from_trace(trace_info) -> dict:
 
 
 def _compute_row_status(app, envelope: dict) -> str:
-    """Compute the dashboard row's badge status from real verification state.
+    """Compute the dashboard row's badge status from cached verification state.
 
     Returns one of: 'verified', 'tampered', 'anchored', 'anchoring', 'local'.
 
+    Pure cache-read function — never triggers an Arweave fetch on render.
+    Cache misses return 'anchored' (yellow). Status flips to
+    'verified'/'tampered' once the cache is populated by /predict,
+    the live-verify button, or the tamper/untamper hooks.
+
     State machine:
         no arweave_tx_id → 'anchoring' if Arweave is enabled, else 'local'
-        verify_prediction(...).overall_match is False → 'tampered'
+        decision_verify_cache[decision_id].overall_match is False → 'tampered'
         ario_verify_cache has attestation_level for this tx
             AND prediction_integrity passed → 'verified'
-        otherwise → 'anchored'
+        cache miss → 'anchored'  (row is "not yet verified")
 
     Notes:
     - 'tampered' wins over the cache: an attestation says "the bytes on
@@ -165,7 +170,6 @@ def _compute_row_status(app, envelope: dict) -> str:
       transition anchored→verified after a user has visited the detail
       page (or clicked the live-verify button) for that decision.
     """
-    import time
     tx_id = envelope.get("arweave_tx_id")
     if not tx_id:
         arweave_enabled = bool(app.state.anchor and app.state.anchor.enabled)
@@ -175,35 +179,9 @@ def _compute_row_status(app, envelope: dict) -> str:
     if not decision_id:
         return "anchored"
 
-    # Prediction integrity: cached for TTL seconds.
+    # Prediction integrity: pure cache read, no fetch on miss.
     pi_cache = getattr(app.state, "decision_verify_cache", None)
-    ttl = getattr(app.state, "decision_verify_cache_ttl_s", 60.0)
-    pi = None
-    now = time.time()
-    if pi_cache is not None:
-        cached = pi_cache.get(decision_id)
-        if cached and (now - cached.get("computed_at", 0)) < ttl:
-            pi = cached.get("result")
-
-    if pi is None:
-        try:
-            from ario_mlflow.decision_verify import verify_prediction
-            result = verify_prediction(
-                decision_id=decision_id,
-                tracking_uri=app.state.settings.mlflow_tracking_uri,
-                arweave=app.state.anchor,
-            )
-            pi = {
-                "match_input": result.match_input,
-                "match_output": result.match_output,
-                "overall_match": result.overall_match,
-                "error": result.error,
-            }
-            if pi_cache is not None:
-                pi_cache[decision_id] = {"result": pi, "computed_at": now}
-        except Exception as e:
-            logger.debug(f"verify_prediction failed for {decision_id}: {e}")
-            pi = None
+    pi = pi_cache.get(decision_id) if pi_cache is not None else None
 
     if pi and pi.get("overall_match") is False:
         return "tampered"
@@ -222,6 +200,94 @@ def _compute_row_status(app, envelope: dict) -> str:
         return "verified"
 
     return "anchored"
+
+
+def _evaluate_chain_status(envs: list, lifecycle: dict | None, decision_results: list) -> dict:
+    """Given a chain's decisions + cached model lifecycle + cached per-decision
+    integrity, evaluate the chain's overall status.
+
+    Returns ``{intact, broken_reason, broken_at, broken_decision_id}``.
+    ``intact`` is True/False/None; None means "verification pending"
+    (cache miss for the lifecycle — the daemon thread or a state-change
+    event hasn't populated this entry yet).
+    """
+    if lifecycle is None:
+        return {
+            "intact": None,
+            "broken_reason": "verification_pending",
+            "broken_at": None,
+            "broken_decision_id": None,
+        }
+    if lifecycle.get("error"):
+        return {
+            "intact": False,
+            "broken_reason": "lifecycle_verification_error",
+            "broken_at": None,
+            "broken_decision_id": None,
+        }
+    if lifecycle.get("all_intact") is False:
+        return {
+            "intact": False,
+            "broken_reason": "lifecycle_broken",
+            "broken_at": None,
+            "broken_decision_id": None,
+        }
+    # Lifecycle intact (or all_intact is None, treat as pending).
+    if lifecycle.get("all_intact") is None:
+        return {
+            "intact": None,
+            "broken_reason": "verification_pending",
+            "broken_at": None,
+            "broken_decision_id": None,
+        }
+
+    # Walk decisions, check chain links + per-decision integrity.
+    valid_roots = set()
+    if lifecycle.get("registration_tx"):
+        valid_roots.add(lifecycle["registration_tx"])
+    if lifecycle.get("promotion_tx"):
+        valid_roots.add(lifecycle["promotion_tx"])
+
+    prior_record_hash = None
+    for i, (env, dr) in enumerate(zip(envs, decision_results)):
+        decision_id = (env.get("record") or {}).get("decision_id")
+        previous_hash = env.get("previous_hash")
+
+        # Check chain link.
+        if i == 0:
+            if previous_hash not in valid_roots and previous_hash != "GENESIS":
+                return {
+                    "intact": False,
+                    "broken_reason": "orphan_root",
+                    "broken_at": i,
+                    "broken_decision_id": decision_id,
+                }
+        else:
+            if previous_hash != prior_record_hash:
+                return {
+                    "intact": False,
+                    "broken_reason": "link_mismatch",
+                    "broken_at": i,
+                    "broken_decision_id": decision_id,
+                }
+
+        # Check per-decision integrity (if cached).
+        if dr is not None and dr.get("overall_match") is False:
+            return {
+                "intact": False,
+                "broken_reason": "decision_tampered",
+                "broken_at": i,
+                "broken_decision_id": decision_id,
+            }
+
+        prior_record_hash = env.get("record_hash")
+
+    return {
+        "intact": True,
+        "broken_reason": None,
+        "broken_at": None,
+        "broken_decision_id": None,
+    }
 
 
 def _list_recent_decisions(app, max_results: int = 50, compute_status: bool = True) -> list[dict]:

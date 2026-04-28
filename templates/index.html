@@ -248,15 +248,13 @@
             </div>
         </div>
 
-        <!-- Chain Integrity -->
-        <div id="chain-integrity" style="padding: 0.6rem 1.25rem; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 1rem; font-size: 0.8rem; color: var(--muted);">
-            <div style="display:flex;align-items:center;gap:0.5rem;">
-                <span>Hash chain:</span>
-                <span id="chain-status">checking...</span>
-            </div>
-            <div style="font-size:0.72rem;margin-top:0.3rem;line-height:1.5;">
-                Each record is hashed and its hash is linked into the next. A content change breaks the record's own hash. Rewriting the chain to hide it leaves a permanent divergence from the ar.io-anchored copy.
-            </div>
+        <!-- Chain Integrity Widget -->
+        <div class="chain-widget pending" id="chain-widget" data-expanded="false">
+            <div class="chain-verdict" id="chain-verdict">…</div>
+            <div class="chain-summary"><strong id="chain-summary-text">Verifying…</strong></div>
+            <div class="chain-detail" id="chain-detail"></div>
+            <div class="chain-toggle" id="chain-toggle" style="display:none;">Show per-chain breakdown</div>
+            <div class="chain-explanation" id="chain-explanation"></div>
         </div>
         {% endif %}
 
@@ -457,44 +455,145 @@
             row.classList.toggle('hidden', !show);
         });
     }
-    // Chain integrity check — distinguishes link failures from content-level
-    // tamper (where a record's content stops matching its own record_hash).
     (function() {
-        const el = document.getElementById('chain-status');
-        if (!el) return;
-        fetch('/api/chain-integrity')
-            .then(r => r.json())
-            .then(data => {
-                if (data.link_intact && data.content_intact) {
-                    el.innerHTML = '<span style="color: var(--green); font-weight: 600;">' + data.total + ' records · unbroken · content intact</span>';
-                    return;
-                }
+        const widget = document.getElementById("chain-widget");
+        if (!widget) return;
+        const verdict = document.getElementById("chain-verdict");
+        const summary = document.getElementById("chain-summary-text");
+        const detail = document.getElementById("chain-detail");
+        const toggle = document.getElementById("chain-toggle");
+        const explanation = document.getElementById("chain-explanation");
 
-                const parts = [];
-                if (!data.link_intact && data.broken_link_at !== null) {
-                    parts.push('link broken at record #' + data.broken_link_at);
+        let pollTimer = null;
+        let pollAttempts = 0;
+        const POLL_INTERVAL_MS = 2000;
+        const POLL_MAX_ATTEMPTS = 15; // 30 seconds total
+
+        async function fetchAndRender() {
+            try {
+                const resp = await fetch("/api/chain-integrity");
+                if (!resp.ok) throw new Error("HTTP " + resp.status);
+                const data = await resp.json();
+                renderWidget(data);
+                // Continue polling if any chain is still pending.
+                if (data.any_pending && pollAttempts < POLL_MAX_ATTEMPTS) {
+                    pollAttempts++;
+                    pollTimer = setTimeout(fetchAndRender, POLL_INTERVAL_MS);
+                } else if (pollTimer) {
+                    clearTimeout(pollTimer);
+                    pollTimer = null;
                 }
-                const changed = data.changed_records || [];
-                if (changed.length > 0) {
-                    // Show up to 3 decision IDs as individual links — more than that
-                    // gets truncated with a count suffix rather than one arbitrary pick.
-                    const MAX_LINKS = 3;
-                    const shown = changed.slice(0, MAX_LINKS);
-                    const rest = Math.max(0, changed.length - MAX_LINKS);
-                    const links = shown.map(function(c) {
-                        const shortId = c.decision_id ? c.decision_id.slice(0, 8) + '…' : '#' + c.index;
-                        const href = c.decision_id ? '/ui/decisions/' + c.decision_id : '#';
-                        return '<a href="' + href + '" style="color:inherit;text-decoration:underline;">decision ' + shortId + '</a>';
-                    }).join(', ');
-                    const label = changed.length === 1 ? '1 record changed' : (changed.length + ' records changed');
-                    const suffix = rest > 0 ? ', and ' + rest + ' more' : '';
-                    parts.push(label + ' (' + links + suffix + ')');
+            } catch (e) {
+                console.warn("chain-integrity fetch failed:", e);
+            }
+        }
+
+        function renderWidget(data) {
+            const chains = data.chains || [];
+            const total = data.total || 0;
+            const pending = !!data.any_pending;
+            const intact = data.all_intact;
+
+            // Set widget class based on state.
+            widget.classList.remove("intact", "broken", "pending");
+            if (pending) {
+                widget.classList.add("pending");
+                verdict.textContent = "⏳ VERIFYING CHAIN";
+            } else if (intact === true) {
+                widget.classList.add("intact");
+                verdict.textContent = "✓ HASH CHAIN INTACT";
+            } else {
+                widget.classList.add("broken");
+                verdict.textContent = "✗ HASH CHAIN BROKEN";
+            }
+
+            // Summary copy.
+            if (total === 0) {
+                summary.textContent = "No anchored decisions yet. Make a prediction to start a chain.";
+                toggle.style.display = "none";
+            } else if (pending) {
+                summary.textContent = `Verifying ${chains.length} ${chains.length === 1 ? "chain" : "chains"} across ${total} ${total === 1 ? "decision" : "decisions"}…`;
+                toggle.style.display = chains.length > 1 ? "inline-block" : "none";
+            } else if (intact === true) {
+                if (chains.length === 1) {
+                    const c = chains[0];
+                    const root = c.root_tx ? c.root_tx.substring(0, 12) + "…" : "GENESIS";
+                    summary.textContent = `${total} ${total === 1 ? "decision" : "decisions"}, all linked back to ${c.model_name}/v${c.model_version}'s anchored lifecycle — registered & anchored at ${root}`;
+                    toggle.style.display = "none";
+                } else {
+                    summary.textContent = `${total} decisions across ${chains.length} chains — every decision links back to a registered, anchored model version.`;
+                    toggle.style.display = "inline-block";
                 }
-                const summary = parts.join(' · ') || 'broken';
-                el.innerHTML = '<span style="color: var(--red); font-weight: 600;">' +
-                    data.total + ' records · ' + summary + '</span>';
-            })
-            .catch(() => { el.textContent = 'unavailable'; });
+            } else {
+                const broken = chains.find(c => c.intact === false);
+                if (broken) {
+                    const idx = (broken.broken_at != null) ? broken.broken_at + 1 : null;
+                    const prefix = idx != null ? `Decision #${idx} (${broken.model_name}/v${broken.model_version})` : `${broken.model_name}/v${broken.model_version}`;
+                    summary.textContent = `${prefix} — ${describeBrokenReason(broken)}`;
+                } else {
+                    summary.textContent = "Chain integrity check failed.";
+                }
+                toggle.style.display = "none";
+            }
+
+            // Per-chain rows.
+            detail.replaceChildren();
+            chains.forEach(c => {
+                const row = document.createElement("div");
+                row.className = "chain-row";
+                const ver = document.createElement("span");
+                ver.className = "chain-version";
+                ver.textContent = "v" + c.model_version;
+                row.appendChild(ver);
+                const root = document.createElement("span");
+                root.className = "chain-root mono";
+                root.textContent = c.root_tx ? c.root_tx.substring(0, 24) + "…" : "(no root)";
+                row.appendChild(root);
+                const count = document.createElement("span");
+                count.className = "chain-count";
+                count.textContent = c.decision_count + (c.decision_count === 1 ? " decision" : " decisions");
+                row.appendChild(count);
+                const dot = document.createElement("span");
+                dot.className = "chain-status-dot " + (c.intact === true ? "intact" : c.intact === false ? "broken" : "pending");
+                dot.title = c.intact === true ? "Chain intact" : c.intact === false ? "Chain broken" : "Verifying…";
+                row.appendChild(dot);
+                detail.appendChild(row);
+                if (c.intact === false) {
+                    const msg = document.createElement("div");
+                    msg.className = "chain-broken-detail";
+                    msg.textContent = describeBrokenReason(c);
+                    detail.appendChild(msg);
+                }
+            });
+
+            // Explanation copy.
+            if (intact === false) {
+                explanation.innerHTML = '<strong>This is what verification catches:</strong> rewriting a decision after signing leaves a permanent divergence visible to anyone fetching the proofs from Arweave. The on-chain copy stays intact; the modified local index is what we flag.';
+            } else if (pending) {
+                explanation.innerHTML = '<strong>Verification in progress.</strong> The dashboard is verifying each model version against its Arweave-anchored proofs. Status will update as checks complete.';
+            } else {
+                explanation.innerHTML = '<strong>How this works:</strong> each decision\'s <code>previous_hash</code> references either the prior decision in the chain or the model version\'s <code>registration_tx</code>. A tampered record breaks the link or its own content hash — visible to anyone fetching the proofs from Arweave.';
+            }
+        }
+
+        function describeBrokenReason(chain) {
+            const reason = chain.broken_reason;
+            const v = `${chain.model_name}/v${chain.model_version}`;
+            if (reason === "lifecycle_broken") return `${v}'s lifecycle has a broken event (training, registration, or promotion failed verification).`;
+            if (reason === "lifecycle_verification_error") return `couldn't verify ${v}'s lifecycle (gateway error or missing data).`;
+            if (reason === "orphan_root") return `its previous_hash doesn't link to ${v}'s registration_tx — orphan / suspected tamper.`;
+            if (reason === "link_mismatch") return `its previous_hash doesn't match the prior decision's record_hash.`;
+            if (reason === "decision_tampered") return `its recorded MLflow data doesn't match the anchored hashes — tamper detected.`;
+            return "chain integrity check failed.";
+        }
+
+        toggle.addEventListener("click", () => {
+            const expanded = widget.dataset.expanded === "true";
+            widget.dataset.expanded = expanded ? "false" : "true";
+            toggle.textContent = expanded ? "Show per-chain breakdown" : "Hide per-chain breakdown";
+        });
+
+        fetchAndRender();
     })();
     </script>
 {% endblock %}

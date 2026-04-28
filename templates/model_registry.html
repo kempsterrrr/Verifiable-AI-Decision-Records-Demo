@@ -277,7 +277,7 @@
                     <td>{{ v.created }}</td>
                     <td>
                         <div class="actions">
-                            <a href="/ui/models/{{ model_name }}/{{ v.version }}" class="btn btn-outline btn-sm">View Chain</a>
+                            <a href="/ui/models/{{ model_name }}/{{ v.version }}" class="btn btn-outline btn-sm">Chain &rarr;</a>
                             {% if not v.is_active %}
                             <form action="/api/activate/{{ model_name }}/{{ v.version }}" method="POST" style="display:inline;">
                                 <button type="submit" class="btn btn-sm" style="background: var(--lavender); color: var(--primary); border: none;" data-loading-text="Activating...">Activate</button>

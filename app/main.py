@@ -76,11 +76,18 @@ async def lifespan(app: FastAPI):
     app.state.ario_verify_cache: dict[str, dict] = {}
 
     # Per-process cache of verify_prediction results, keyed by decision_id.
-    # Stored as {result_dict, computed_at: float epoch seconds}. 60s TTL.
-    # Tamper / untamper / live-verify endpoints evict explicitly so the
-    # dashboard reflects state changes immediately.
+    # Entries are authoritative until explicitly evicted by tamper/untamper/
+    # live-verify endpoints. Populated by /predict and /predict-form after
+    # wait_for_anchor completes on a daemon thread.
     app.state.decision_verify_cache: dict[str, dict] = {}
-    app.state.decision_verify_cache_ttl_s: float = 60.0
+
+    # Per-process cache of verify_model_lifecycle results, keyed by
+    # (model_name, model_version). Populated on state-change events
+    # (train, promote, tamper, startup), NOT on dashboard render.
+    # Startup verification runs in a daemon thread so the dashboard is
+    # responsive immediately; entries flip from "verifying" to
+    # verified/tampered as the daemon completes.
+    app.state.model_lifecycle_cache: dict[tuple[str, str], dict] = {}
 
     # NEW: ArioMlflowClient handles registration/promotion anchoring with chaining.
     app.state.ario_client = ArioMlflowClient(
@@ -126,6 +133,25 @@ async def lifespan(app: FastAPI):
         app.state.verified_model = None
         app.state.model_info = None
 
+    def _startup_verify_models():
+        """Walk all known model versions and verify each. Runs in a
+        daemon thread so dashboard rendering isn't blocked. Entries
+        flip from 'verifying' to verified/tampered as the daemon
+        completes."""
+        try:
+            client = app.state.ario_client
+            versions = client.search_model_versions(f"name='{settings.mlflow_model_name}'")
+            for mv in versions:
+                try:
+                    _verify_and_cache_model_lifecycle(app, mv.name, str(mv.version))
+                except Exception as e:
+                    logger.warning(f"Startup verify of {mv.name}/v{mv.version} failed: {e}")
+        except Exception as e:
+            logger.warning(f"Startup verification walk failed: {e}")
+
+    import threading
+    threading.Thread(target=_startup_verify_models, daemon=True).start()
+
     yield
 
     # Shutdown
@@ -137,6 +163,49 @@ FastAPIInstrumentor.instrument_app(app)
 tracer = trace.get_tracer(__name__)
 
 app.include_router(ui_router)
+
+
+def _verify_and_cache_model_lifecycle(app, model_name: str, model_version: str) -> dict:
+    """Run verify_model_lifecycle and cache the result on app.state.
+
+    Always wraps in try/except so a verification failure (gateway down,
+    network flake) doesn't crash the caller. On error, the cache stores
+    a placeholder ``{error, all_intact: None}`` so the dashboard can
+    render "verification pending / failed" rather than blow up.
+
+    Uses ``getattr`` to access app.state.model_lifecycle_cache so legacy
+    tests that construct a minimal state object without this attribute
+    don't crash (they'll just skip the cache write).
+    """
+    from ario_mlflow.decision_verify import verify_model_lifecycle
+    cache = getattr(getattr(app, "state", None), "model_lifecycle_cache", None)
+    try:
+        result = verify_model_lifecycle(
+            model_name=model_name,
+            model_version=str(model_version),
+            anchor=app.state.anchor,
+            ario_client=app.state.ario_client,
+            proof_engine=app.state.proof_engine,
+        )
+        if cache is not None:
+            cache[(model_name, str(model_version))] = result
+        logger.info(
+            f"Verified model lifecycle for {model_name}/v{model_version}: "
+            f"all_intact={result.get('all_intact')}"
+        )
+        return result
+    except Exception as e:
+        logger.warning(f"verify_model_lifecycle failed for {model_name}/v{model_version}: {e}")
+        placeholder = {
+            "model_name": model_name,
+            "model_version": str(model_version),
+            "events": [],
+            "all_intact": None,
+            "error": str(e),
+        }
+        if cache is not None:
+            cache[(model_name, str(model_version))] = placeholder
+        return placeholder
 
 
 def _enrich_prediction(verified_model, features: list[float], raw_prediction) -> dict | None:
@@ -242,12 +311,43 @@ FEATURE_DEFAULTS: dict[str, float] = {
 }
 
 
+def _schedule_prediction_verify(request, vp):
+    """Schedule prediction-integrity verification on a daemon thread so the
+    response isn't blocked by Arweave latency. The result lands in
+    decision_verify_cache when verification completes; the dashboard
+    picks it up on next load.
+    """
+    import threading
+
+    def _verify_prediction_async():
+        try:
+            vp.wait_for_anchor(timeout=30.0)
+            from ario_mlflow.decision_verify import verify_prediction
+            result = verify_prediction(
+                decision_id=vp.decision_id,
+                tracking_uri=request.app.state.settings.mlflow_tracking_uri,
+                arweave=request.app.state.anchor,
+            )
+            request.app.state.decision_verify_cache[vp.decision_id] = {
+                "match_input": result.match_input,
+                "match_output": result.match_output,
+                "overall_match": result.overall_match,
+                "error": result.error,
+            }
+            logger.info(f"Prediction {vp.decision_id} verified: overall_match={result.overall_match}")
+        except Exception as e:
+            logger.warning(f"Async verify_prediction failed for {vp.decision_id}: {e}")
+
+    threading.Thread(target=_verify_prediction_async, daemon=True).start()
+
+
 @app.post("/predict")
 def api_predict(request: Request, body: dict, background_tasks: BackgroundTasks):
     features = [
         float(body.get(name, FEATURE_DEFAULTS[name])) for name in FEATURE_NAMES
     ]
-    envelope, _vp = _run_prediction(request.app.state, features)
+    envelope, vp = _run_prediction(request.app.state, features)
+    _schedule_prediction_verify(request, vp)
     return envelope
 
 
@@ -269,7 +369,8 @@ def form_predict(
         "credit_score": credit_score,
     }
     features = [float(form_values[name]) for name in FEATURE_NAMES]
-    envelope, _vp = _run_prediction(request.app.state, features)
+    envelope, vp = _run_prediction(request.app.state, features)
+    _schedule_prediction_verify(request, vp)
     return RedirectResponse(f"/ui/decisions/{envelope['decision_id']}", status_code=303)
 
 
@@ -301,6 +402,9 @@ def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
         "run_id": info["run_id"],
     }
     logger.info(f"Switched active model to v{info['model_version']}")
+
+    # Verify and cache lifecycle for the newly trained model version.
+    _verify_and_cache_model_lifecycle(request.app, info["model_name"], info["model_version"])
 
     # Look up anchoring tx IDs from MLflow tags so the training-progress UI
     # can poll /lifecycle/by-tx/{txId} for status updates.
@@ -372,6 +476,9 @@ def api_promote(request: Request, model_name: str, version: str):
     ario_client.wait_for_anchor("promotion", model_name, str(version), timeout=30.0)
     status = ario_client.anchor_status("promotion", model_name, str(version))
 
+    # Update lifecycle cache for the promoted version.
+    _verify_and_cache_model_lifecycle(request.app, model_name, version)
+
     return {
         "model_name": model_name,
         "model_version": str(version),
@@ -419,6 +526,28 @@ def api_tamper_training(request: Request, run_id: str):
     shutil.copyfile(target, backup)
     with open(target, "ab") as f:
         f.write(b"\x00")
+
+    # Invalidate any cached lifecycle for model versions backed by this run.
+    cache = getattr(getattr(request.app, "state", None), "model_lifecycle_cache", None)
+    client = getattr(getattr(request.app, "state", None), "ario_client", None)
+    if cache is not None:
+        try:
+            if client is not None:
+                try:
+                    mvs = client.search_model_versions(f"run_id='{run_id}'")
+                except Exception:
+                    # Fallback: walk all versions and filter Python-side if the
+                    # run_id filter isn't supported on this MLflow version.
+                    import mlflow as _mlflow2
+                    _mlflow2.set_tracking_uri(settings.mlflow_tracking_uri)
+                    _c2 = _mlflow2.tracking.MlflowClient()
+                    all_mvs = _c2.search_model_versions(f"name='{settings.mlflow_model_name}'")
+                    mvs = [mv for mv in all_mvs if mv.run_id == run_id]
+                for mv in mvs:
+                    cache.pop((mv.name, str(mv.version)), None)
+        except Exception as e:
+            logger.warning(f"Could not invalidate lifecycle cache for run {run_id}: {e}")
+
     return {
         "run_id": run_id,
         "tampered_path": target,
@@ -447,6 +576,28 @@ def api_untamper_training(request: Request, run_id: str):
 
     import shutil
     shutil.move(backup, target)
+
+    # Invalidate any cached lifecycle for model versions backed by this run.
+    cache = getattr(getattr(request.app, "state", None), "model_lifecycle_cache", None)
+    client = getattr(getattr(request.app, "state", None), "ario_client", None)
+    if cache is not None:
+        try:
+            if client is not None:
+                try:
+                    mvs = client.search_model_versions(f"run_id='{run_id}'")
+                except Exception:
+                    # Fallback: walk all versions and filter Python-side if the
+                    # run_id filter isn't supported on this MLflow version.
+                    import mlflow as _mlflow2
+                    _mlflow2.set_tracking_uri(settings.mlflow_tracking_uri)
+                    _c2 = _mlflow2.tracking.MlflowClient()
+                    all_mvs = _c2.search_model_versions(f"name='{settings.mlflow_model_name}'")
+                    mvs = [mv for mv in all_mvs if mv.run_id == run_id]
+                for mv in mvs:
+                    cache.pop((mv.name, str(mv.version)), None)
+        except Exception as e:
+            logger.warning(f"Could not invalidate lifecycle cache for run {run_id}: {e}")
+
     return {
         "run_id": run_id,
         "restored_path": target,
@@ -801,34 +952,63 @@ def compute_chain_integrity(records: list) -> dict:
 
 @app.get("/api/chain-integrity")
 def chain_integrity(request: Request):
-    """Verify link + content integrity across all anchored decision records.
+    """Roll up cached verification state into a per-model-version chain status.
 
-    Data source is now MLflow traces + Arweave-fetched envelopes (plugin-driven).
-    Only anchored records (with arweave_tx_id) are included — unanchored records
-    cannot be chain-verified as they lack the full proof envelope.
+    Reads from app.state.model_lifecycle_cache and decision_verify_cache.
+    Does NOT fetch from Arweave on this path — caches are populated by
+    state-change events (train, promote, tamper) and the startup
+    verification daemon. Cache misses surface as 'verification_pending'.
     """
-    from app.ui import _list_recent_decisions, _envelope_from_arweave
+    from app.ui import _list_recent_decisions, _evaluate_chain_status
 
-    # Pull a generous cap rather than paginate — this is a demo. The chain
-    # integrity claim is "all anchored decisions are correctly chained", so
-    # a hard cap of 50 was too low. 5000 covers any realistic demo state.
-    trace_envelopes = _list_recent_decisions(request.app, max_results=5000, compute_status=False)
+    decisions = _list_recent_decisions(request.app, max_results=5000, compute_status=False)
 
-    # For chain integrity we need the full envelope (with record_hash, previous_hash,
-    # record) which only exists on Arweave. Unanchored records are skipped.
-    full_envelopes = []
-    for env in trace_envelopes:
-        tx_id = env.get("arweave_tx_id")
-        if not tx_id:
+    # Group decisions by (model_name, model_version).
+    chains_by_version: dict = {}
+    for env in decisions:
+        rec = env.get("record") or {}
+        key = (rec.get("model_name"), rec.get("model_version"))
+        if not key[0] or not key[1]:
             continue
-        full_env = _envelope_from_arweave(request.app, tx_id)
-        if full_env:
-            full_envelopes.append(full_env)
+        chains_by_version.setdefault(key, []).append(env)
 
-    # Sort by timestamp so the chain check is order-stable.
-    def _ts(e):
-        return (e.get("record") or {}).get("timestamp") or ""
+    chains = []
+    all_intact = True
+    any_pending = False
+    total = 0
 
-    full_envelopes.sort(key=_ts)
+    for (name, version), envs in chains_by_version.items():
+        envs.sort(key=lambda e: (e.get("record") or {}).get("timestamp") or "")
+        lifecycle = request.app.state.model_lifecycle_cache.get((name, str(version)))
+        decision_results = [
+            request.app.state.decision_verify_cache.get(
+                (env.get("record") or {}).get("decision_id")
+            )
+            for env in envs
+        ]
 
-    return compute_chain_integrity(full_envelopes)
+        chain_status = _evaluate_chain_status(envs, lifecycle, decision_results)
+        if chain_status["intact"] is False:
+            all_intact = False
+        if chain_status["intact"] is None:
+            any_pending = True
+        total += len(envs)
+
+        chains.append({
+            "model_name": name,
+            "model_version": str(version),
+            "decision_count": len(envs),
+            "root_tx": lifecycle.get("registration_tx") if lifecycle else None,
+            "intact": chain_status["intact"],
+            "broken_reason": chain_status.get("broken_reason"),
+            "broken_at": chain_status.get("broken_at"),
+            "broken_decision_id": chain_status.get("broken_decision_id"),
+        })
+
+    return {
+        "total": total,
+        "chain_count": len(chains),
+        "all_intact": all_intact if not any_pending else None,
+        "any_pending": any_pending,
+        "chains": chains,
+    }

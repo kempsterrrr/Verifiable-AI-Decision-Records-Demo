@@ -2243,17 +2243,18 @@ def test_row_status_anchored_when_no_attestation_cached(monkeypatch):
 
 
 def test_row_status_verified_when_attestation_in_cache_and_prediction_intact(monkeypatch):
+    """Row status is 'verified' when decision_verify_cache and ario_verify_cache both populated."""
     from unittest.mock import MagicMock
     from app.ui import _compute_row_status
 
-    pred_result = MagicMock(
-        match_input=True, match_output=True, overall_match=True, error=None,
-    )
     fake_app = _make_app_state_for_row_status(
         monkeypatch,
-        predict_result=pred_result,
         ario_cache={"TX1": {"attestation_level": 3}},
     )
+    # Pre-populate decision_verify_cache with intact prediction result (flat format).
+    fake_app.state.decision_verify_cache = {
+        "d-1": {"match_input": True, "match_output": True, "overall_match": True, "error": None}
+    }
     env = {"arweave_tx_id": "TX1", "record": {"decision_id": "d-1"}}
     assert _compute_row_status(fake_app, env) == "verified"
 
@@ -2263,32 +2264,32 @@ def test_row_status_tampered_overrides_cache(monkeypatch):
     from unittest.mock import MagicMock
     from app.ui import _compute_row_status
 
-    pred_result = MagicMock(
-        match_input=False, match_output=True, overall_match=False, error=None,
-    )
     fake_app = _make_app_state_for_row_status(
         monkeypatch,
-        predict_result=pred_result,
         ario_cache={"TX1": {"attestation_level": 3}},  # Attested but tampered
     )
+    # Pre-populate decision_verify_cache with a tampered result (flat format).
+    fake_app.state.decision_verify_cache = {
+        "d-1": {"match_input": False, "match_output": True, "overall_match": False, "error": None}
+    }
     env = {"arweave_tx_id": "TX1", "record": {"decision_id": "d-1"}}
     assert _compute_row_status(fake_app, env) == "tampered"
 
 
 def test_row_status_uses_cache_within_ttl(monkeypatch):
-    """Second call within TTL must not re-invoke verify_prediction."""
-    import time
+    """_compute_row_status is a pure cache-read and never invokes verify_prediction.
+
+    This test verifies that even with no pre-populated cache entry,
+    verify_prediction is never called (cache miss → 'anchored', not a fetch).
+    """
     from unittest.mock import MagicMock
     from app.ui import _compute_row_status
 
-    pred_result = MagicMock(
-        match_input=True, match_output=True, overall_match=True, error=None,
-    )
     call_count = {"n": 0}
 
     def fake_verify(**kw):
         call_count["n"] += 1
-        return pred_result
+        return MagicMock(overall_match=True, match_input=True, match_output=True, error=None)
 
     monkeypatch.setattr("ario_mlflow.decision_verify.verify_prediction", fake_verify)
 
@@ -2297,13 +2298,14 @@ def test_row_status_uses_cache_within_ttl(monkeypatch):
     fake_app.state.anchor.enabled = True
     fake_app.state.ario_verify_cache = {}
     fake_app.state.decision_verify_cache = {}
-    fake_app.state.decision_verify_cache_ttl_s = 60.0
-    fake_app.state.settings.mlflow_tracking_uri = "file:/dev/null"
 
     env = {"arweave_tx_id": "TX1", "record": {"decision_id": "d-1"}}
-    _compute_row_status(fake_app, env)
-    _compute_row_status(fake_app, env)
-    assert call_count["n"] == 1, "Second call must hit the cache."
+    status1 = _compute_row_status(fake_app, env)
+    status2 = _compute_row_status(fake_app, env)
+    # Both calls must return 'anchored' on cache miss (no fetch triggered).
+    assert status1 == "anchored"
+    assert status2 == "anchored"
+    assert call_count["n"] == 0, "verify_prediction must never be called from _compute_row_status."
 
 
 def test_list_recent_decisions_skips_status_when_compute_status_false(monkeypatch):
@@ -2550,3 +2552,116 @@ def test_verify_model_lifecycle_skips_signature_when_no_proof_engine(monkeypatch
     result = verify_model_lifecycle("m", "1", anchor, client, proof_engine=None)
     assert result["events"][0]["signature_valid"] is None
     assert result["events"][0]["intact"] is True  # other checks pass
+
+
+# --- Phase B: chain rollup (reads from caches, no fresh fetches) ---
+
+
+def _make_envelope_with_record_hash(model_name, model_version, decision_id, previous_hash, record_hash):
+    """Helper: build a trace-tag-shaped envelope for chain rollup tests."""
+    return {
+        "record": {
+            "decision_id": decision_id,
+            "model_name": model_name,
+            "model_version": model_version,
+            "timestamp": "2026-04-28T12:00:00+00:00",
+        },
+        "record_hash": record_hash,
+        "previous_hash": previous_hash,
+        "arweave_tx_id": f"TX_{decision_id}",
+    }
+
+
+def test_chain_integrity_rollup_uses_cached_lifecycle(monkeypatch, tmp_path):
+    """Cache hit -> no fetch_proof calls; rollup reports intact."""
+    from unittest.mock import MagicMock
+    import app.main as main_mod
+
+    # Mock the dashboard's recent-decisions feed with one chain of 2 decisions.
+    envs = [
+        _make_envelope_with_record_hash("m", "1", "d1", previous_hash="REG_TX_1", record_hash="HASH_1"),
+        _make_envelope_with_record_hash("m", "1", "d2", previous_hash="HASH_1", record_hash="HASH_2"),
+    ]
+    monkeypatch.setattr(
+        "app.ui._list_recent_decisions",
+        lambda app_, max_results=50, compute_status=True: envs,
+    )
+
+    # Pre-populate caches with intact entries.
+    fake_request = MagicMock()
+    fake_request.app.state.model_lifecycle_cache = {
+        ("m", "1"): {
+            "model_name": "m",
+            "model_version": "1",
+            "events": [],
+            "all_intact": True,
+            "registration_tx": "REG_TX_1",
+            "promotion_tx": None,
+        }
+    }
+    fake_request.app.state.decision_verify_cache = {
+        "d1": {"overall_match": True, "match_input": True, "match_output": True, "error": None},
+        "d2": {"overall_match": True, "match_input": True, "match_output": True, "error": None},
+    }
+
+    # Invoke the route function directly.
+    out = main_mod.chain_integrity(fake_request)
+    assert out["all_intact"] is True
+    assert out["chain_count"] == 1
+    assert out["chains"][0]["intact"] is True
+
+
+def test_chain_integrity_rollup_flags_lifecycle_failure(monkeypatch):
+    """Cached lifecycle reports all_intact=False -> chain reports broken."""
+    from unittest.mock import MagicMock
+    import app.main as main_mod
+
+    envs = [
+        _make_envelope_with_record_hash("m", "1", "d1", previous_hash="REG_TX_1", record_hash="HASH_1"),
+    ]
+    monkeypatch.setattr(
+        "app.ui._list_recent_decisions",
+        lambda app_, max_results=50, compute_status=True: envs,
+    )
+
+    fake_request = MagicMock()
+    fake_request.app.state.model_lifecycle_cache = {
+        ("m", "1"): {
+            "all_intact": False,  # TAMPERED
+            "registration_tx": "REG_TX_1",
+            "promotion_tx": None,
+        }
+    }
+    fake_request.app.state.decision_verify_cache = {}
+
+    out = main_mod.chain_integrity(fake_request)
+    assert out["all_intact"] is False
+    assert out["chains"][0]["intact"] is False
+    assert out["chains"][0]["broken_reason"] == "lifecycle_broken"
+
+
+def test_chain_integrity_rollup_flags_decision_chain_link(monkeypatch):
+    """Decision #2's previous_hash doesn't match decision #1's record_hash -> link_mismatch."""
+    from unittest.mock import MagicMock
+    import app.main as main_mod
+
+    envs = [
+        _make_envelope_with_record_hash("m", "1", "d1", previous_hash="REG_TX_1", record_hash="HASH_1"),
+        _make_envelope_with_record_hash("m", "1", "d2", previous_hash="WRONG_PREVIOUS", record_hash="HASH_2"),
+    ]
+    monkeypatch.setattr(
+        "app.ui._list_recent_decisions",
+        lambda app_, max_results=50, compute_status=True: envs,
+    )
+
+    fake_request = MagicMock()
+    fake_request.app.state.model_lifecycle_cache = {
+        ("m", "1"): {"all_intact": True, "registration_tx": "REG_TX_1", "promotion_tx": None}
+    }
+    fake_request.app.state.decision_verify_cache = {}  # decisions never verified -- that's OK
+
+    out = main_mod.chain_integrity(fake_request)
+    assert out["all_intact"] is False
+    assert out["chains"][0]["broken_reason"] == "link_mismatch"
+    assert out["chains"][0]["broken_at"] == 1
+    assert out["chains"][0]["broken_decision_id"] == "d2"

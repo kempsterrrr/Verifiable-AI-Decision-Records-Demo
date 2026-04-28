@@ -469,31 +469,35 @@ class ArioMlflowClient(MlflowClient):
             result = self._anchor.upload_proof(envelope) if self._anchor.enabled else None
 
             # Write the canonical bytes as an artifact on the source run
-            # so verifiers have an immutable witness for check 2. Like
-            # registration_payload.json, this is per-event and lives in
-            # the same ario/ tree on the source run.
+            # so verifiers have an immutable witness for check 2. Keyed
+            # by the envelope's event_id (NOT just version) — a model
+            # version can be promoted multiple times (Staging -> Prod ->
+            # Archived), and version-only paths would overwrite each
+            # promotion's witness. Verifier resolves via the same
+            # event_id (carried in subject + envelope).
             mv = self.get_model_version(model_name, version)
             source_run_id = mv.run_id
+            event_id = envelope["event_id"]
             if source_run_id:
                 try:
                     with tempfile.TemporaryDirectory() as tmpdir:
-                        ario_dir = os.path.join(tmpdir, "ario")
-                        os.makedirs(ario_dir)
-                        with open(
-                            os.path.join(ario_dir, f"promotion_{version}_payload.json"),
-                            "wb",
-                        ) as f:
+                        promotion_dir = os.path.join(
+                            tmpdir, "ario", "promotions", event_id,
+                        )
+                        os.makedirs(promotion_dir)
+                        with open(os.path.join(promotion_dir, "payload.json"), "wb") as f:
                             f.write(payload_bytes)
-                        with open(
-                            os.path.join(ario_dir, f"promotion_{version}_proof.json"),
-                            "w",
-                        ) as f:
+                        with open(os.path.join(promotion_dir, "proof.json"), "w") as f:
                             json.dump(envelope, f, indent=2)
-                        self.log_artifacts(source_run_id, ario_dir, "ario")
+                        # log_artifacts uploads tmpdir/ario/promotions/<event_id>/...
+                        # under the run's artifacts/ario/promotions/<event_id>/.
+                        self.log_artifacts(
+                            source_run_id, os.path.join(tmpdir, "ario"), "ario",
+                        )
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
                         f"Could not write promotion payload artifact for "
-                        f"{model_name}/v{version}: {e}"
+                        f"{model_name}/v{version} (event {event_id}): {e}"
                     )
 
             if result:

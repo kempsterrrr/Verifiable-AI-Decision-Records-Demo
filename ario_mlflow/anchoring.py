@@ -416,7 +416,21 @@ def anchor(
         previous_hash=previous_hash,
     )
 
-    anchor_result = arweave.upload_proof(envelope) if arweave.enabled else None
+    # Wrap upload_proof so a transient Turbo/Arweave outage degrades to
+    # a "signed-only" outcome (anchor_result=None) rather than aborting
+    # the whole anchor() call. Tags + artifacts must still be written so
+    # the run carries a valid signed proof even when the upload failed.
+    if arweave.enabled:
+        try:
+            anchor_result = arweave.upload_proof(envelope)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"Arweave upload raised for run {run_id}; keeping signed-only "
+                f"proof: {e}"
+            )
+            anchor_result = None
+    else:
+        anchor_result = None
 
     # Tags written on the run. ario.artifact_hash keeps its v1 semantics
     # (hash of artifact_checksums dict only) so VerifiedModel's load-time

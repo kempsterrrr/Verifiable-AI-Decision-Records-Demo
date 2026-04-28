@@ -398,6 +398,198 @@ def test_ario_verify_normalize_returns_attestation_level():
     assert out["attested_by"] == "gw-1"
 
 
+def test_verify_ario_attestation_below_threshold_fails():
+    """Level below min_attestation_level returns ok=False with the
+    actual level surfaced for the caller to display."""
+    from ario_mlflow.verify import verify_ario_attestation
+
+    # Stub a successful but low-level ar.io response.
+    class _StubClient:
+        enabled = True
+        def submit_verification(self, tx_id):
+            return {
+                "attestation_level": 1,
+                "attested_by": "vilenarios.com",
+                "report_url": "https://example/report",
+            }
+
+    envelope = {"_tx_id": "TX-fresh"}
+    out = verify_ario_attestation(envelope, _StubClient(), min_attestation_level=2)
+
+    assert out["ok"] is False
+    assert out["reason"] == "attestation_level_below_threshold"
+    assert out["attestation_level"] == 1
+    assert out["min_attestation_level"] == 2
+    # Still surface the level + report so the user knows it's maturing.
+    assert out["attested_by"] == "vilenarios.com"
+    assert out["report_url"] == "https://example/report"
+
+
+def test_verify_ario_attestation_at_threshold_passes():
+    """Level >= threshold returns ok=True."""
+    from ario_mlflow.verify import verify_ario_attestation
+
+    class _StubClient:
+        enabled = True
+        def submit_verification(self, tx_id):
+            return {"attestation_level": 2, "attested_by": "gw"}
+
+    out = verify_ario_attestation(
+        {"_tx_id": "TX"}, _StubClient(), min_attestation_level=2,
+    )
+    assert out["ok"] is True
+    assert out["attestation_level"] == 2
+
+
+def test_verify_ario_attestation_strict_level_3():
+    """Configurable threshold lets audit users require Level 3."""
+    from ario_mlflow.verify import verify_ario_attestation
+
+    class _StubClient:
+        enabled = True
+        def submit_verification(self, tx_id):
+            return {"attestation_level": 2, "attested_by": "gw"}
+
+    out = verify_ario_attestation(
+        {"_tx_id": "TX"}, _StubClient(), min_attestation_level=3,
+    )
+    assert out["ok"] is False
+    assert out["attestation_level"] == 2
+
+
+def test_verify_anchored_bytes_missing_required_artifact_fails():
+    """For event types in _SUBJECT_TYPES_WITH_REQUIRED_ARTIFACT, missing
+    payload.json must return ok=False — silent ok=None would let
+    full_verify falsely pass when the witness was wiped."""
+    from ario_mlflow.verify import verify_anchored_bytes
+
+    class _StubMlflowClient:
+        def get_model_version(self, name, version):
+            raise Exception("not found")
+
+    envelope = {
+        "event_type": "training_complete",
+        "subject": {"type": "mlflow_run", "run_id": "missing-run"},
+        "payload_hash": "0xabc",
+    }
+    # Patch mlflow.artifacts.download_artifacts to fail
+    import ario_mlflow.verify as verify_module
+
+    out = verify_anchored_bytes(envelope, _StubMlflowClient())
+    # Run-not-found path goes through download_artifacts which will
+    # also fail. ok=False because mlflow_run is in the required-artifact
+    # set.
+    assert out["ok"] is False, out
+    assert out["artifact_expected"] is True
+
+
+def test_verify_anchored_bytes_legacy_subject_returns_none():
+    """Legacy v1 subject types (mlflow_trace, mlflow_decision) had no
+    payload artifact. Missing artifact is legitimately 'not applicable',
+    not a failure — preserves graceful handling for old proofs."""
+    from ario_mlflow.verify import verify_anchored_bytes
+
+    class _StubMlflowClient:
+        pass
+
+    envelope = {
+        "event_type": "prediction",
+        "subject": {"type": "mlflow_trace", "trace_id": "t-old"},
+        "payload_hash": "0xabc",
+    }
+    out = verify_anchored_bytes(envelope, _StubMlflowClient())
+    assert out["ok"] is None  # not applicable, not failure
+    assert out["artifact_expected"] is False
+
+
+def test_compute_overall_ok_training_fails_on_none_required_check():
+    """For training_complete envelopes, ok=None on signature /
+    anchored_bytes / source_of_truth must fail overall — not silently
+    pass on signature alone. ar.io is genuinely optional, so its None
+    is fine."""
+    from ario_mlflow.verify import _compute_overall_ok
+
+    envelope = {"event_type": "training_complete"}
+    sig = {"ok": True}
+    bytes_check = {"ok": None}  # MLflow witness unavailable
+    sot = {"ok": None}
+    ario = {"ok": None}  # Optional
+
+    overall = _compute_overall_ok(envelope, sig, bytes_check, sot, ario)
+    assert overall is False, "training proof with None on required checks must fail"
+
+
+def test_compute_overall_ok_training_fails_on_none_for_sot_only():
+    """Even if check 2 passed, None on check 3 must still fail
+    (catches the partial-refetch case)."""
+    from ario_mlflow.verify import _compute_overall_ok
+
+    envelope = {"event_type": "training_complete"}
+    sig = {"ok": True}
+    bytes_check = {"ok": True}
+    sot = {"ok": None}  # could not fully re-derive
+    ario = {"ok": None}
+
+    overall = _compute_overall_ok(envelope, sig, bytes_check, sot, ario)
+    assert overall is False
+
+
+def test_compute_overall_ok_training_passes_when_all_required_green():
+    """All required checks True + ar.io None (optional) = pass."""
+    from ario_mlflow.verify import _compute_overall_ok
+
+    envelope = {"event_type": "training_complete"}
+    out = _compute_overall_ok(
+        envelope,
+        {"ok": True}, {"ok": True}, {"ok": True}, {"ok": None},
+    )
+    assert out is True
+
+
+def test_compute_overall_ok_prediction_tolerates_none_on_anchored_bytes():
+    """For predictions with legacy subject types (mlflow_trace,
+    mlflow_decision), check 2 returns None and overall should still be
+    able to pass on signature + ar.io. Less strict because v1
+    predictions had no artifact."""
+    from ario_mlflow.verify import _compute_overall_ok
+
+    envelope = {"event_type": "prediction"}
+    sig = {"ok": True}
+    bytes_check = {"ok": None}  # legacy subject
+    sot = {"ok": None}
+    ario = {"ok": True}
+
+    out = _compute_overall_ok(envelope, sig, bytes_check, sot, ario)
+    assert out is True  # not as strict as training
+
+
+def test_anchor_continues_when_upload_raises(monkeypatch, tmp_path):
+    """Transient Turbo/Arweave outage must not abort the whole
+    anchor() call. Tags + artifacts should still be written; the
+    result simply has anchor_result=None ('signed-only')."""
+    import ario_mlflow.anchoring as anchoring
+
+    set_tags, _, _, _, _ = _make_anchor_stubs(monkeypatch)
+
+    class _BoomAnchor:
+        enabled = True
+        wallet_mode = "user-configured"
+        def upload_proof(self, *a, **kw):
+            raise RuntimeError("Turbo outage")
+
+    result = anchoring.anchor(
+        proof_engine=anchoring.ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=_BoomAnchor(),
+    )
+
+    # anchor_result is None — degraded to signed-only.
+    assert result["anchor_result"] is None
+    # But the envelope was still produced + tags written.
+    assert result["envelope"]["payload_hash"]
+    assert "ario.payload_hash" in result["tags"]
+    assert result["tags"]["ario.verify_status"] == "signed"
+
+
 def test_ario_verify_normalize_handles_null_sub_objects():
     """Regression for 2026-04-28 bug: ar.io Verify returns explicit
     ``null`` for ``attestation`` / ``links`` / ``existence`` sub-objects
@@ -1430,7 +1622,9 @@ def test_verified_model_predict_chains_to_genesis_when_no_registration_tx(monkey
     captured = {"create_commitment_calls": []}
 
     class _FakeMV:
-        name = "fresh"; version = 1; run_id = "r"
+        name = "fresh"
+        version = 1
+        run_id = "r"
         source = "runs:/r/model"
         tags = {}  # no registration_tx
 
@@ -1478,7 +1672,9 @@ def test_verified_model_predict_writes_payload_artifact_to_source_run(monkeypatc
     artifacts_logged: list = []
 
     class _FakeMV:
-        name = "m"; version = 1; run_id = "source-run-xyz"
+        name = "m"
+        version = 1
+        run_id = "source-run-xyz"
         source = "runs:/source-run-xyz/model"
         tags = {"ario.registration_tx": "TX-REG"}
 
@@ -1544,7 +1740,9 @@ def test_verified_model_predict_subject_carries_run_id_and_decision_id(monkeypat
     captured = {"subject": None}
 
     class _FakeMV:
-        name = "m"; version = 1; run_id = "source-run-42"
+        name = "m"
+        version = 1
+        run_id = "source-run-42"
         source = "runs:/source-run-42/model"
         tags = {}
 
@@ -1593,7 +1791,9 @@ def test_verified_model_predict_passes_metadata_into_payload(monkeypatch):
     captured = {"payload_bytes": None}
 
     class _FakeMV:
-        name = "m"; version = 1; run_id = "r"
+        name = "m"
+        version = 1
+        run_id = "r"
         source = "runs:/r/model"
         tags = {}
 

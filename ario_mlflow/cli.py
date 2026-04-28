@@ -21,6 +21,7 @@ from ario_mlflow.verify import (
     verify_anchored_bytes,
     verify_source_of_truth,
     verify_ario_attestation,
+    _compute_overall_ok,
 )
 from ario_mlflow.report import generate_verification_html
 
@@ -60,21 +61,51 @@ def _print_four_checks(
     sot: dict,
     ario_attestation: dict,
 ):
-    """Print the four-check verification panel for a single envelope."""
+    """Print the four-check verification panel for a single envelope.
+
+    Always surfaces the ar.io Verify attestation level when present \u2014
+    even on a "below threshold" failure \u2014 so the user can see how the
+    TX is maturing. (Per ROADMAP "Receipts vs. attestation as a
+    two-stage verify UX", attestation level is fundamentally a maturity
+    gradient, not a binary pass/fail.)
+    """
     _print_check("Cryptographic", sig, "signature valid")
     _print_check("Anchored bytes", bytes_check, "intact")
     _print_check("Source of truth", sot, "live MLflow matches anchored bytes")
 
-    # ar.io Verify Level 3 \u2014 show level when present.
-    if ario_attestation.get("ok") is True:
-        level = ario_attestation.get("attestation_level", "?")
-        attester = ario_attestation.get("attested_by", "unknown")
-        check = "\033[32m\u2713\033[0m"
+    # ar.io Verify \u2014 show the maturity level whenever the API returned
+    # something, regardless of whether it passed the threshold. Helps
+    # users see "Level 1, growing" vs. "TX missing" at a glance.
+    check = "\033[32m\u2713\033[0m"
+    cross = "\033[31m\u2717\033[0m"
+    pending = "\033[33m?\033[0m"
+    ok = ario_attestation.get("ok")
+    level = ario_attestation.get("attestation_level")
+    attester = ario_attestation.get("attested_by") or "unknown"
+    threshold = ario_attestation.get("min_attestation_level")
+
+    if ok is True and level is not None:
         print(f"  {'ar.io Verify':<22} {check} Level {level} by {attester}")
         if ario_attestation.get("report_url"):
             print(f"  {'':>22} report: {ario_attestation['report_url']}")
+    elif ok is False and ario_attestation.get("reason") == "attestation_level_below_threshold":
+        # Show the actual level + the threshold so the user knows the
+        # TX is maturing, just hasn't reached the bar yet.
+        print(
+            f"  {'ar.io Verify':<22} {cross} Level {level} (below threshold "
+            f"{threshold}) by {attester}"
+        )
+        print(
+            f"  {'':>22} TX is indexed but not yet at the configured "
+            f"attestation bar. Re-run later to check progression."
+        )
+        if ario_attestation.get("report_url"):
+            print(f"  {'':>22} report: {ario_attestation['report_url']}")
+    elif ok is False:
+        print(f"  {'ar.io Verify':<22} {cross} {ario_attestation.get('reason', 'FAILED')}")
     else:
-        _print_check("ar.io Verify", ario_attestation, "attested")
+        # ok is None: not applicable / not checked
+        print(f"  {'ar.io Verify':<22} {pending} {ario_attestation.get('reason', 'not checked')}")
 
 
 def _verify_envelope_for_tx(
@@ -111,13 +142,12 @@ def _verify_envelope_for_tx(
 
     _print_four_checks(sig, bytes_check, sot, ario_result)
 
-    statuses = [sig["ok"], bytes_check["ok"], sot["ok"], ario_result["ok"]]
-    if any(s is False for s in statuses):
-        overall_ok = False
-    elif any(s is True for s in statuses):
-        overall_ok = True
-    else:
-        overall_ok = False  # nothing checked \u2014 be conservative
+    # Use the shared overall-ok logic so CLI and full_verify() agree.
+    # For training/registration envelopes, ok=None on signature /
+    # anchored_bytes / source_of_truth fails overall \u2014 None means
+    # "couldn't verify", not "fine."
+    overall = _compute_overall_ok(envelope, sig, bytes_check, sot, ario_result)
+    overall_ok = bool(overall)  # CLI returns bool; None coerces to False
 
     return {
         "envelope": envelope,

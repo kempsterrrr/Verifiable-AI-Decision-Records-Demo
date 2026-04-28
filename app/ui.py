@@ -9,6 +9,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from ario_mlflow.proof import canonical_json, hash_data
+from ario_mlflow.verify import verify_envelope
+from ario_mlflow.anchoring import verify_run_artifact_integrity
 
 logger = logging.getLogger(__name__)
 
@@ -42,76 +44,6 @@ def _is_fully_verified(verification: dict | None) -> bool:
         and verification.get("permanent_copy_found")
         and verification.get("hash_match")
     )
-
-
-def _verify_envelope(app, envelope):
-    """Run three-level verification on any proof envelope. Returns result dict."""
-    local = app.state.proof_engine.verify_local(envelope)
-    result = {
-        "hash_valid": local["hash_valid"],
-        "signature_valid": local["signature_valid"],
-        "permanent_copy_found": False,
-        "hash_match": False,
-        "attestation_level": None,
-        "report_url": None,
-        "attested_by": None,
-        "attested_at": None,
-    }
-
-    if envelope.get("arweave_tx_id"):
-        arweave_data = app.state.anchor.fetch_proof(envelope["arweave_tx_id"])
-        if arweave_data:
-            arweave_hash = hash_data(canonical_json(arweave_data.get("record", {})))
-            result["permanent_copy_found"] = True
-            result["hash_match"] = arweave_hash == arweave_data.get("record_hash")
-
-        if app.state.ario_verify.enabled:
-            # Plugin's submit_verification returns a pre-normalized dict with
-            # attestation_level / report_url / attested_by / attested_at.
-            normalized = app.state.ario_verify.submit_verification(envelope["arweave_tx_id"])
-            if normalized:
-                result["attestation_level"] = normalized.get("attestation_level")
-                result["report_url"] = normalized.get("report_url")
-                result["attested_by"] = normalized.get("attested_by")
-                result["attested_at"] = normalized.get("attested_at")
-
-    return result, local
-
-
-def _verify_run_artifact_integrity(run_id: str, expected_artifact_hash: str | None) -> dict:
-    """Re-derive the run's artifact hash from MLflow's current storage and
-    compare to the value committed in the Arweave proof.
-
-    This is the actual verification: we hash whatever MLflow stores now and
-    check it matches what was anchored. Catches any post-anchor mutation
-    of the model files (someone swapped model.pkl, etc.).
-
-    Returns ``{match: bool|None, recomputed: str|None, expected: str|None,
-    error: str|None}``. ``match`` is ``None`` when we couldn't re-derive
-    (e.g., artifacts unavailable) so the UI can show "Not checked" rather
-    than "FAIL".
-    """
-    if not expected_artifact_hash:
-        return {"match": None, "recomputed": None, "expected": None, "error": "No anchored artifact_hash to compare against."}
-    try:
-        from ario_mlflow.anchoring import artifact_checksums
-        from ario_mlflow.proof import canonical_json, hash_data
-        checksums = artifact_checksums(run_id, artifact_path="model")
-        recomputed = hash_data(canonical_json(checksums))
-        return {
-            "match": recomputed == expected_artifact_hash,
-            "recomputed": recomputed,
-            "expected": expected_artifact_hash,
-            "error": None,
-        }
-    except Exception as e:
-        logger.warning(f"Could not re-derive artifact hash for run {run_id}: {e}")
-        return {
-            "match": None,
-            "recomputed": None,
-            "expected": expected_artifact_hash,
-            "error": str(e),
-        }
 
 
 def _envelope_from_arweave(app, tx_id: str | None) -> dict | None:
@@ -540,7 +472,7 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
         local = app.state.proof_engine.verify_local(envelope)
 
     if verify and envelope.get("arweave_tx_id"):
-        result, _ = _verify_envelope(app, envelope)
+        result = verify_envelope(envelope, app.state.proof_engine, app.state.anchor, app.state.ario_verify)
         result["verified_at"] = datetime.now(timezone.utc).isoformat()
         envelope["last_verification"] = result
 
@@ -548,7 +480,7 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
     if envelope.get("arweave_tx_id"):
         turbo_status = app.state.anchor.check_status(envelope["arweave_tx_id"])
 
-    artifact_integrity = _verify_run_artifact_integrity(
+    artifact_integrity = verify_run_artifact_integrity(
         run_id,
         (envelope.get("record") or {}).get("artifact_hash"),
     )
@@ -604,10 +536,10 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
     registration_verify = None
     if verify:
         if training_env:
-            training_verify, _ = _verify_envelope(app, training_env)
+            training_verify = verify_envelope(training_env, app.state.proof_engine, app.state.anchor, app.state.ario_verify)
             training_env["last_verification"] = training_verify
         if registration_env:
-            registration_verify, _ = _verify_envelope(app, registration_env)
+            registration_verify = verify_envelope(registration_env, app.state.proof_engine, app.state.anchor, app.state.ario_verify)
             registration_env["last_verification"] = registration_verify
 
     # Prediction summary — query traces tagged with this model.

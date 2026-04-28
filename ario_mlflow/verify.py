@@ -110,3 +110,76 @@ def full_verify(envelope: dict, proof_engine: ProofEngine, anchor: ArweaveAnchor
             and arweave.get("hash_match", False)
         ),
     }
+
+
+def verify_envelope(
+    envelope: dict,
+    proof_engine: ProofEngine,
+    anchor: ArweaveAnchor,
+    ario_verify: "ArioVerifyClient | None" = None,
+) -> dict:
+    """Three-level verification of a proof envelope.
+
+    Runs:
+    1. Local hash + signature check via ``proof_engine.verify_local``.
+    2. If the envelope carries an ``arweave_tx_id``: fetch the canonical
+       proof from the gateway, recompute the record hash, and compare.
+    3. If ``ario_verify`` is provided AND enabled: request a level
+       attestation from ar.io Verify.
+
+    Returns a flat dict suitable for direct UI rendering. The shape is
+    intentionally stable — UI templates can read fields without nested
+    lookups, and a missing capability (e.g., ``ario_verify=None``) just
+    leaves the corresponding fields as ``None``.
+
+    Args:
+        envelope: A signed proof envelope (with ``record``, ``record_hash``,
+            ``signature``, ``public_key``, optionally ``arweave_tx_id``).
+        proof_engine: The :class:`ProofEngine` that signed (or can verify)
+            the envelope.
+        anchor: An :class:`ArweaveAnchor` used to fetch the canonical
+            proof from the gateway when an ``arweave_tx_id`` is present.
+        ario_verify: Optional :class:`ArioVerifyClient` for the level
+            attestation. ``None`` (or a disabled client) skips the
+            attestation step.
+
+    Returns:
+        A dict with keys ``hash_valid``, ``signature_valid``,
+        ``permanent_copy_found``, ``hash_match``, ``attestation_level``,
+        ``report_url``, ``pdf_url``, ``attested_by``, ``attested_at``.
+        Boolean fields default to ``False``; level/url/operator fields
+        default to ``None``.
+    """
+    from ario_mlflow.proof import canonical_json, hash_data
+
+    local = proof_engine.verify_local(envelope)
+    result = {
+        "hash_valid": local["hash_valid"],
+        "signature_valid": local["signature_valid"],
+        "permanent_copy_found": False,
+        "hash_match": False,
+        "attestation_level": None,
+        "report_url": None,
+        "pdf_url": None,
+        "attested_by": None,
+        "attested_at": None,
+    }
+
+    tx_id = envelope.get("arweave_tx_id")
+    if tx_id:
+        arweave_data = anchor.fetch_proof(tx_id)
+        if arweave_data:
+            arweave_hash = hash_data(canonical_json(arweave_data.get("record", {})))
+            result["permanent_copy_found"] = True
+            result["hash_match"] = arweave_hash == arweave_data.get("record_hash")
+
+        if ario_verify is not None and getattr(ario_verify, "enabled", False):
+            normalized = ario_verify.submit_verification(tx_id)
+            if normalized:
+                result["attestation_level"] = normalized.get("attestation_level")
+                result["report_url"] = normalized.get("report_url")
+                result["pdf_url"] = normalized.get("pdf_url")
+                result["attested_by"] = normalized.get("attested_by")
+                result["attested_at"] = normalized.get("attested_at")
+
+    return result

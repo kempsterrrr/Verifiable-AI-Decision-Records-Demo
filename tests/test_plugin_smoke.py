@@ -1584,7 +1584,7 @@ def test_verify_run_artifact_integrity_passes_when_unchanged(monkeypatch, tmp_pa
     import mlflow as _mlflow
     from ario_mlflow.anchoring import artifact_checksums
     from ario_mlflow.proof import canonical_json, hash_data
-    from app.ui import _verify_run_artifact_integrity
+    from ario_mlflow.anchoring import verify_run_artifact_integrity
 
     model_dir = tmp_path / "model"
     model_dir.mkdir()
@@ -1593,7 +1593,7 @@ def test_verify_run_artifact_integrity_passes_when_unchanged(monkeypatch, tmp_pa
     monkeypatch.setattr(_mlflow.artifacts, "download_artifacts", lambda **kw: str(model_dir))
 
     expected = hash_data(canonical_json(artifact_checksums("run-x", artifact_path="model")))
-    result = _verify_run_artifact_integrity("run-x", expected)
+    result = verify_run_artifact_integrity("run-x", expected)
     assert result["match"] is True
     assert result["recomputed"] == expected
     assert result["error"] is None
@@ -1605,7 +1605,7 @@ def test_verify_run_artifact_integrity_fails_when_tampered(monkeypatch, tmp_path
     import mlflow as _mlflow
     from ario_mlflow.anchoring import artifact_checksums
     from ario_mlflow.proof import canonical_json, hash_data
-    from app.ui import _verify_run_artifact_integrity
+    from ario_mlflow.anchoring import verify_run_artifact_integrity
 
     model_dir = tmp_path / "model"
     model_dir.mkdir()
@@ -1619,7 +1619,7 @@ def test_verify_run_artifact_integrity_fails_when_tampered(monkeypatch, tmp_path
     with open(model_dir / "model.pkl", "ab") as f:
         f.write(b"\x00")
 
-    result = _verify_run_artifact_integrity("run-x", anchored_hash)
+    result = verify_run_artifact_integrity("run-x", anchored_hash)
     assert result["match"] is False
     assert result["recomputed"] != anchored_hash
     assert result["expected"] == anchored_hash
@@ -1628,9 +1628,9 @@ def test_verify_run_artifact_integrity_fails_when_tampered(monkeypatch, tmp_path
 def test_verify_run_artifact_integrity_returns_none_on_no_anchored_hash():
     """When there's no anchored hash to compare against, integrity is
     'not checked', not 'fail'."""
-    from app.ui import _verify_run_artifact_integrity
+    from ario_mlflow.anchoring import verify_run_artifact_integrity
 
-    result = _verify_run_artifact_integrity("run-x", None)
+    result = verify_run_artifact_integrity("run-x", None)
     assert result["match"] is None
     assert result["error"] is not None  # explanation that we have nothing to compare
 
@@ -1643,7 +1643,7 @@ def test_tamper_then_untamper_endpoints_round_trip(monkeypatch, tmp_path):
     import mlflow as _mlflow
     from ario_mlflow.anchoring import artifact_checksums
     from ario_mlflow.proof import canonical_json, hash_data
-    from app.ui import _verify_run_artifact_integrity
+    from ario_mlflow.anchoring import verify_run_artifact_integrity
     from app.main import api_tamper_training, api_untamper_training
 
     model_dir = tmp_path / "model"
@@ -1666,7 +1666,7 @@ def test_tamper_then_untamper_endpoints_round_trip(monkeypatch, tmp_path):
     assert (model_dir / "model.pkl.tamper_backup").exists()
 
     # Verify catches it.
-    result = _verify_run_artifact_integrity("run-x", anchored_hash)
+    result = verify_run_artifact_integrity("run-x", anchored_hash)
     assert result["match"] is False
 
     # Untamper.
@@ -1674,7 +1674,7 @@ def test_tamper_then_untamper_endpoints_round_trip(monkeypatch, tmp_path):
     assert not (model_dir / "model.pkl.tamper_backup").exists()
 
     # Verify passes again.
-    result = _verify_run_artifact_integrity("run-x", anchored_hash)
+    result = verify_run_artifact_integrity("run-x", anchored_hash)
     assert result["match"] is True
 
 
@@ -1882,3 +1882,183 @@ def test_decision_detail_runs_full_verification_without_verify_param(monkeypatch
         f"decision_detail must not gate verification on a `verify` parameter; "
         f"current params: {list(sig.parameters)}"
     )
+
+
+# --- ario_mlflow.verify_envelope (Phase A) ---
+
+
+def _make_engine(tmp_path):
+    """Helper: ProofEngine with ephemeral keys for offline tests."""
+    from ario_mlflow.proof import ProofEngine
+    keys = tmp_path / "keys"
+    keys.mkdir(exist_ok=True)
+    return ProofEngine(str(keys / "priv.pem"), str(keys / "pub.pem"))
+
+
+def _make_envelope(engine, tx_id=None):
+    """Helper: a complete signed envelope optionally tagged with arweave_tx_id."""
+    record = {
+        "decision_id": "d-1",
+        "event_type": "prediction",
+        "timestamp": "2026-04-28T12:00:00+00:00",
+        "model_name": "m",
+        "model_version": "1",
+        "input_hash": "abc",
+        "output_hash": "def",
+        "latency_ms": 0.5,
+        "artifact_verified": True,
+    }
+    proof = engine.create_proof(record, "GENESIS")
+    env = dict(proof)
+    if tx_id:
+        env["arweave_tx_id"] = tx_id
+    return env
+
+
+def test_verify_envelope_local_only_when_not_anchored(tmp_path, monkeypatch):
+    """No arweave_tx_id → only local checks run; Arweave/ar.io untouched."""
+    from unittest.mock import MagicMock
+    from ario_mlflow.verify import verify_envelope
+
+    monkeypatch.delenv("ARIO_MLFLOW_SIGNING_KEY", raising=False)
+    engine = _make_engine(tmp_path)
+    env = _make_envelope(engine)  # no tx_id
+
+    anchor = MagicMock()
+    ario_verify = MagicMock()
+
+    result = verify_envelope(env, engine, anchor, ario_verify)
+    assert result["hash_valid"] is True
+    assert result["signature_valid"] is True
+    assert result["permanent_copy_found"] is False
+    assert result["hash_match"] is False
+    assert result["attestation_level"] is None
+    assert result["pdf_url"] is None
+    anchor.fetch_proof.assert_not_called()
+    ario_verify.submit_verification.assert_not_called()
+
+
+def test_verify_envelope_arweave_match_no_ario_verify(tmp_path, monkeypatch):
+    """Arweave fetch returns the same canonical record; ario_verify=None."""
+    from unittest.mock import MagicMock
+    from ario_mlflow.verify import verify_envelope
+    from ario_mlflow.proof import canonical_json, hash_data
+
+    monkeypatch.delenv("ARIO_MLFLOW_SIGNING_KEY", raising=False)
+    engine = _make_engine(tmp_path)
+    env = _make_envelope(engine, tx_id="TX1")
+
+    anchor = MagicMock()
+    # The gateway returns the exact same record bytes.
+    anchor.fetch_proof.return_value = {
+        "record": env["record"],
+        "record_hash": env["record_hash"],
+    }
+
+    result = verify_envelope(env, engine, anchor, ario_verify=None)
+    assert result["permanent_copy_found"] is True
+    assert result["hash_match"] is True
+    assert result["attestation_level"] is None
+    anchor.fetch_proof.assert_called_once_with("TX1")
+
+
+def test_verify_envelope_arweave_hash_mismatch(tmp_path, monkeypatch):
+    """Arweave gateway returns a record whose canonical hash differs."""
+    from unittest.mock import MagicMock
+    from ario_mlflow.verify import verify_envelope
+
+    monkeypatch.delenv("ARIO_MLFLOW_SIGNING_KEY", raising=False)
+    engine = _make_engine(tmp_path)
+    env = _make_envelope(engine, tx_id="TX2")
+
+    anchor = MagicMock()
+    # Different record bytes.
+    anchor.fetch_proof.return_value = {
+        "record": {"decision_id": "different"},
+        "record_hash": env["record_hash"],
+    }
+
+    result = verify_envelope(env, engine, anchor, ario_verify=None)
+    assert result["permanent_copy_found"] is True
+    assert result["hash_match"] is False
+
+
+def test_verify_envelope_includes_attestation_when_ario_enabled(tmp_path, monkeypatch):
+    """Ario verify enabled returns the full level + report fields incl. pdf_url."""
+    from unittest.mock import MagicMock
+    from ario_mlflow.verify import verify_envelope
+
+    monkeypatch.delenv("ARIO_MLFLOW_SIGNING_KEY", raising=False)
+    engine = _make_engine(tmp_path)
+    env = _make_envelope(engine, tx_id="TX3")
+
+    anchor = MagicMock()
+    anchor.fetch_proof.return_value = {
+        "record": env["record"],
+        "record_hash": env["record_hash"],
+    }
+    ario_verify = MagicMock()
+    ario_verify.enabled = True
+    ario_verify.submit_verification.return_value = {
+        "attestation_level": 3,
+        "report_url": "https://verify.example/r/1",
+        "pdf_url": "https://verify.example/r/1.pdf",
+        "attested_by": "operator-x",
+        "attested_at": "2026-04-28T12:30:00Z",
+    }
+
+    result = verify_envelope(env, engine, anchor, ario_verify=ario_verify)
+    assert result["attestation_level"] == 3
+    assert result["report_url"] == "https://verify.example/r/1"
+    assert result["pdf_url"] == "https://verify.example/r/1.pdf"
+    assert result["attested_by"] == "operator-x"
+    assert result["attested_at"] == "2026-04-28T12:30:00Z"
+
+
+def test_verify_envelope_disabled_ario_skips_attestation_call(tmp_path, monkeypatch):
+    """Disabled ArioVerifyClient must not be called and attestation stays None."""
+    from unittest.mock import MagicMock
+    from ario_mlflow.verify import verify_envelope
+
+    monkeypatch.delenv("ARIO_MLFLOW_SIGNING_KEY", raising=False)
+    engine = _make_engine(tmp_path)
+    env = _make_envelope(engine, tx_id="TX4")
+
+    anchor = MagicMock()
+    anchor.fetch_proof.return_value = {
+        "record": env["record"],
+        "record_hash": env["record_hash"],
+    }
+    ario_verify = MagicMock()
+    ario_verify.enabled = False
+
+    result = verify_envelope(env, engine, anchor, ario_verify=ario_verify)
+    assert result["attestation_level"] is None
+    assert result["pdf_url"] is None
+    ario_verify.submit_verification.assert_not_called()
+
+
+def test_verify_run_artifact_integrity_uses_custom_artifact_path(monkeypatch, tmp_path):
+    """The new artifact_path kwarg is passed through to artifact_checksums."""
+    import mlflow as _mlflow
+    from ario_mlflow.anchoring import verify_run_artifact_integrity
+
+    captured = {}
+
+    def fake_download(**kw):
+        captured["artifact_path"] = kw.get("artifact_path")
+        d = tmp_path / "sklearn-model"
+        d.mkdir(exist_ok=True)
+        (d / "model.pkl").write_bytes(b"x")
+        return str(d)
+
+    monkeypatch.setattr(_mlflow.artifacts, "download_artifacts", fake_download)
+    # Call with a non-default path.
+    result = verify_run_artifact_integrity(
+        "run-x", "irrelevant_hash", artifact_path="sklearn-model"
+    )
+    assert captured["artifact_path"] == "sklearn-model"
+    # match is False (we passed a bogus expected hash) but error is None —
+    # the recompute itself succeeded.
+    assert result["match"] is False
+    assert result["error"] is None

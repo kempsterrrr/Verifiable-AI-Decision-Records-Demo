@@ -122,6 +122,64 @@ def artifact_checksums(client_or_run_id, run_id: str | None = None, artifact_pat
     return checksums
 
 
+def verify_run_artifact_integrity(
+    run_id: str,
+    expected_artifact_hash: str | None,
+    artifact_path: str = "model",
+) -> dict:
+    """Re-derive a run's artifact hash from MLflow's current storage and
+    compare to the value committed in the Arweave proof.
+
+    This is the actual integrity check: we hash whatever MLflow stores
+    NOW and check it matches what was anchored. Catches any post-anchor
+    mutation of the model files (someone swapped model.pkl, etc.).
+
+    Args:
+        run_id: The MLflow run id whose artifacts to re-hash.
+        expected_artifact_hash: The hash committed in the Arweave proof
+            (typically read from the proof's ``record.artifact_hash``).
+            ``None`` is allowed and produces ``match=None`` with an
+            explanatory error so callers can render "Not checked".
+        artifact_path: The artifact subdirectory to hash. Defaults to
+            ``"model"`` (matches what :func:`anchor` writes by default).
+            Pass a custom value when the run logged its model under a
+            non-default path.
+
+    Returns:
+        ``{match: bool|None, recomputed: str|None, expected: str|None,
+        error: str|None}``. ``match`` is ``None`` when the recompute
+        couldn't run (e.g., no expected hash, artifacts unavailable) so
+        the UI can render "Not checked" rather than "FAIL".
+    """
+    if not expected_artifact_hash:
+        return {
+            "match": None,
+            "recomputed": None,
+            "expected": None,
+            "error": "No anchored artifact_hash to compare against.",
+        }
+    try:
+        # canonical_json + hash_data live in proof.py — same module the
+        # rest of anchoring.py uses.
+        from ario_mlflow.proof import canonical_json, hash_data
+        checksums = artifact_checksums(run_id, artifact_path=artifact_path)
+        recomputed = hash_data(canonical_json(checksums))
+        return {
+            "match": recomputed == expected_artifact_hash,
+            "recomputed": recomputed,
+            "expected": expected_artifact_hash,
+            "error": None,
+        }
+    except Exception as e:
+        logger.warning(f"Could not re-derive artifact hash for run {run_id}: {e}")
+        return {
+            "match": None,
+            "recomputed": None,
+            "expected": expected_artifact_hash,
+            "error": str(e),
+        }
+
+
 def anchor(
     proof_engine: ProofEngine | None = None,
     arweave: ArweaveAnchor | None = None,

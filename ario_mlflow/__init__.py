@@ -23,6 +23,12 @@ def __getattr__(name):
     if name == "PredictionVerificationResult":
         from ario_mlflow.decision_verify import PredictionVerificationResult
         return PredictionVerificationResult
+    if name == "verify_envelope":
+        from ario_mlflow.verify import verify_envelope
+        return verify_envelope
+    if name == "verify_run_artifact_integrity":
+        from ario_mlflow.anchoring import verify_run_artifact_integrity
+        return verify_run_artifact_integrity
     raise AttributeError(f"module 'ario_mlflow' has no attribute {name!r}")
 
 
@@ -34,4 +40,6 @@ __all__ = [
     "ArioMlflowClient",
     "verify_prediction",
     "PredictionVerificationResult",
+    "verify_envelope",
+    "verify_run_artifact_integrity",
 ]

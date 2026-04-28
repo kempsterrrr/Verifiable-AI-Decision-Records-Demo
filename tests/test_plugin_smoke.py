@@ -661,6 +661,106 @@ def test_registration_continues_when_upload_raises(monkeypatch):
     assert "ario.payload_hash" in tags
 
 
+def test_anchor_registration_rejects_mismatched_run_id():
+    """When run_id and the parsed source URI run_id disagree, the
+    registration must fail loudly rather than silently producing a
+    proof with internally inconsistent provenance (chain link to one
+    run, ``source`` field claiming another).
+
+    Surface: the ValueError is caught by the daemon thread's outer
+    except and recorded as ``status="failed"`` with the validation
+    message. Caller sees the failure via ``anchor_status()``.
+    """
+    import ario_mlflow.client as client_module
+    from ario_mlflow.proof import ProofEngine
+
+    statuses: list = []
+
+    class _Client(client_module.ArioMlflowClient):
+        def __init__(self):
+            import tempfile as _t
+            self._proof_engine = ProofEngine(
+                str(_t.mkdtemp() + "/priv"),
+                str(_t.mkdtemp() + "/pub"),
+            )
+            self._anchor = type("A", (), {"enabled": False, "upload_proof": lambda *a, **k: None})()
+
+        def get_run(self, rid):
+            raise AssertionError(
+                "get_run should not have been called — validation must fail "
+                "before any provenance reads happen"
+            )
+
+        def set_model_version_tag(self, *a, **kw): pass
+        def log_artifacts(self, *a, **kw): pass
+        def _record_status(self, event_type, name, version, **kw):
+            statuses.append({"event_type": event_type, "name": name, "version": str(version), **kw})
+
+    c = _Client()
+    # Mismatched: run_id="alice" but source points to a different run.
+    c._anchor_registration("fraud", "1", run_id="alice", source="runs:/bob/model")
+
+    assert statuses, "no status was recorded"
+    last = statuses[-1]
+    assert last["status"] == "failed", last
+    # Error message must name both run IDs so the user can fix the input.
+    assert "alice" in last["error"]
+    assert "bob" in last["error"]
+
+
+def test_anchor_registration_accepts_matching_run_id_and_source():
+    """The validation must not reject the common case where run_id and
+    source URI agree — that's the most-typical caller pattern."""
+    import ario_mlflow.client as client_module
+    from ario_mlflow.proof import ProofEngine
+
+    captured: dict = {"get_run_called_with": None}
+    statuses: list = []
+
+    class _FakeRun:
+        data = type("D", (), {"tags": {
+            "ario.training_tx": "TX-T",
+            "ario.artifact_hash": "h",
+        }})()
+
+    class _Client(client_module.ArioMlflowClient):
+        def __init__(self):
+            import tempfile as _t
+            self._proof_engine = ProofEngine(
+                str(_t.mkdtemp() + "/priv"),
+                str(_t.mkdtemp() + "/pub"),
+            )
+            self._anchor = type("A", (), {"enabled": False, "upload_proof": lambda *a, **k: None})()
+
+        def get_run(self, rid):
+            captured["get_run_called_with"] = rid
+            return _FakeRun()
+
+        def set_model_version_tag(self, *a, **kw): pass
+        def log_artifacts(self, *a, **kw): pass
+        def _record_status(self, event_type, name, version, **kw):
+            statuses.append({"event_type": event_type, "name": name, "version": str(version), **kw})
+
+    import ario_mlflow.client as cm
+    import pytest as _pt
+    monkeypatch_attr = _pt.MonkeyPatch()
+    monkeypatch_attr.setattr(cm, "artifact_checksums", lambda *a, **kw: {})
+
+    try:
+        c = _Client()
+        # Matching: run_id="abc" and source points to the same run.
+        c._anchor_registration("fraud", "1", run_id="abc", source="runs:/abc/model")
+
+        # No "failed" status — the matching pair is accepted.
+        assert statuses, "no status was recorded"
+        last = statuses[-1]
+        assert last["status"] in ("anchored", "signed"), last
+        # And get_run was called with the agreed-on run_id.
+        assert captured["get_run_called_with"] == "abc"
+    finally:
+        monkeypatch_attr.undo()
+
+
 def test_promotion_continues_when_upload_raises(monkeypatch):
     """Same fix for promotion: upload exception degrades to signed-only,
     payload artifact is still written. Status correctly reports "signed"
@@ -717,6 +817,13 @@ def test_promotion_continues_when_upload_raises(monkeypatch):
     files = artifacts_logged[0]["files"]
     assert any(f.startswith("promotions/") and f.endswith("payload.json") for f in files), list(files.keys())
     assert any(f.startswith("promotions/") and f.endswith("proof.json") for f in files)
+    # Per CodeRabbit third-pass: ario.promotion_payload_hash must be
+    # written even on signed-only fallback so model versions advertise
+    # their promotion provenance regardless of upload outcome.
+    tags = mv_tags.get(("fraud", "5"), {})
+    assert "ario.promotion_payload_hash" in tags, tags
+    # ario.promotion_tx is only written when upload actually succeeded.
+    assert "ario.promotion_tx" not in tags, tags
 
 
 def test_ario_verify_normalize_handles_null_sub_objects():

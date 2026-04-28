@@ -279,8 +279,18 @@ class ArioMlflowClient(MlflowClient):
 
             # When run_id is absent, derive it from the source URI so the
             # registration proof still links to the training run rather
-            # than minting a fresh GENESIS chain.
+            # than minting a fresh GENESIS chain. When BOTH are present
+            # and disagree, fail loudly: silently preferring run_id
+            # would mint a structurally inconsistent proof — the chain
+            # link would point to one run while the signed payload's
+            # ``source`` field claims a different one.
             src_run_id, src_artifact_path = parse_runs_uri(source)
+            if run_id and src_run_id and run_id != src_run_id:
+                raise ValueError(
+                    f"run_id {run_id!r} does not match source URI run_id "
+                    f"{src_run_id!r}; refusing to mint a proof with "
+                    f"inconsistent provenance"
+                )
             source_run_id = run_id or src_run_id
 
             if source_run_id:
@@ -532,9 +542,19 @@ class ArioMlflowClient(MlflowClient):
                         f"{model_name}/v{version} (event {event_id}): {e}"
                     )
 
+            # Always write ario.promotion_payload_hash — it's the stable
+            # pointer to the payload artifact under
+            # promotions/<event_id>/payload.json regardless of upload
+            # outcome. ario.promotion_tx is only meaningful when the
+            # upload succeeded. Symmetric with how registration always
+            # writes ario.payload_hash and conditionally writes
+            # ario.registration_tx.
+            self.set_model_version_tag(
+                model_name, version, "ario.promotion_payload_hash", payload_hash,
+            )
+
             if result:
                 self.set_model_version_tag(model_name, version, "ario.promotion_tx", result["tx_id"])
-                self.set_model_version_tag(model_name, version, "ario.promotion_payload_hash", payload_hash)
                 logger.info(
                     f"Promotion {model_name}/v{version} "
                     f"({from_stage}->{to_stage}) anchored: tx={result['tx_id']}"

@@ -217,25 +217,14 @@
         </div>
 
         {% if records %}
-        {# Compute status counts. Every tampered record counts as "failed"
-           regardless of whether its last_verification dict happens to have
-           been populated — the tamper flag itself is the authoritative
-           signal and survives regardless of when the tamper happened. #}
-        {% set ns = namespace(verified=0, anchored=0, failed=0, local=0, anchoring=0) %}
+        {% set ns = namespace(verified=0, tampered=0, anchored=0, anchoring=0, local=0) %}
         {% for env in records %}
-            {% set v = env.get('last_verification') %}
-            {% if env.get('tampered') %}
-                {% set ns.failed = ns.failed + 1 %}
-            {% elif v and v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
-                {% set ns.verified = ns.verified + 1 %}
-            {% elif v and (not v.hash_valid or not v.signature_valid or (v.permanent_copy_found and not v.hash_match)) %}
-                {% set ns.failed = ns.failed + 1 %}
-            {% elif env.arweave_tx_id %}
-                {% set ns.anchored = ns.anchored + 1 %}
-            {% elif arweave_enabled %}
-                {% set ns.anchoring = ns.anchoring + 1 %}
-            {% else %}
-                {% set ns.local = ns.local + 1 %}
+            {% set s = env.get('row_status') %}
+            {% if s == 'verified' %}{% set ns.verified = ns.verified + 1 %}
+            {% elif s == 'tampered' %}{% set ns.tampered = ns.tampered + 1 %}
+            {% elif s == 'anchored' %}{% set ns.anchored = ns.anchored + 1 %}
+            {% elif s == 'anchoring' %}{% set ns.anchoring = ns.anchoring + 1 %}
+            {% else %}{% set ns.local = ns.local + 1 %}
             {% endif %}
         {% endfor %}
 
@@ -249,9 +238,9 @@
                 <div class="stat-number">{{ ns.anchored + ns.anchoring }}</div>
                 <div class="stat-label">Anchored</div>
             </div>
-            <div class="stat-card stat-failed" onclick="filterStatus('failed')" id="filter-failed">
-                <div class="stat-number">{{ ns.failed }}</div>
-                <div class="stat-label">Failed</div>
+            <div class="stat-card stat-failed" onclick="filterStatus('tampered')" id="filter-tampered">
+                <div class="stat-number">{{ ns.tampered }}</div>
+                <div class="stat-label">Tampered</div>
             </div>
             <div class="stat-card stat-local" onclick="filterStatus('local')" id="filter-local">
                 <div class="stat-number">{{ ns.local }}</div>
@@ -369,21 +358,10 @@
             </thead>
             <tbody>
                 {% for env in records|reverse %}
-                {% set v = env.get('last_verification') %}
-                {% if env.get('tampered') %}
-                    {% set row_status = 'failed' %}
-                {% elif v and v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
-                    {% set row_status = 'verified' %}
-                {% elif v and (not v.hash_valid or not v.signature_valid or (v.permanent_copy_found and not v.hash_match)) %}
-                    {% set row_status = 'failed' %}
-                {% elif env.arweave_tx_id %}
-                    {% set row_status = 'anchored' %}
-                {% elif arweave_enabled %}
-                    {% set row_status = 'anchoring' %}
-                {% else %}
-                    {% set row_status = 'local' %}
-                {% endif %}
-                <tr data-status="{{ row_status }}" data-date="{{ env.record.timestamp[:10] }}" data-version="{{ env.record.model_version }}">
+                {% set row_status = env.get('row_status', 'anchored') %}
+                <tr data-status="{{ row_status }}"
+                    data-date="{{ env.record.timestamp[:10] if env.record.timestamp else '' }}"
+                    data-version="{{ env.record.model_version }}">
                     <td><a href="/ui/decisions/{{ env.record.decision_id }}"><span class="mono">{{ env.record.decision_id[:8] }}</span></a></td>
                     <td>{{ env.record.timestamp[:19] }}</td>
                     <td>v{{ env.record.model_version }}</td>
@@ -401,14 +379,14 @@
                     <td>
                         {% if row_status == 'verified' %}
                             <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
-                        {% elif row_status == 'failed' %}
-                            <span class="badge badge-red"><span class="badge-dot"></span> Failed</span>
+                        {% elif row_status == 'tampered' %}
+                            <span class="badge badge-red"><span class="badge-dot"></span> Tampered</span>
                         {% elif row_status == 'anchored' %}
                             <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
                         {% elif row_status == 'anchoring' %}
                             <span class="badge badge-yellow"><span class="badge-dot badge-dot-pulse"></span> Anchoring</span>
                         {% else %}
-                            <span class="badge badge-gray"><span class="badge-dot"></span> Local Only</span>
+                            <span class="badge badge-gray"><span class="badge-dot"></span> Local</span>
                         {% endif %}
                     </td>
                     <td>
@@ -440,6 +418,7 @@
     function filterStatus(status) {
         activeStatus = (activeStatus === status) ? null : status;
         document.querySelectorAll('.stat-card').forEach(el => {
+            // The tampered card has id="filter-tampered"; all others match filter-<status>.
             el.classList.toggle('active', activeStatus && el.id === 'filter-' + activeStatus);
         });
         applyFilters();
@@ -465,6 +444,7 @@
             if (activeStatus) {
                 const s = row.dataset.status;
                 if (activeStatus === 'anchored') {
+                    // "Anchored" stat card covers both anchored and anchoring rows.
                     if (s !== 'anchored' && s !== 'anchoring') show = false;
                 } else {
                     if (s !== activeStatus) show = false;

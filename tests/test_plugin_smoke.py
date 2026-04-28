@@ -2182,3 +2182,207 @@ def test_decision_detail_and_reverify_endpoint_compute_same_keys(monkeypatch):
         "decision_detail must call _compute_decision_verification "
         "(otherwise the page and the live-verify endpoint will drift)."
     )
+
+
+# --- Phase C: dashboard row_status ---
+
+
+def _make_app_state_for_row_status(monkeypatch, predict_result=None, predict_raises=None,
+                                    arweave_enabled=True, ario_cache=None):
+    """Helper: minimal app-state mock for _compute_row_status."""
+    from unittest.mock import MagicMock
+    import app.ui as ui_mod
+
+    fake_app = MagicMock()
+    fake_app.state.anchor.enabled = arweave_enabled
+    fake_app.state.ario_verify_cache = ario_cache or {}
+    fake_app.state.decision_verify_cache = {}
+    fake_app.state.decision_verify_cache_ttl_s = 60.0
+    fake_app.state.settings.mlflow_tracking_uri = "file:/dev/null"
+
+    if predict_raises is not None:
+        def _raise(*a, **kw):
+            raise predict_raises
+        monkeypatch.setattr(
+            "ario_mlflow.decision_verify.verify_prediction", _raise
+        )
+    elif predict_result is not None:
+        monkeypatch.setattr(
+            "ario_mlflow.decision_verify.verify_prediction",
+            lambda **kw: predict_result,
+        )
+    return fake_app
+
+
+def test_row_status_anchoring_when_no_tx_arweave_enabled(monkeypatch):
+    from app.ui import _compute_row_status
+    fake_app = _make_app_state_for_row_status(monkeypatch, arweave_enabled=True)
+    env = {"arweave_tx_id": None, "record": {"decision_id": "d-1"}}
+    assert _compute_row_status(fake_app, env) == "anchoring"
+
+
+def test_row_status_local_when_no_tx_arweave_disabled(monkeypatch):
+    from app.ui import _compute_row_status
+    fake_app = _make_app_state_for_row_status(monkeypatch, arweave_enabled=False)
+    env = {"arweave_tx_id": None, "record": {"decision_id": "d-1"}}
+    assert _compute_row_status(fake_app, env) == "local"
+
+
+def test_row_status_anchored_when_no_attestation_cached(monkeypatch):
+    from unittest.mock import MagicMock
+    from app.ui import _compute_row_status
+
+    pred_result = MagicMock(
+        match_input=True, match_output=True, overall_match=True, error=None,
+    )
+    fake_app = _make_app_state_for_row_status(
+        monkeypatch, predict_result=pred_result, ario_cache={},
+    )
+    env = {"arweave_tx_id": "TX1", "record": {"decision_id": "d-1"}}
+    assert _compute_row_status(fake_app, env) == "anchored"
+
+
+def test_row_status_verified_when_attestation_in_cache_and_prediction_intact(monkeypatch):
+    from unittest.mock import MagicMock
+    from app.ui import _compute_row_status
+
+    pred_result = MagicMock(
+        match_input=True, match_output=True, overall_match=True, error=None,
+    )
+    fake_app = _make_app_state_for_row_status(
+        monkeypatch,
+        predict_result=pred_result,
+        ario_cache={"TX1": {"attestation_level": 3}},
+    )
+    env = {"arweave_tx_id": "TX1", "record": {"decision_id": "d-1"}}
+    assert _compute_row_status(fake_app, env) == "verified"
+
+
+def test_row_status_tampered_overrides_cache(monkeypatch):
+    """Even with attestation in cache, prediction integrity FAIL → tampered."""
+    from unittest.mock import MagicMock
+    from app.ui import _compute_row_status
+
+    pred_result = MagicMock(
+        match_input=False, match_output=True, overall_match=False, error=None,
+    )
+    fake_app = _make_app_state_for_row_status(
+        monkeypatch,
+        predict_result=pred_result,
+        ario_cache={"TX1": {"attestation_level": 3}},  # Attested but tampered
+    )
+    env = {"arweave_tx_id": "TX1", "record": {"decision_id": "d-1"}}
+    assert _compute_row_status(fake_app, env) == "tampered"
+
+
+def test_row_status_uses_cache_within_ttl(monkeypatch):
+    """Second call within TTL must not re-invoke verify_prediction."""
+    import time
+    from unittest.mock import MagicMock
+    from app.ui import _compute_row_status
+
+    pred_result = MagicMock(
+        match_input=True, match_output=True, overall_match=True, error=None,
+    )
+    call_count = {"n": 0}
+
+    def fake_verify(**kw):
+        call_count["n"] += 1
+        return pred_result
+
+    monkeypatch.setattr("ario_mlflow.decision_verify.verify_prediction", fake_verify)
+
+    from unittest.mock import MagicMock as MM
+    fake_app = MM()
+    fake_app.state.anchor.enabled = True
+    fake_app.state.ario_verify_cache = {}
+    fake_app.state.decision_verify_cache = {}
+    fake_app.state.decision_verify_cache_ttl_s = 60.0
+    fake_app.state.settings.mlflow_tracking_uri = "file:/dev/null"
+
+    env = {"arweave_tx_id": "TX1", "record": {"decision_id": "d-1"}}
+    _compute_row_status(fake_app, env)
+    _compute_row_status(fake_app, env)
+    assert call_count["n"] == 1, "Second call must hit the cache."
+
+
+def test_list_recent_decisions_skips_status_when_compute_status_false(monkeypatch):
+    """compute_status=False must not call verify_prediction at all."""
+    from unittest.mock import MagicMock
+    import app.ui as ui_mod
+    from app.ui import _list_recent_decisions
+
+    # Stub the trace search so we get one envelope-shaped object back.
+    fake_trace_info = MagicMock()
+    fake_trace_info.tags = {"ario.decision_id": "d-1", "ario.arweave_tx": "TX1"}
+    fake_trace_info.request_time = 1777300000000
+
+    fake_traces = [MagicMock(info=fake_trace_info)]
+    fake_client = MagicMock()
+    fake_client.search_experiments.return_value = [MagicMock(experiment_id="0")]
+    fake_client.search_traces.return_value = fake_traces
+
+    monkeypatch.setattr(ui_mod.mlflow.tracking, "MlflowClient", lambda: fake_client)
+    monkeypatch.setattr(ui_mod.mlflow, "set_tracking_uri", lambda _u: None)
+
+    # Track verify_prediction calls.
+    called = {"n": 0}
+    def fake_verify(**kw):
+        called["n"] += 1
+        return MagicMock(overall_match=True)
+    monkeypatch.setattr("ario_mlflow.decision_verify.verify_prediction", fake_verify)
+
+    fake_app = MagicMock()
+    fake_app.state.settings.mlflow_tracking_uri = "file:/dev/null"
+    fake_app.state.anchor = MagicMock(enabled=True)
+    fake_app.state.ario_verify_cache = {}
+    fake_app.state.decision_verify_cache = {}
+
+    envs = _list_recent_decisions(fake_app, compute_status=False)
+    assert called["n"] == 0, "compute_status=False must not invoke verify_prediction."
+    # And the envelopes must NOT have row_status (the route doesn't need it).
+    assert all("row_status" not in env for env in envs)
+
+
+def test_tamper_decision_busts_decision_verify_cache(monkeypatch, tmp_path):
+    """After tamper, the cache must be empty for that decision_id so the
+    dashboard recomputes status on next load."""
+    from unittest.mock import MagicMock
+    from app.main import api_tamper_decision
+
+    # Build a faux mlruns layout with one trace.
+    mlruns = tmp_path / "mlruns"
+    exp_dir = mlruns / "0" / "traces" / "tr-test" / "artifacts"
+    exp_dir.mkdir(parents=True)
+    traces_json_path = exp_dir / "traces.json"
+    import json as _json
+    traces_json_path.write_text(_json.dumps({
+        "spans": [{
+            "attributes": {
+                "mlflow.spanInputs": _json.dumps(
+                    {"input_data": {"credit_score": 700.0}}
+                ),
+            },
+        }],
+    }))
+
+    fake_request = MagicMock()
+    fake_request.app.state.settings.mlflow_tracking_uri = str(mlruns)
+    fake_request.app.state.decision_verify_cache = {"d-1": {"result": "stale", "computed_at": 0}}
+
+    fake_trace_info = MagicMock()
+    fake_trace_info.trace_id = "tr-test"
+    fake_trace_info.experiment_id = "0"
+    fake_trace_info.tags = {"ario.decision_id": "d-1"}
+
+    import mlflow as _mlflow
+    fake_client = MagicMock()
+    fake_client.search_experiments.return_value = [MagicMock(experiment_id="0")]
+    fake_client.search_traces.return_value = [MagicMock(info=fake_trace_info)]
+    monkeypatch.setattr(_mlflow.tracking, "MlflowClient", lambda: fake_client)
+    monkeypatch.setattr(_mlflow, "set_tracking_uri", lambda _u: None)
+
+    out = api_tamper_decision(fake_request, "d-1")
+    assert "d-1" not in fake_request.app.state.decision_verify_cache, (
+        "Tamper must evict the per-decision cache entry."
+    )

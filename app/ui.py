@@ -144,10 +144,96 @@ def _envelope_from_trace(trace_info) -> dict:
     }
 
 
-def _list_recent_decisions(app, max_results: int = 50) -> list[dict]:
+def _compute_row_status(app, envelope: dict) -> str:
+    """Compute the dashboard row's badge status from real verification state.
+
+    Returns one of: 'verified', 'tampered', 'anchored', 'anchoring', 'local'.
+
+    State machine:
+        no arweave_tx_id → 'anchoring' if Arweave is enabled, else 'local'
+        verify_prediction(...).overall_match is False → 'tampered'
+        ario_verify_cache has attestation_level for this tx
+            AND prediction_integrity passed → 'verified'
+        otherwise → 'anchored'
+
+    Notes:
+    - 'tampered' wins over the cache: an attestation says "the bytes on
+      Arweave are intact"; it doesn't speak to whether MLflow's recorded
+      inputs match those bytes. Prediction integrity DOES.
+    - We do not call ario_verify.submit_verification from here — only
+      count cache hits — so the dashboard never hammers ar.io. Rows
+      transition anchored→verified after a user has visited the detail
+      page (or clicked the live-verify button) for that decision.
+    """
+    import time
+    tx_id = envelope.get("arweave_tx_id")
+    if not tx_id:
+        arweave_enabled = bool(app.state.anchor and app.state.anchor.enabled)
+        return "anchoring" if arweave_enabled else "local"
+
+    decision_id = (envelope.get("record") or {}).get("decision_id")
+    if not decision_id:
+        return "anchored"
+
+    # Prediction integrity: cached for TTL seconds.
+    pi_cache = getattr(app.state, "decision_verify_cache", None)
+    ttl = getattr(app.state, "decision_verify_cache_ttl_s", 60.0)
+    pi = None
+    now = time.time()
+    if pi_cache is not None:
+        cached = pi_cache.get(decision_id)
+        if cached and (now - cached.get("computed_at", 0)) < ttl:
+            pi = cached.get("result")
+
+    if pi is None:
+        try:
+            from ario_mlflow.decision_verify import verify_prediction
+            result = verify_prediction(
+                decision_id=decision_id,
+                tracking_uri=app.state.settings.mlflow_tracking_uri,
+                arweave=app.state.anchor,
+            )
+            pi = {
+                "match_input": result.match_input,
+                "match_output": result.match_output,
+                "overall_match": result.overall_match,
+                "error": result.error,
+            }
+            if pi_cache is not None:
+                pi_cache[decision_id] = {"result": pi, "computed_at": now}
+        except Exception as e:
+            logger.debug(f"verify_prediction failed for {decision_id}: {e}")
+            pi = None
+
+    if pi and pi.get("overall_match") is False:
+        return "tampered"
+
+    # Verified requires both prediction integrity passing AND a recorded
+    # ar.io attestation in the cache (populated when the user visits
+    # detail page or clicks live-verify).
+    att_cache = getattr(app.state, "ario_verify_cache", {}) or {}
+    attestation = att_cache.get(tx_id)
+    if (
+        pi
+        and pi.get("overall_match") is True
+        and attestation
+        and attestation.get("attestation_level") in (1, 2, 3)
+    ):
+        return "verified"
+
+    return "anchored"
+
+
+def _list_recent_decisions(app, max_results: int = 50, compute_status: bool = True) -> list[dict]:
     """Return recent decision envelopes by querying MLflow traces.
 
-    Replaces the old app.state.store.list_all() — predictions live as traces now.
+    Args:
+        max_results: Cap on traces returned. Tighten this on the dashboard
+            (default 50) to bound the cost of per-row verification.
+        compute_status: When True (default), each envelope gets a
+            ``row_status`` field populated by :func:`_compute_row_status`.
+            Set False from callers like chain-integrity that walk many
+            traces and don't need badge state — keeps that path fast.
     """
     settings = app.state.settings
     mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
@@ -169,6 +255,11 @@ def _list_recent_decisions(app, max_results: int = 50) -> list[dict]:
     envelopes = []
     for trace in traces:
         envelopes.append(_envelope_from_trace(trace.info))
+
+    if compute_status:
+        for env in envelopes:
+            env["row_status"] = _compute_row_status(app, env)
+
     return envelopes
 
 

@@ -75,6 +75,13 @@ async def lifespan(app: FastAPI):
     # busts. Acceptable for a demo; production would persist.
     app.state.ario_verify_cache: dict[str, dict] = {}
 
+    # Per-process cache of verify_prediction results, keyed by decision_id.
+    # Stored as {result_dict, computed_at: float epoch seconds}. 60s TTL.
+    # Tamper / untamper / live-verify endpoints evict explicitly so the
+    # dashboard reflects state changes immediately.
+    app.state.decision_verify_cache: dict[str, dict] = {}
+    app.state.decision_verify_cache_ttl_s: float = 60.0
+
     # NEW: ArioMlflowClient handles registration/promotion anchoring with chaining.
     app.state.ario_client = ArioMlflowClient(
         tracking_uri=settings.mlflow_tracking_uri,
@@ -547,6 +554,12 @@ def api_tamper_decision(request: Request, decision_id: str):
     with open(traces_json, "w") as f:
         _json.dump(data, f)
 
+    # Bust the row-status cache so the dashboard flips immediately on
+    # the next render (otherwise stale up to TTL seconds).
+    cache = getattr(request.app.state, "decision_verify_cache", None)
+    if cache is not None:
+        cache.pop(decision_id, None)
+
     return {
         "decision_id": decision_id,
         "trace_id": trace_id,
@@ -632,6 +645,13 @@ def api_untamper_decision(request: Request, decision_id: str):
         raise HTTPException(status_code=404, detail="No tamper backup found.")
     import shutil
     shutil.move(backup, traces_json)
+
+    # Bust the row-status cache so the dashboard flips immediately on
+    # the next render (otherwise stale up to TTL seconds).
+    cache = getattr(request.app.state, "decision_verify_cache", None)
+    if cache is not None:
+        cache.pop(decision_id, None)
+
     return {"decision_id": decision_id, "restored_path": traces_json}
 
 
@@ -792,7 +812,7 @@ def chain_integrity(request: Request):
     # Pull a generous cap rather than paginate — this is a demo. The chain
     # integrity claim is "all anchored decisions are correctly chained", so
     # a hard cap of 50 was too low. 5000 covers any realistic demo state.
-    trace_envelopes = _list_recent_decisions(request.app, max_results=5000)
+    trace_envelopes = _list_recent_decisions(request.app, max_results=5000, compute_status=False)
 
     # For chain integrity we need the full envelope (with record_hash, previous_hash,
     # record) which only exists on Arweave. Unanchored records are skipped.

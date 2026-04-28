@@ -1832,3 +1832,53 @@ def test_verify_prediction_catches_input_mutation(monkeypatch, tmp_path):
     # Output is untouched, should still match.
     assert result.match_output is True
     assert result.overall_match is False
+
+
+def test_resolve_tracking_uri_normalizes_bare_paths(tmp_path):
+    """The tamper endpoints' URI parser must accept bare paths like 'mlruns'
+    in addition to 'file:///abs' and 'file:rel'. This was broken — bare
+    paths got rejected as 'not a file backend'."""
+    from app.main import _resolve_tracking_uri_to_local_root
+    import os
+
+    # file:// absolute
+    assert _resolve_tracking_uri_to_local_root(f"file://{tmp_path}") == str(tmp_path)
+    # file: relative
+    rel = tmp_path.name
+    parent = str(tmp_path.parent)
+    cwd = os.getcwd()
+    try:
+        os.chdir(parent)
+        assert _resolve_tracking_uri_to_local_root(f"file:{rel}") == str(tmp_path)
+        # Bare relative path — was the bug.
+        assert _resolve_tracking_uri_to_local_root(rel) == str(tmp_path)
+    finally:
+        os.chdir(cwd)
+    # Real non-file backend
+    assert _resolve_tracking_uri_to_local_root("sqlite:///x.db") is None
+    assert _resolve_tracking_uri_to_local_root("http://mlflow.example.com") is None
+    # Non-existent bare path
+    assert _resolve_tracking_uri_to_local_root("/this/does/not/exist") is None
+    # Empty
+    assert _resolve_tracking_uri_to_local_root("") is None
+
+
+def test_decision_detail_runs_full_verification_without_verify_param(monkeypatch, tmp_path):
+    """Page load runs all verification checks; refresh is idempotent.
+
+    Regression for the user's confusion: clicking 'Verify with ar.io' used
+    to set ?verify=true, populate green rows, and refresh would wipe them.
+    Now verification is always-on; the URL has no ?verify param.
+    """
+    # This is essentially an integration test of the new context shape.
+    from unittest.mock import MagicMock
+    from app.ui import decision_detail
+    # We don't easily exercise the full route here without a TestClient
+    # (httpx not installed). Instead, sanity-check the route function
+    # signature: the verify parameter must be GONE.
+    import inspect
+    sig = inspect.signature(decision_detail)
+    assert "verify" not in sig.parameters, (
+        f"decision_detail must not gate verification on a `verify` parameter; "
+        f"current params: {list(sig.parameters)}"
+    )

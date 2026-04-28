@@ -24,6 +24,33 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _resolve_tracking_uri_to_local_root(tracking_uri: str) -> str | None:
+    """Normalize a tracking URI to an absolute on-disk path, or None if the
+    URI is a non-file backend (sqlite, http, etc.).
+
+    MLflow accepts several forms for file-backed stores: ``file:///abs``,
+    ``file:rel``, ``rel`` (bare path treated as relative), ``/abs``. All of
+    these resolve to a directory we can read trace data from. URIs with any
+    other scheme aren't file-backed and our direct-file-mutation tamper
+    demo can't operate on them.
+    """
+    import os as _os
+    if not tracking_uri:
+        return None
+    if tracking_uri.startswith("file://"):
+        path = tracking_uri[len("file://"):]
+    elif tracking_uri.startswith("file:"):
+        path = tracking_uri[len("file:"):]
+    elif "://" in tracking_uri:
+        # sqlite://, http://, postgresql://, etc. — not file-backed.
+        return None
+    else:
+        path = tracking_uri  # bare path, treat as relative-or-absolute filesystem
+    if not _os.path.isabs(path):
+        path = _os.path.abspath(path)
+    return path if _os.path.isdir(path) else None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -41,6 +68,12 @@ async def lifespan(app: FastAPI):
     )
     app.state.anchor = ArweaveAnchor(settings.arweave_wallet_path, settings.ario_gateway_host)
     app.state.ario_verify = ArioVerifyClient(settings.ario_verify_url)
+
+    # Per-process cache of ar.io Verify attestations, keyed by Arweave tx_id.
+    # Attestations are stable for a given tx — once finalized, the level and
+    # report URL don't change. Cache lifetime is process lifetime; restart
+    # busts. Acceptable for a demo; production would persist.
+    app.state.ario_verify_cache: dict[str, dict] = {}
 
     # NEW: ArioMlflowClient handles registration/promotion anchoring with chaining.
     app.state.ario_client = ArioMlflowClient(
@@ -449,19 +482,16 @@ def api_tamper_decision(request: Request, decision_id: str):
 
     # Locate the on-disk traces.json. File backend stores under
     # mlruns/<exp_id>/traces/<trace_id>/artifacts/traces.json.
-    tracking_uri = settings.mlflow_tracking_uri
-    if tracking_uri.startswith("file://"):
-        mlruns_dir = tracking_uri[len("file://"):]
-    elif tracking_uri.startswith("file:"):
-        mlruns_dir = tracking_uri[len("file:"):]
-    else:
-        # For non-file backends we can't directly mutate trace storage.
+    mlruns_dir = _resolve_tracking_uri_to_local_root(settings.mlflow_tracking_uri)
+    if mlruns_dir is None:
         raise HTTPException(
             status_code=501,
-            detail=f"Tamper demo only supports file-based tracking stores (got {tracking_uri}).",
+            detail=(
+                f"Tamper demo only supports file-based tracking stores "
+                f"(got {settings.mlflow_tracking_uri!r}). For file backends, "
+                f"the URI may be a bare path like 'mlruns', or 'file:///abs/path'."
+            ),
         )
-    if not os.path.isabs(mlruns_dir):
-        mlruns_dir = os.path.abspath(mlruns_dir)
 
     experiment_id = getattr(trace_info, "experiment_id", None)
     if not experiment_id:
@@ -554,15 +584,16 @@ def api_untamper_decision(request: Request, decision_id: str):
     if not trace_id or not experiment_id:
         raise HTTPException(status_code=500, detail="Could not resolve trace/experiment id.")
 
-    tracking_uri = settings.mlflow_tracking_uri
-    if tracking_uri.startswith("file://"):
-        mlruns_dir = tracking_uri[len("file://"):]
-    elif tracking_uri.startswith("file:"):
-        mlruns_dir = tracking_uri[len("file:"):]
-    else:
-        raise HTTPException(status_code=501, detail="File backend only.")
-    if not os.path.isabs(mlruns_dir):
-        mlruns_dir = os.path.abspath(mlruns_dir)
+    mlruns_dir = _resolve_tracking_uri_to_local_root(settings.mlflow_tracking_uri)
+    if mlruns_dir is None:
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                f"Tamper demo only supports file-based tracking stores "
+                f"(got {settings.mlflow_tracking_uri!r}). For file backends, "
+                f"the URI may be a bare path like 'mlruns', or 'file:///abs/path'."
+            ),
+        )
 
     traces_json = os.path.join(mlruns_dir, str(experiment_id), "traces", trace_id, "artifacts", "traces.json")
     backup = traces_json + ".tamper_backup"

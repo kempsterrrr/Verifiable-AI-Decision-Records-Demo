@@ -166,15 +166,12 @@
 {% endblock %}
 
 {% block content %}
-        {% set v = envelope.get('last_verification') %}
-
         <div class="page-header">
             <div class="page-header-left">
                 <h1>Decision Record</h1>
                 <div class="page-id">{{ envelope.record.decision_id }}</div>
             </div>
             <div class="page-actions">
-                <a id="verify-btn" href="/ui/decisions/{{ envelope.record.decision_id }}?verify=true" class="btn btn-primary btn-sm" data-loading-text="Verifying..." {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>Verify with ar.io</a>
                 <a href="/api/export/{{ envelope.record.decision_id }}" class="btn btn-outline btn-sm">Download Proof</a>
                 {% if envelope.arweave_tx_id %}
                 <button type="button" class="btn btn-outline btn-sm tamper-decision-btn"
@@ -239,79 +236,61 @@
                         Independent checks on the proof record. These verify that <em>what was anchored</em> is intact on the Arweave network — they do <strong>not</strong> speak to whether the decision itself was correct.
                     </div>
                     <div class="verify-row">
-                        <span>Hash Integrity</span>
-                        {% if v %}
-                            <span class="{{ 'check' if v.hash_valid else 'cross' }}">{{ 'PASS' if v.hash_valid else 'FAIL' }}</span>
-                        {% elif local_verification %}
+                        <span title="Recomputes the canonical hash of the proof's record bytes and compares to the stored record_hash. Catches in-memory mutation of the envelope.">Hash Integrity</span>
+                        {% if local_verification %}
                             <span class="{{ 'check' if local_verification.hash_valid else 'cross' }}">{{ 'PASS' if local_verification.hash_valid else 'FAIL' }}</span>
                         {% else %}
                             <span class="unchecked">Not checked</span>
                         {% endif %}
                     </div>
                     <div class="verify-row">
-                        <span>Signature</span>
-                        {% if v %}
-                            <span class="{{ 'check' if v.signature_valid else 'cross' }}">{{ 'PASS' if v.signature_valid else 'FAIL' }}</span>
-                        {% elif local_verification %}
+                        <span title="Verifies the Ed25519 signature over (record_hash, previous_hash, timestamp) using the proof's public key. Catches forgery of the proof envelope.">Signature</span>
+                        {% if local_verification %}
                             <span class="{{ 'check' if local_verification.signature_valid else 'cross' }}">{{ 'PASS' if local_verification.signature_valid else 'FAIL' }}</span>
                         {% else %}
                             <span class="unchecked">Not checked</span>
                         {% endif %}
                     </div>
                     <div class="verify-row">
-                        <span>Permanent Copy</span>
-                        {% if v %}
-                            {% if v.permanent_copy_found %}
-                                <span class="check">Found</span>
-                            {% else %}
-                                <span class="badge badge-yellow">Pending</span>
-                            {% endif %}
+                        <span title="The proof envelope was fetched from the ar.io gateway by tx_id. Confirms the data is reachable and gateway-rendered as a coherent proof.">Anchored on ar.io</span>
+                        {% if anchored_on_arweave %}
+                            <span class="check">YES</span>
                         {% else %}
-                            <span class="unchecked">Not checked</span>
+                            <span class="unchecked">Not anchored</span>
                         {% endif %}
                     </div>
                     <div class="verify-row">
-                        <span>Hash Match</span>
-                        {% if v %}
-                            {% if v.permanent_copy_found %}
-                                <span class="{{ 'check' if v.hash_match else 'cross' }}">{{ 'PASS' if v.hash_match else 'FAIL' }}</span>
-                            {% else %}
-                                <span class="badge badge-yellow">Pending</span>
-                            {% endif %}
-                        {% else %}
-                            <span class="unchecked">Not checked</span>
-                        {% endif %}
-                    </div>
-                    <div class="verify-row">
-                        <span>Attestation</span>
-                        {% if v and v.attestation_level %}
+                        <span title="An independent ar.io Verify operator has run their own checks on this tx and signed the result with their wallet. Their attestation level (1, 2, or 3) reflects how much they verified.">Attestation</span>
+                        {% if attestation and attestation.attestation_level %}
                             <span>
-                                {% if v.attestation_level == 3 %}
+                                {% if attestation.attestation_level == 3 %}
                                     <span class="badge badge-green" title="ar.io Verify Level 3 — the digital signature on this record has been independently verified using the original signer's public key. This is a mathematical proof, not a trust claim: the record is intact and attributable to the stated signer."><span class="badge-dot"></span> Cryptographically verified</span>
                                     <span style="margin-left:0.4rem;font-size:0.72rem;color:var(--muted);">Level 3</span>
-                                {% elif v.attestation_level == 2 %}
-                                    <span class="badge badge-yellow" title="ar.io Verify Level 2 — ar.io downloaded the raw record and independently recomputed its SHA-256 fingerprint. The bytes match the gateway's digest, confirming content integrity. Cryptographic signature verification still pending."><span class="badge-dot"></span> Content integrity confirmed</span>
+                                {% elif attestation.attestation_level == 2 %}
+                                    <span class="badge badge-yellow" title="ar.io Verify Level 2 — ar.io downloaded the raw record and independently recomputed its SHA-256 fingerprint."><span class="badge-dot"></span> Content integrity confirmed</span>
                                     <span style="margin-left:0.4rem;font-size:0.72rem;color:var(--muted);">Level 2</span>
-                                {% elif v.attestation_level == 1 %}
-                                    <span class="badge badge-yellow" title="ar.io Verify Level 1 — the record was found in a confirmed block on the Arweave network at a specific block height and timestamp. On Arweave, a confirmed block means the data is permanently stored. Content and signature verification still to come."><span class="badge-dot"></span> Finalized on Arweave</span>
+                                {% elif attestation.attestation_level == 1 %}
+                                    <span class="badge badge-yellow" title="ar.io Verify Level 1 — the record was found in a confirmed block on Arweave."><span class="badge-dot"></span> Finalized on Arweave</span>
                                     <span style="margin-left:0.4rem;font-size:0.72rem;color:var(--muted);">Level 1</span>
                                 {% endif %}
                             </span>
-                        {% elif v %}
+                        {% elif attestation %}
                             <span class="badge badge-yellow">Pending</span>
+                        {% elif anchored_on_arweave %}
+                            <span class="unchecked">Not requested</span>
                         {% else %}
-                            <span class="unchecked">Not checked</span>
+                            <span class="unchecked">Not anchored</span>
                         {% endif %}
                     </div>
 
-                    {% if v and v.attested_by %}
-                    <div class="verify-row" title="An ar.io gateway operator ran the verification above and cryptographically signed the result with their wallet. This is an independent statement on the ar.io network, separate from the verification itself.">
+                    {% if attestation and attestation.attested_by %}
+                    <div class="verify-row" title="An ar.io gateway operator ran the verification above and cryptographically signed the result with their wallet.">
                         <span>Attested by</span>
                         <span>
-                            <strong>{{ v.attested_by }}</strong>
+                            <strong>{{ attestation.attested_by }}</strong>
                             <span style="margin-left:0.35rem;font-size:0.72rem;color:var(--muted);">independent ar.io operator</span>
-                            {% if v.attested_at %}
-                                <div style="font-size:0.72rem;color:var(--muted);margin-top:0.15rem;">{{ v.attested_at[:19] }}Z</div>
+                            {% if attestation.attested_at %}
+                                <div style="font-size:0.72rem;color:var(--muted);margin-top:0.15rem;">{{ attestation.attested_at[:19] }}Z</div>
                             {% endif %}
                         </span>
                     </div>
@@ -348,57 +327,24 @@
 
                     <div class="verify-row verify-divider">
                         <strong>Overall</strong>
-                        {% if v %}
-                            {% if not v.hash_valid and v.permanent_copy_found and v.hash_match %}
-                                <strong class="cross" title="The local copy no longer matches the proof that was signed — the Arweave-anchored version is still intact.">LOCAL COPY CHANGED</strong>
-                            {% elif v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
-                                <strong class="check" title="Proof blob confirmed on Arweave. This is integrity of the record, not correctness of the decision.">PROOF CONFIRMED</strong>
-                            {% elif v.hash_valid and v.signature_valid and not v.permanent_copy_found %}
-                                <span class="badge badge-yellow">Pending</span>
-                            {% else %}
-                                <strong class="cross">FAILED</strong>
-                            {% endif %}
+                        {% set overall_pass = local_verification and local_verification.hash_valid and local_verification.signature_valid and anchored_on_arweave %}
+                        {% if local_verification and not local_verification.hash_valid and anchored_on_arweave %}
+                            <strong class="cross" title="The local proof envelope no longer matches the signed record_hash — the Arweave-anchored version is still intact.">LOCAL COPY CHANGED</strong>
+                        {% elif overall_pass %}
+                            <strong class="check" title="Proof envelope verified locally and confirmed reachable on Arweave.">PROOF CONFIRMED</strong>
+                        {% elif anchored_on_arweave %}
+                            <strong class="cross">FAILED</strong>
                         {% else %}
-                            <span class="unchecked">Not verified</span>
+                            <span class="unchecked">Not anchored yet</span>
                         {% endif %}
                     </div>
 
-                    {% if v and not v.permanent_copy_found and v.hash_valid %}
-                    <div class="verify-note verify-note-warn">
-                        {% if turbo_status and turbo_status.status == 'FINALIZED' %}
-                            Data is permanent on Arweave but couldn't be fetched. This may be a temporary gateway issue — try again.
-                        {% elif turbo_status and turbo_status.status == 'CONFIRMED' %}
-                            Proof is confirmed but hasn't finalized on Arweave yet. Try again later.
-                        {% else %}
-                            Proof was uploaded but isn't available for verification yet. Try again in a few minutes.
-                        {% endif %}
-                    </div>
-                    {% endif %}
-
-                    {% if v and v.permanent_copy_found %}
+                    {% if attestation and attestation.report_url %}
                     <div class="verify-actions">
-                        {% if v.report_url %}
-                        <a href="{{ v.report_url }}" target="_blank" class="btn btn-outline btn-sm">View Report</a>
+                        <a href="{{ attestation.report_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-outline btn-sm">View Report</a>
+                        {% if attestation.pdf_url %}
+                        <a href="{{ attestation.pdf_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-outline btn-sm">Download PDF</a>
                         {% endif %}
-                        {% if v.pdf_url %}
-                        <a href="{{ v.pdf_url }}" target="_blank" class="btn btn-outline btn-sm">Download PDF</a>
-                        {% endif %}
-                    </div>
-                    <div class="verify-meta">
-                        {% if v.attested_by %}Attested by <strong>{{ v.attested_by }}</strong>{% endif %}{% if v.attested_at %} at {{ v.attested_at[:19] }}Z{% endif %}{% if not v.attested_by %}Last verified: {{ v.verified_at[:19] }}Z{% endif %}
-                    </div>
-                    {% endif %}
-
-                    {% if not v and envelope.arweave_tx_id %}
-                    <div class="verify-meta">
-                        Hash and signature checked locally. Click <strong>Verify with ar.io</strong> for full verification.
-                    </div>
-                    {% endif %}
-
-                    {% if v and not v.hash_valid and v.permanent_copy_found and v.hash_match %}
-                    <div class="verify-note verify-note-ok">
-                        Permanent record intact on ar.io:
-                        <a href="{{ envelope.arweave_url }}" target="_blank">{{ envelope.arweave_tx_id[:24] }}...</a>
                     </div>
                     {% endif %}
 
@@ -796,8 +742,6 @@
             receipt.append(title, subtitle, receiptKv);
             body.appendChild(receipt);
 
-            const verifyBtn = document.getElementById("verify-btn");
-            if (verifyBtn) verifyBtn.style.display = "";
         }
 
         function updateStatusBadge(turboStatus) {

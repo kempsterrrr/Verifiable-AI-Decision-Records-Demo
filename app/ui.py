@@ -397,17 +397,19 @@ def who_this_is_for(request: Request):
 
 
 @router.get("/ui/decisions/{decision_id}", response_class=HTMLResponse)
-def decision_detail(request: Request, decision_id: str, verify: bool = False):
+def decision_detail(request: Request, decision_id: str):
     app = request.app
     envelope = _decision_envelope_by_id(app, decision_id)
 
     if not envelope:
         return HTMLResponse("<h1>Decision not found</h1>", status_code=404)
 
-    # Local verification (works when envelope was fetched from Arweave —
-    # which has the full record + signature + public_key for verification).
-    # Trace-tag envelopes are marked locally_verifiable=False because they
-    # can't reconstruct all signed fields; skip verify_local on them.
+    # ── Local checks (always, cheap) ─────────────────────────────────────
+    # Trace-tag envelopes are flagged locally_verifiable=False because they
+    # can't reconstruct all signed fields; verify_local would always fail
+    # on them by construction. For the canonical Arweave-fetched envelope,
+    # these checks ARE meaningful — they catch in-memory mutation of the
+    # envelope before render and signature forgery.
     local = None
     if (
         envelope.get("locally_verifiable")
@@ -416,43 +418,38 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
     ):
         local = app.state.proof_engine.verify_local(envelope)
 
-    # Full verification (on-demand)
-    if verify and envelope.get("arweave_tx_id"):
-        result = {
-            "verified_at": datetime.now(timezone.utc).isoformat(),
-            "hash_valid": local["hash_valid"] if local else None,
-            "signature_valid": local["signature_valid"] if local else None,
-            "permanent_copy_found": False,
-            "hash_match": False,
-            "attestation_level": None,
-            "report_url": None,
-            "pdf_url": None,
-            "attested_by": None,
-            "attested_at": None,
-        }
+    # ── Arweave reachability (always, fast) ──────────────────────────────
+    # We already fetched once in _envelope_from_arweave to build the
+    # envelope. The "anchored on ar.io" status is just whether that
+    # envelope came from a real fetch — captured by locally_verifiable.
+    anchored_on_arweave = bool(envelope.get("locally_verifiable") and envelope.get("arweave_tx_id"))
 
-        arweave_data = app.state.anchor.fetch_proof(envelope["arweave_tx_id"])
-        if arweave_data:
-            arweave_hash = hash_data(canonical_json(arweave_data.get("record", {})))
-            result["permanent_copy_found"] = True
-            result["hash_match"] = arweave_hash == arweave_data.get("record_hash")
+    # ── ar.io Verify attestation (cached per tx_id) ──────────────────────
+    # Independent attestation by an ar.io Verify operator. Stable for a
+    # given tx; cached for the process lifetime to avoid hammering the
+    # service on every render.
+    attestation = None
+    tx_id = envelope.get("arweave_tx_id")
+    if tx_id and app.state.ario_verify.enabled:
+        cache = app.state.ario_verify_cache
+        if tx_id in cache:
+            attestation = cache[tx_id]
+        else:
+            try:
+                normalized = app.state.ario_verify.submit_verification(tx_id)
+                if normalized:
+                    attestation = {
+                        "attestation_level": normalized.get("attestation_level"),
+                        "report_url": normalized.get("report_url"),
+                        "pdf_url": normalized.get("pdf_url"),
+                        "attested_by": normalized.get("attested_by"),
+                        "attested_at": normalized.get("attested_at"),
+                    }
+                    cache[tx_id] = attestation
+            except Exception as e:
+                logger.warning(f"ar.io Verify failed for {tx_id}: {e}")
 
-        if app.state.ario_verify.enabled:
-            normalized = app.state.ario_verify.submit_verification(envelope["arweave_tx_id"])
-            if normalized:
-                result["attestation_level"] = normalized.get("attestation_level")
-                result["report_url"] = normalized.get("report_url")
-                result["pdf_url"] = normalized.get("pdf_url")
-                result["attested_by"] = normalized.get("attested_by")
-                result["attested_at"] = normalized.get("attested_at")
-
-        envelope["last_verification"] = result
-        # NOTE: We don't persist last_verification anymore (no local store).
-        # The verification result is just shown to the user this request.
-
-    # Re-derive prediction hashes from MLflow span data and compare to the
-    # anchored proof. This catches any post-anchor mutation of the trace's
-    # recorded input/output.
+    # ── Prediction integrity (always, the meaningful MLflow ↔ Arweave check) ─
     prediction_integrity = None
     if envelope.get("arweave_tx_id"):
         try:
@@ -487,6 +484,8 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
             **_common_context(app),
             "envelope": envelope,
             "local_verification": local,
+            "anchored_on_arweave": anchored_on_arweave,
+            "attestation": attestation,
             "turbo_status": turbo_status,
             "prediction_integrity": prediction_integrity,
         },

@@ -305,6 +305,48 @@ def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
     }
 
 
+@app.post("/api/promote/{model_name}/{version}")
+def api_promote(request: Request, model_name: str, version: str):
+    """Promote a model version to Production and anchor the stage transition.
+
+    Triggers ArioMlflowClient.transition_model_version_stage which:
+    - Calls MLflow's stage transition synchronously.
+    - Spawns a daemon thread to sign + upload the promotion proof.
+    - On success, writes ario.promotion_tx onto the model version.
+
+    The endpoint waits up to 30s for the anchor to settle so the response
+    can include the resulting tx (or surface the failure cleanly).
+    """
+    ario_client = request.app.state.ario_client
+    try:
+        ario_client.transition_model_version_stage(
+            name=model_name,
+            version=version,
+            stage="Production",
+            archive_existing_versions=True,
+        )
+    except Exception as e:
+        logger.warning(f"Stage transition failed for {model_name}/v{version}: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not transition stage: {e}",
+        )
+
+    # Wait for the background anchor to complete so we can return the tx_id.
+    # The thread does a single Turbo upload — 30s is generous for that.
+    ario_client.wait_for_anchor("promotion", model_name, str(version), timeout=30.0)
+    status = ario_client.anchor_status("promotion", model_name, str(version))
+
+    return {
+        "model_name": model_name,
+        "model_version": str(version),
+        "stage": "Production",
+        "promotion_tx": status.get("tx_id"),
+        "anchor_status": status.get("status"),
+        "anchor_error": status.get("error"),
+    }
+
+
 @app.post("/api/activate/{model_name}/{version}")
 def activate_model(request: Request, model_name: str, version: str):
     """Switch the active model to a specific version."""

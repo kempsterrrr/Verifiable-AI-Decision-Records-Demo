@@ -227,6 +227,7 @@
                     <th>Accuracy</th>
                     <th>Training</th>
                     <th>Registration</th>
+                    <th>Stage</th>
                     <th>Created</th>
                     <th>Actions</th>
                 </tr>
@@ -264,6 +265,15 @@
                             <span class="badge badge-gray">—</span>
                         {% endif %}
                     </td>
+                    <td>
+                        {% if v.stage == "Production" %}
+                            <span class="badge badge-green"><span class="badge-dot"></span> Production</span>
+                        {% elif v.stage and v.stage != "None" %}
+                            <span class="badge badge-gray"><span class="badge-dot"></span> {{ v.stage }}</span>
+                        {% else %}
+                            <span class="badge badge-gray">—</span>
+                        {% endif %}
+                    </td>
                     <td>{{ v.created }}</td>
                     <td>
                         <div class="actions">
@@ -272,6 +282,13 @@
                             <form action="/api/activate/{{ model_name }}/{{ v.version }}" method="POST" style="display:inline;">
                                 <button type="submit" class="btn btn-sm" style="background: var(--lavender); color: var(--primary); border: none;" data-loading-text="Activating...">Activate</button>
                             </form>
+                            {% endif %}
+                            {% if v.stage != "Production" %}
+                            <button type="button" class="btn btn-primary btn-sm promote-btn"
+                                    data-model-name="{{ model_name }}"
+                                    data-version="{{ v.version }}">
+                                Promote
+                            </button>
                             {% endif %}
                         </div>
                     </td>
@@ -360,6 +377,32 @@
         el.classList.add('done');
         el.querySelector('.step-icon').innerHTML = '&#10003;';
     }
+
+    // --- Promote to Production ---
+    document.querySelectorAll(".promote-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+            const name = btn.dataset.modelName;
+            const version = btn.dataset.version;
+            const original = btn.textContent.trim();
+            btn.disabled = true;
+            btn.textContent = "Promoting…";
+            try {
+                const resp = await fetch(`/api/promote/${encodeURIComponent(name)}/${encodeURIComponent(version)}`, {
+                    method: "POST",
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${resp.status}`);
+                }
+                // Reload so the new stage + chain page pick up the promotion_tx.
+                window.location.reload();
+            } catch (e) {
+                btn.disabled = false;
+                btn.textContent = original;
+                alert(`Promotion failed: ${e.message}`);
+            }
+        });
+    });
 
     function pollAnchorByTx(txId, stepId) {
         // Phase 4: poll /lifecycle/by-tx/{txId} instead of /lifecycle/{eventId}.

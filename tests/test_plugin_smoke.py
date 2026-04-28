@@ -1356,3 +1356,78 @@ def test_run_prediction_returns_503_when_no_verified_model(monkeypatch):
         _run_prediction(_State(), [1.0, 2.0, 3.0, 4.0, 5.0])
     assert ei.value.status_code == 503
     assert "integrity" in ei.value.detail.lower() or "no verified model" in ei.value.detail.lower()
+
+
+def test_promote_endpoint_anchors_promotion_tx(monkeypatch, tmp_path):
+    """End-to-end: POST /api/promote/{name}/{version} writes ario.promotion_tx
+    onto the model version and the chain node lights up.
+
+    Calls api_promote directly (httpx not installed in this environment) with
+    a minimal fake Request whose app.state carries a real ArioMlflowClient
+    backed by a tmp_path MLflow store. Arweave upload is stubbed offline.
+    """
+    import mlflow as _mlflow
+    from ario_mlflow.arweave import ArweaveAnchor
+    from ario_mlflow.client import ArioMlflowClient
+    from ario_mlflow.proof import ProofEngine
+    from app.main import api_promote
+
+    monkeypatch.delenv("ARIO_MLFLOW_SIGNING_KEY", raising=False)
+    tracking_uri = f"file://{tmp_path}/mlruns"
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+
+    keys_dir = tmp_path / "keys"
+    keys_dir.mkdir()
+    monkeypatch.setenv("ED25519_PRIVATE_KEY_PATH", str(keys_dir / "priv.pem"))
+    monkeypatch.setenv("ED25519_PUBLIC_KEY_PATH", str(keys_dir / "pub.pem"))
+
+    _mlflow.set_tracking_uri(tracking_uri)
+    _mlflow.set_experiment("Default")
+
+    # Train a fresh version we can promote.
+    from app.model import train_and_register_with_params
+    info = train_and_register_with_params(
+        tracking_uri=tracking_uri,
+        model_name="credit_promote",
+        max_iter=20,
+        random_state=11,
+    )
+
+    # Build a real ArioMlflowClient backed by the tmp_path store.
+    pe = ProofEngine(str(keys_dir / "priv.pem"), str(keys_dir / "pub.pem"))
+    anchor = ArweaveAnchor(None)
+    # Stub upload_proof and force enabled on the instance (it's a plain attr).
+    anchor.enabled = True
+    monkeypatch.setattr(
+        anchor,
+        "upload_proof",
+        lambda proof: {"tx_id": "STUB_PROMO_TX", "url": "https://stub/raw/STUB_PROMO_TX", "receipt": None},
+    )
+    ario_client = ArioMlflowClient(
+        tracking_uri=tracking_uri,
+        proof_engine=pe,
+        anchor=anchor,
+    )
+
+    # Minimal fake Request with app.state.ario_client set.
+    class _State:
+        pass
+
+    class _App:
+        state = _State()
+
+    _App.state.ario_client = ario_client
+
+    class _Request:
+        app = _App()
+
+    body = api_promote(_Request(), model_name="credit_promote", version=info["model_version"])
+
+    assert body["stage"] == "Production"
+    assert body["promotion_tx"] == "STUB_PROMO_TX"
+    assert body["anchor_status"] == "anchored"
+
+    # Confirm the tag landed on the model version.
+    mlflow_client = _mlflow.tracking.MlflowClient(tracking_uri=tracking_uri)
+    mv = mlflow_client.get_model_version("credit_promote", info["model_version"])
+    assert (mv.tags or {}).get("ario.promotion_tx") == "STUB_PROMO_TX"

@@ -226,16 +226,21 @@
         {% set ns = namespace(verified=0, anchored=0, failed=0, local=0, anchoring=0) %}
         {% for env in records %}
             {% set v = env.get('last_verification') %}
-            {% if v and v.overall is sameas true %}
+            {# Use ``v.get('overall')`` (item access) — ``v.overall`` would
+               return Undefined for legacy records missing the field, and
+               ``Undefined is none`` evaluates False, dropping legacy
+               records into the wrong branch. ``.get()`` returns None
+               cleanly and matches Python's _is_fully_verified semantics. #}
+            {% if v and v.get('overall') is sameas true %}
                 {% set ns.verified = ns.verified + 1 %}
-            {% elif v and v.overall is sameas false and v.signature_valid is sameas true and v.hash_match is sameas true and v.attestation_level and v.attestation_level < 2 %}
-                {# "Pending ar.io confirmation" — cryptographic checks pass,
-                   ar.io still propagating from L1 to L2-L3. Counted as
-                   anchored, not failed, to match the detail page. #}
+            {% elif v and v.get('overall') is sameas false and v.signature_valid is sameas true and v.hash_match is sameas true and (v.source_of_truth_ok is sameas true or v.source_of_truth_ok is none) and v.attestation_level and v.attestation_level < 2 %}
+                {# "Pending ar.io confirmation" — cryptographic + source-of-truth
+                   checks pass, ar.io still propagating from L1 to L2-L3.
+                   Counted as anchored, not failed, to match the detail page. #}
                 {% set ns.anchored = ns.anchored + 1 %}
-            {% elif v and v.overall is sameas false %}
+            {% elif v and v.get('overall') is sameas false %}
                 {% set ns.failed = ns.failed + 1 %}
-            {% elif v and v.overall is none and v.signature_valid is sameas true and v.permanent_copy_found and v.hash_match is sameas true %}
+            {% elif v and v.get('overall') is none and v.signature_valid is sameas true and v.permanent_copy_found and v.hash_match is sameas true %}
                 {% set ns.verified = ns.verified + 1 %}
             {% elif v and (v.signature_valid is sameas false or (v.permanent_copy_found and v.hash_match is sameas false)) %}
                 {% set ns.failed = ns.failed + 1 %}
@@ -373,14 +378,14 @@
             <tbody>
                 {% for env in records|reverse %}
                 {% set v = env.get('last_verification') %}
-                {% if v and v.overall is sameas true %}
+                {% if v and v.get('overall') is sameas true %}
                     {% set row_status = 'verified' %}
-                {% elif v and v.overall is sameas false and v.signature_valid is sameas true and v.hash_match is sameas true and v.attestation_level and v.attestation_level < 2 %}
+                {% elif v and v.get('overall') is sameas false and v.signature_valid is sameas true and v.hash_match is sameas true and (v.source_of_truth_ok is sameas true or v.source_of_truth_ok is none) and v.attestation_level and v.attestation_level < 2 %}
                     {# "Pending ar.io confirmation" — match detail page. #}
                     {% set row_status = 'anchored' %}
-                {% elif v and v.overall is sameas false %}
+                {% elif v and v.get('overall') is sameas false %}
                     {% set row_status = 'failed' %}
-                {% elif v and v.overall is none and v.signature_valid is sameas true and v.permanent_copy_found and v.hash_match is sameas true %}
+                {% elif v and v.get('overall') is none and v.signature_valid is sameas true and v.permanent_copy_found and v.hash_match is sameas true %}
                     {% set row_status = 'verified' %}
                 {% elif v and (v.signature_valid is sameas false or (v.permanent_copy_found and v.hash_match is sameas false)) %}
                     {% set row_status = 'failed' %}

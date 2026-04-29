@@ -241,6 +241,16 @@ def _refetch_prediction_live_fields(payload: dict, mlflow_client) -> dict:
             f"could not parse ario.payload_json from trace {trace_id}: {e}"
         ) from e
 
+    # Fail closed if the parsed JSON isn't an object: verify_source_of_truth
+    # later does ``rebuilt.update(fresh_fields)`` and ``fresh_fields.keys()``
+    # which crash on lists / strings / numbers. Those would surface as a
+    # cryptic verification error instead of a clean "trace tag is malformed".
+    if not isinstance(live_payload, dict):
+        raise LiveRefetchError(
+            f"trace {trace_id} has non-object ario.payload_json "
+            f"(got {type(live_payload).__name__}); expected a JSON object"
+        )
+
     # Return the parsed payload as the "fresh" overlay. verify_source_of_truth
     # will rebuild = original | fresh and re-canonicalize. If the trace agrees
     # with the artifact, rebuilt_bytes == payload_bytes → ok=True.

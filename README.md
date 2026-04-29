@@ -23,7 +23,7 @@ MLflow stays the system of record (canonical bytes); Arweave is the witness (com
 
 ## Architecture
 
-```
+```text
 User trains a model
   |
   v
@@ -158,16 +158,16 @@ Click a decision ID to see the full record:
 
 ### 5. Verify a Record
 
-Click **Verify with ar.io** to run on-demand verification of all four checks:
+Click **Verify with ar.io** to run on-demand verification:
 - **Signature** — Ed25519 signature on the on-chain commitment is valid
 - **Anchored bytes intact** — `ario/payload.json` in MLflow re-hashes to the envelope's `payload_hash`
 - **Source of truth matches** — re-derive canonical bytes from a *separate* live MLflow surface and compare to the anchored payload. The point is to catch MLflow tampering — if either surface was modified after anchoring, the two won't agree.
   - **Training:** re-fetches `run.data.params/metrics/artifact_checksums` from the run.
   - **Registration:** re-derives the artifact-verified state from the source run.
-  - **Predictions:** re-fetches the `ario.payload_json` trace tag (mirrored at predict time) and compares to the artifact.
-- **ar.io Verify attestation** — independent third-party check by an ar.io gateway operator
+  - **Predictions:** re-fetches the `ario.payload_json` trace tag (mirrored at predict time) and compares to the artifact. If the trace was pruned by an MLflow retention policy, this surfaces as `live_refetch_incomplete` (not a silent pass).
+- **ar.io Verify attestation** — independent third-party check by an ar.io gateway operator. **Conditional:** runs only when `VAIDR_ARIO_VERIFY_URL` (or `ARIO_MLFLOW_ARIO_VERIFY_URL` for the plugin CLI) is configured. Otherwise this check is reported as Pending / Not available, and the overall verdict is computed from the remaining three checks.
 
-All four apply to predictions, training, and registration — feature-equivalent verification across the lifecycle. The demo, the `/verify/{decision_id}` endpoint, and the `ario-mlflow verify run|model|trace` CLI all run the same four checks.
+The first three checks apply uniformly to predictions, training, and registration — feature-equivalent verification across the lifecycle. The demo, the `/verify/{decision_id}` endpoint, and the `ario-mlflow verify run|model|trace` CLI all run the same checks. Each check returns one of three states: PASS, FAIL, or Pending (transient — re-verify later).
 
 ### 6. Tamper Demo (deferred to Phase 3)
 

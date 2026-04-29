@@ -2666,3 +2666,36 @@ def test_verify_source_of_truth_for_prediction_fails_without_trace_id():
     out = verify_source_of_truth(envelope, payload_bytes, _StubClient())
     assert out["ok"] is False, out
     assert "mlflow_trace_id" in out.get("detail", ""), out
+
+
+def test_verify_source_of_truth_rejects_non_object_trace_tag():
+    """If ario.payload_json on the trace is valid JSON but not an object
+    (e.g., a tampered string, list, or number), the refetcher must fail
+    closed via LiveRefetchError instead of letting the downstream rebuild
+    crash on .update() / .keys()."""
+    from ario_mlflow.proof import canonical_json
+    from ario_mlflow.verify import verify_source_of_truth
+
+    payload = {
+        "event_type": "prediction",
+        "decision_id": "abc-123",
+        "input_hash": "0xa",
+        "output_hash": "0xb",
+        "mlflow_trace_id": "tr-bad-tag",
+    }
+    payload_bytes = canonical_json(payload)
+
+    # Trace tag has been tampered to a JSON string instead of an object.
+    class _Trace:
+        class info:
+            tags = {"ario.payload_json": '"a string instead of an object"'}
+
+    class _StubClient:
+        def get_trace(self, trace_id):
+            return _Trace()
+
+    envelope = {"event_type": "prediction"}
+    out = verify_source_of_truth(envelope, payload_bytes, _StubClient())
+    assert out["ok"] is False, out
+    assert out.get("reason") == "live_refetch_incomplete", out
+    assert "non-object" in out.get("detail", "").lower(), out

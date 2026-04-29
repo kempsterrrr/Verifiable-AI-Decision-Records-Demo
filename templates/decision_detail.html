@@ -243,14 +243,14 @@
                     <div class="verify-row" title="The canonical bytes anchored alongside the proof (ario/payload.json in MLflow) re-hash to the envelope's payload_hash.">
                         <span>Anchored Bytes Intact</span>
                         {% if v %}
-                            {% if v.permanent_copy_found %}
-                                {% if v.hash_match is sameas true %}
-                                    <span class="check">PASS</span>
-                                {% elif v.hash_match is sameas false %}
-                                    <span class="cross">FAIL</span>
-                                {% else %}
-                                    <span class="badge badge-yellow">Pending</span>
-                                {% endif %}
+                            {% if v.hash_match is sameas false %}
+                                {# Real check-2 failure: artifact missing,
+                                   unreadable, or hash mismatch. Show FAIL
+                                   even if permanent_copy_found is also False
+                                   (the artifact may have been deleted). #}
+                                <span class="cross">FAIL</span>
+                            {% elif v.permanent_copy_found and v.hash_match is sameas true %}
+                                <span class="check">PASS</span>
                             {% else %}
                                 <span class="badge badge-yellow">Pending</span>
                             {% endif %}
@@ -312,7 +312,11 @@
                         {% if v %}
                             {% if v.overall is sameas true %}
                                 <strong class="check" title="All applicable checks passed. The signed commitment, the anchored canonical bytes, the live MLflow state (where applicable), and ar.io's attestation all agree.">PROOF CONFIRMED</strong>
-                            {% elif v.overall is sameas false and v.signature_valid is sameas true and v.hash_match is sameas true and v.attestation_level and v.attestation_level < 2 %}
+                            {% elif v.overall is sameas false and v.signature_valid is sameas true and v.hash_match is sameas true and (v.source_of_truth_ok is sameas true or v.source_of_truth_ok is none) and v.attestation_level and v.attestation_level < 2 %}
+                                {# All cryptographic + source-of-truth checks pass; only ar.io
+                                   is still propagating from L1 to L2-3. Source-of-truth being
+                                   None (legacy/predictions/refetch unavailable) is acceptable
+                                   here; only an explicit False would be a real failure. #}
                                 <span class="badge badge-yellow" title="Cryptographic checks passed. ar.io's attestation is still propagating from Level 1 → Level 2-3 (typically 2-5 minutes after upload). Re-verify in a few minutes.">Pending ar.io confirmation</span>
                             {% elif v.overall is sameas false %}
                                 <strong class="cross" title="At least one check failed. See the rows above for details.">FAILED</strong>

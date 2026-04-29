@@ -134,8 +134,7 @@
             <div class="chain-node">
                 {% if training %}
                     {% set tv = training.get('last_verification') %}
-                    {% set t_ok = training_local and training_local.hash_valid and training_local.signature_valid %}
-                    <div class="chain-dot {% if tv and tv.permanent_copy_found and tv.hash_match %}chain-dot-green{% elif t_ok %}chain-dot-yellow{% else %}chain-dot-gray{% endif %}"></div>
+                    <div class="chain-dot {% if tv and tv.signature_valid and tv.permanent_copy_found and tv.hash_match %}chain-dot-green{% elif training.arweave_tx_id %}chain-dot-yellow{% else %}chain-dot-gray{% endif %}"></div>
                 {% else %}
                     <div class="chain-dot chain-dot-gray"></div>
                 {% endif %}
@@ -144,7 +143,7 @@
                         <h3>{% if training %}<a href="/ui/runs/{{ training.record.run_id }}" style="color: inherit;">Training Run</a>{% else %}Training Run{% endif %}</h3>
                         {% if training %}
                             {% set tv = training.get('last_verification') %}
-                            {% if tv and tv.hash_valid and tv.permanent_copy_found and tv.hash_match %}
+                            {% if tv and tv.signature_valid and tv.permanent_copy_found and tv.hash_match %}
                                 <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
                             {% elif training.arweave_tx_id %}
                                 <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
@@ -192,11 +191,10 @@
                             {% endif %}
                         </div>
 
-                        {% if training_local %}
+                        {% set tv = training.get('last_verification') %}
+                        {% if tv %}
                         <div class="verify-inline">
-                            <span>Hash <span class="{{ 'check' if training_local.hash_valid else 'cross' }}">{{ 'PASS' if training_local.hash_valid else 'FAIL' }}</span></span>
-                            <span>Signature <span class="{{ 'check' if training_local.signature_valid else 'cross' }}">{{ 'PASS' if training_local.signature_valid else 'FAIL' }}</span></span>
-                            {% set tv = training.get('last_verification') %}
+                            <span>Signature <span class="{{ 'check' if tv.signature_valid else 'cross' }}">{{ 'PASS' if tv.signature_valid else 'FAIL' }}</span></span>
                             {% if tv %}
                                 <span>Permanent Copy <span class="{{ 'check' if tv.permanent_copy_found else 'unchecked' }}">{{ 'Found' if tv.permanent_copy_found else 'Pending' }}</span></span>
                                 {% if tv.permanent_copy_found %}
@@ -241,8 +239,7 @@
             <div class="chain-node">
                 {% if registration %}
                     {% set rv = registration.get('last_verification') %}
-                    {% set r_ok = registration_local and registration_local.hash_valid and registration_local.signature_valid %}
-                    <div class="chain-dot {% if rv and rv.permanent_copy_found and rv.hash_match %}chain-dot-green{% elif r_ok %}chain-dot-yellow{% else %}chain-dot-gray{% endif %}"></div>
+                    <div class="chain-dot {% if rv and rv.signature_valid and rv.permanent_copy_found and rv.hash_match %}chain-dot-green{% elif registration.arweave_tx_id %}chain-dot-yellow{% else %}chain-dot-gray{% endif %}"></div>
                 {% else %}
                     <div class="chain-dot chain-dot-gray"></div>
                 {% endif %}
@@ -251,7 +248,7 @@
                         <h3>Model Registration</h3>
                         {% if registration %}
                             {% set rv = registration.get('last_verification') %}
-                            {% if rv and rv.hash_valid and rv.permanent_copy_found and rv.hash_match %}
+                            {% if rv and rv.signature_valid and rv.permanent_copy_found and rv.hash_match %}
                                 <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
                             {% elif registration.arweave_tx_id %}
                                 <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
@@ -306,11 +303,10 @@
                             {% endif %}
                         </div>
 
-                        {% if registration_local %}
+                        {% set rv = registration.get('last_verification') %}
+                        {% if rv %}
                         <div class="verify-inline">
-                            <span>Hash <span class="{{ 'check' if registration_local.hash_valid else 'cross' }}">{{ 'PASS' if registration_local.hash_valid else 'FAIL' }}</span></span>
-                            <span>Signature <span class="{{ 'check' if registration_local.signature_valid else 'cross' }}">{{ 'PASS' if registration_local.signature_valid else 'FAIL' }}</span></span>
-                            {% set rv = registration.get('last_verification') %}
+                            <span>Signature <span class="{{ 'check' if rv.signature_valid else 'cross' }}">{{ 'PASS' if rv.signature_valid else 'FAIL' }}</span></span>
                             {% if rv %}
                                 <span>Permanent Copy <span class="{{ 'check' if rv.permanent_copy_found else 'unchecked' }}">{{ 'Found' if rv.permanent_copy_found else 'Pending' }}</span></span>
                                 {% if rv.permanent_copy_found %}

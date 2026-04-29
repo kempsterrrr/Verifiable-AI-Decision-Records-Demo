@@ -115,9 +115,9 @@
                     <div class="verify-row">
                         <span>Hash Integrity</span>
                         {% if v %}
-                            <span class="{{ 'check' if v.hash_valid else 'cross' }}">{{ 'PASS' if v.hash_valid else 'FAIL' }}</span>
+                            <span class="{{ 'check' if v.hash_match else 'cross' }}">{{ 'PASS' if v.hash_match else 'FAIL' }}</span>
                         {% else %}
-                            <span class="{{ 'check' if local_verification.hash_valid else 'cross' }}">{{ 'PASS' if local_verification.hash_valid else 'FAIL' }}</span>
+                            <span class="unchecked">Not checked</span>
                         {% endif %}
                     </div>
                     <div class="verify-row">
@@ -125,7 +125,7 @@
                         {% if v %}
                             <span class="{{ 'check' if v.signature_valid else 'cross' }}">{{ 'PASS' if v.signature_valid else 'FAIL' }}</span>
                         {% else %}
-                            <span class="{{ 'check' if local_verification.signature_valid else 'cross' }}">{{ 'PASS' if local_verification.signature_valid else 'FAIL' }}</span>
+                            <span class="unchecked">Not checked</span>
                         {% endif %}
                     </div>
                     <div class="verify-row">
@@ -194,9 +194,9 @@
                     <div class="verify-row verify-divider">
                         <strong>Overall</strong>
                         {% if v %}
-                            {% if v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
+                            {% if v.signature_valid and v.permanent_copy_found and v.hash_match %}
                                 <strong class="check">VERIFIED</strong>
-                            {% elif v.hash_valid and v.signature_valid and not v.permanent_copy_found %}
+                            {% elif v.signature_valid and not v.permanent_copy_found %}
                                 <span class="badge badge-yellow">Pending</span>
                             {% else %}
                                 <strong class="cross">FAILED</strong>

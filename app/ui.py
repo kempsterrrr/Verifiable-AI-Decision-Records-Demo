@@ -45,41 +45,29 @@ def _is_fully_verified(verification: dict | None) -> bool:
 
 
 def _verify_envelope(app, envelope):
-    """Phase 2.C: verify via the plugin's full_verify against the
-    pure-commitment envelope on Arweave.
+    """Verify via the plugin's full_verify against the pure-commitment
+    envelope on Arweave.
 
-    The legacy lifecycle_store / RecordStore envelope (passed in as
-    ``envelope``) is the demo's local UI record; the actual proof being
-    verified is the plugin's pure-commitment envelope on Arweave at
-    ``envelope["arweave_tx_id"]``. This helper:
+    The lifecycle_store / RecordStore envelope (passed in) is the demo's
+    local display cache; the actual proof being verified is the plugin's
+    pure-commitment envelope on Arweave at ``envelope["arweave_tx_id"]``.
+    This helper:
 
     1. Fetches the plugin envelope from Arweave by TX.
     2. Runs ``ario_mlflow.verify.full_verify`` on it (signature +
        anchored bytes from MLflow + live MLflow re-derivation +
        ar.io Verify attestation).
     3. Maps the four-check result to the legacy field names
-       (``hash_valid``, ``signature_valid``, ``permanent_copy_found``,
-       ``hash_match``, ``attestation_level``, ``report_url``,
-       ``attested_by``, ``attested_at``) so the existing UI templates
-       keep working without changes. Phase 3 polishes templates to
-       consume the four-check structure directly via
-       ``plugin_full_verify``.
-
-    Returns ``(result_dict, local_envelope_verify_local)``. The
-    ``local_envelope_verify_local`` second arg is the legacy
-    ``ProofEngine.verify_local`` on the demo's UI envelope — preserved
-    for the templates that read it (run_detail). Phase 2.E deletes
-    both this helper and the legacy local verify when the demo's
-    lifecycle_store is fully replaced.
+       (``signature_valid``, ``permanent_copy_found``, ``hash_match``,
+       ``attestation_level``, ``report_url``, ``attested_by``,
+       ``attested_at``) so the existing UI templates keep working
+       without changes. Phase 3 polishes templates to consume the
+       four-check structure directly via ``plugin_full_verify``.
     """
-    # Legacy local envelope verify — kept for template back-compat.
-    local = app.state.proof_engine.verify_local(envelope)
-
     # Default skeleton for "not anchored / fetch failed" so templates
     # render uniformly regardless of state.
     result = {
-        "hash_valid": local["hash_valid"],
-        "signature_valid": local["signature_valid"],
+        "signature_valid": False,
         "permanent_copy_found": False,
         "hash_match": False,
         "attestation_level": None,
@@ -91,13 +79,13 @@ def _verify_envelope(app, envelope):
 
     tx_id = envelope.get("arweave_tx_id")
     if not tx_id:
-        return result, local
+        return result
 
     plugin_envelope = app.state.anchor.fetch_proof(tx_id)
     if not plugin_envelope:
         # Couldn't fetch the on-chain copy. permanent_copy_found stays
         # False so the UI shows "anchoring..." or "fetch pending".
-        return result, local
+        return result
 
     # Inject TX so verify_ario_attestation can call ar.io Verify.
     plugin_envelope["_tx_id"] = tx_id
@@ -122,28 +110,15 @@ def _verify_envelope(app, envelope):
     ario = full_result.get("ario_attestation", {}) or {}
 
     result["signature_valid"] = bool(sig.get("ok") is True)
-    # "permanent copy found" in the legacy sense maps to "we
-    # successfully fetched the envelope from Arweave AND the
-    # canonical-bytes artifact exists in MLflow." If the artifact is
-    # missing (returns None), this stays False per the original
-    # semantics.
     result["permanent_copy_found"] = anchored.get("payload_bytes") is not None
-    # hash_match → did the anchored bytes round-trip cleanly to the
-    # signed payload_hash? That's exactly check 2 (anchored_bytes.ok).
     result["hash_match"] = bool(anchored.get("ok") is True)
-    # hash_valid in the legacy sense was the demo's local envelope
-    # internal-consistency check. Keep ``local["hash_valid"]`` (already
-    # set above) — it answers a different question from the plugin
-    # checks and the templates still read it.
     result["attestation_level"] = ario.get("attestation_level")
     result["report_url"] = ario.get("report_url")
     result["attested_by"] = ario.get("attested_by")
     result["attested_at"] = ario.get("attested_at")
-    # Pass the full four-check result through for any consumer that
-    # wants to render the new structure directly (Phase 3).
     result["plugin_full_verify"] = full_result
 
-    return result, local
+    return result
 
 
 @router.get("/ui/predictions")
@@ -297,7 +272,7 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
     # the four real checks (signature / anchored bytes / live MLflow /
     # ar.io). Tracked as task #42.
     if verify and envelope.get("arweave_tx_id"):
-        result, _ = _verify_envelope(app, envelope)
+        result = _verify_envelope(app, envelope)
         result["verified_at"] = datetime.now(timezone.utc).isoformat()
         # plugin_full_verify carries raw payload_bytes; not JSON-serializable.
         # Mapped legacy fields are sufficient for cached display.
@@ -334,10 +309,8 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
     if not envelope:
         return HTMLResponse("<h1>Training run not found</h1>", status_code=404)
 
-    local = app.state.proof_engine.verify_local(envelope)
-
     if verify and envelope.get("arweave_tx_id"):
-        result, _ = _verify_envelope(app, envelope)
+        result = _verify_envelope(app, envelope)
         result["verified_at"] = datetime.now(timezone.utc).isoformat()
         # ``plugin_full_verify`` carries raw ``payload_bytes`` which
         # aren't JSON-serializable. Drop it from the persisted form;
@@ -379,7 +352,6 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
         {
             **_common_context(app),
             "envelope": envelope,
-            "local_verification": local,
             "turbo_status": turbo_status,
             "mlflow_ario_tags": ario_tags,
             # Pass the configured URI verbatim — evaluators run the
@@ -408,16 +380,12 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
         elif r.get("event_type") == "model_registered" and r.get("model_name") == model_name and str(r.get("model_version")) == str(version):
             registration_env = rec
 
-    # Local verification for each
-    training_local = app.state.proof_engine.verify_local(training_env) if training_env else None
-    registration_local = app.state.proof_engine.verify_local(registration_env) if registration_env else None
-
     # Full verification (on-demand)
     training_verify = None
     registration_verify = None
     if verify:
         if training_env:
-            training_verify, _ = _verify_envelope(app, training_env)
+            training_verify = _verify_envelope(app, training_env)
             # Strip non-JSON-serializable raw bytes from plugin_full_verify
             # before persisting (see run_detail comment).
             training_env["last_verification"] = {
@@ -425,7 +393,7 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
             }
             app.state.lifecycle_store.update(training_env["record"]["event_id"], training_env)
         if registration_env:
-            registration_verify, _ = _verify_envelope(app, registration_env)
+            registration_verify = _verify_envelope(app, registration_env)
             registration_env["last_verification"] = {
                 k: v for k, v in registration_verify.items() if k != "plugin_full_verify"
             }
@@ -460,10 +428,8 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
             "model_name": model_name,
             "version": version,
             "training": training_env,
-            "training_local": training_local,
             "training_turbo": training_turbo,
             "registration": registration_env,
-            "registration_local": registration_local,
             "registration_turbo": registration_turbo,
             "prediction_count": len(model_predictions),
             "anchored_count": anchored_count,

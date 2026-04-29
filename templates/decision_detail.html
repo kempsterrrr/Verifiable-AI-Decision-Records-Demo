@@ -474,30 +474,14 @@
                 </div>
             </div>
 
-            <!-- Proof Layer -->
-            <div class="section {% if envelope.get('tampered') %}section-danger{% endif %}">
-                <div class="section-header">Proof Layer</div>
-                <div class="section-body">
-                    <div class="kv">
-                        <div class="kv-row">
-                            <span class="kv-key">Record Hash</span>
-                            <span class="kv-value mono mono-sm">{{ envelope.record_hash }}</span>
-                        </div>
-                        <div class="kv-row">
-                            <span class="kv-key">Previous Hash</span>
-                            <span class="kv-value mono mono-sm">{{ envelope.previous_hash }}</span>
-                        </div>
-                        <div class="kv-row">
-                            <span class="kv-key">Signature</span>
-                            <span class="kv-value mono mono-sm">{{ envelope.signature }}</span>
-                        </div>
-                        <div class="kv-row">
-                            <span class="kv-key">Public Key</span>
-                            <span class="kv-value mono mono-sm">{{ envelope.public_key }}</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
+            {# Phase 2.D removed the legacy "Proof Layer" panel that
+               displayed record_hash / previous_hash / signature /
+               public_key. Those were a local-cache proof, not the
+               actual on-chain commitment. The verifiable artifact is
+               now the pure-commitment envelope on Arweave (fetchable
+               via the "Verify with ar.io" button). Phase 3 introduces
+               a side-by-side viewer of the signed commitment + the
+               canonical bytes that were committed to. #}
 
             <!-- Model Lineage -->
             <div class="section">

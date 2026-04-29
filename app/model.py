@@ -222,6 +222,7 @@ def train_and_register_with_params(
         # Phase 2.A: surface the plugin's anchor() output so /api/train
         # can populate lifecycle_store entries from the new flow.
         "training_envelope": training_anchor["envelope"],
+        "training_payload": training_anchor["payload"],
         "training_payload_hash": training_anchor["payload_hash"],
         "training_anchor_result": training_anchor.get("anchor_result"),
         "ario_client": ario_client,
@@ -308,6 +309,7 @@ def load_model(
             # duplicates on Arweave).
             "training_anchor_result": info.get("training_anchor_result"),
             "training_envelope": info.get("training_envelope"),
+            "training_payload": info.get("training_payload"),
             "ario_client": info.get("ario_client"),
         }
 

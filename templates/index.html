@@ -259,16 +259,11 @@
             </div>
         </div>
 
-        <!-- Chain Integrity -->
-        <div id="chain-integrity" style="padding: 0.6rem 1.25rem; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 1rem; font-size: 0.8rem; color: var(--muted);">
-            <div style="display:flex;align-items:center;gap:0.5rem;">
-                <span>Hash chain:</span>
-                <span id="chain-status">checking...</span>
-            </div>
-            <div style="font-size:0.72rem;margin-top:0.3rem;line-height:1.5;">
-                Each record is hashed and its hash is linked into the next. A content change breaks the record's own hash. Rewriting the chain to hide it leaves a permanent divergence from the ar.io-anchored copy.
-            </div>
-        </div>
+        {# Phase 2.D removed the local chain-integrity widget. The widget
+           checked the demo's local-cache hash chain (record_hash linkage),
+           which isn't part of the new trust model. The on-chain DAG via
+           Arweave tags is the canonical chain; the per-event verify panel
+           shows whether each link is intact. #}
         {% endif %}
 
         <!-- Model Provenance (always shown) -->
@@ -361,7 +356,6 @@
                     <th>Timestamp</th>
                     <th>Model</th>
                     <th>Prediction</th>
-                    <th>Record Hash</th>
                     <th>Arweave TX</th>
                     <th>Status</th>
                     <th>Actions</th>
@@ -386,7 +380,6 @@
                     <td>{{ env.record.timestamp[:19] }}</td>
                     <td>v{{ env.record.model_version }}</td>
                     <td>{{ env.record.prediction['class'] if env.record.prediction is defined else 'N/A' }}</td>
-                    <td><span class="mono">{{ env.record_hash[:16] }}</span></td>
                     <td>
                         {% if env.arweave_tx_id %}
                             <a href="{{ env.arweave_url }}" target="_blank"><span class="mono">{{ env.arweave_tx_id[:12] }}</span></a>
@@ -479,44 +472,6 @@
             row.classList.toggle('hidden', !show);
         });
     }
-    // Chain integrity check — distinguishes link failures from content-level
-    // tamper (where a record's content stops matching its own record_hash).
-    (function() {
-        const el = document.getElementById('chain-status');
-        if (!el) return;
-        fetch('/api/chain-integrity')
-            .then(r => r.json())
-            .then(data => {
-                if (data.link_intact && data.content_intact) {
-                    el.innerHTML = '<span style="color: var(--green); font-weight: 600;">' + data.total + ' records · unbroken · content intact</span>';
-                    return;
-                }
-
-                const parts = [];
-                if (!data.link_intact && data.broken_link_at !== null) {
-                    parts.push('link broken at record #' + data.broken_link_at);
-                }
-                const changed = data.changed_records || [];
-                if (changed.length > 0) {
-                    // Show up to 3 decision IDs as individual links — more than that
-                    // gets truncated with a count suffix rather than one arbitrary pick.
-                    const MAX_LINKS = 3;
-                    const shown = changed.slice(0, MAX_LINKS);
-                    const rest = Math.max(0, changed.length - MAX_LINKS);
-                    const links = shown.map(function(c) {
-                        const shortId = c.decision_id ? c.decision_id.slice(0, 8) + '…' : '#' + c.index;
-                        const href = c.decision_id ? '/ui/decisions/' + c.decision_id : '#';
-                        return '<a href="' + href + '" style="color:inherit;text-decoration:underline;">decision ' + shortId + '</a>';
-                    }).join(', ');
-                    const label = changed.length === 1 ? '1 record changed' : (changed.length + ' records changed');
-                    const suffix = rest > 0 ? ', and ' + rest + ' more' : '';
-                    parts.push(label + ' (' + links + suffix + ')');
-                }
-                const summary = parts.join(' · ') || 'broken';
-                el.innerHTML = '<span style="color: var(--red); font-weight: 600;">' +
-                    data.total + ' records · ' + summary + '</span>';
-            })
-            .catch(() => { el.textContent = 'unavailable'; });
-    })();
+    // Phase 2.D: chain integrity widget removed. See Jinja comment above.
     </script>
 {% endblock %}

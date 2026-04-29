@@ -2,6 +2,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -19,8 +20,6 @@ from app.lifecycle_store import LifecycleStore
 from ario_mlflow.proof import ProofEngine, canonical_json, hash_data
 from ario_mlflow.arweave import ArweaveAnchor
 from ario_mlflow.verify import ArioVerifyClient
-from app.decision_record import build_decision_record
-from app.lifecycle import build_training_record, build_registration_record
 from app.model import load_model, predict, train_and_register_with_params, FEATURE_NAMES
 from app.ui import router as ui_router
 
@@ -28,26 +27,70 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def _startup_anchor_lifecycle(settings, model_info, proof_engine, lifecycle_store, anchor):
+def _build_training_cache_record(model_info: dict) -> dict:
+    """Build the lifecycle_store ``record`` sub-dict for a training event.
+
+    Phase 2.D: derived directly from the plugin's canonical payload
+    (``model_info["training_payload"]``) instead of re-querying MLflow
+    via the legacy ``build_training_record`` helper. The plugin's
+    payload already contains run_id, params, metrics, artifact_checksums,
+    source_name, git_commit. We add the demo-specific UI display fields
+    (event_id, timestamp, model_name, model_version, artifact_hash) on
+    top.
+    """
+    payload = model_info.get("training_payload") or {}
+    artifact_checksums = payload.get("artifact_checksums", {}) or {}
+    return {
+        "event_id": str(uuid.uuid4()),
+        "event_type": "training_complete",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "run_id": model_info["run_id"],
+        "model_name": model_info["model_name"],
+        "model_version": model_info["model_version"],
+        "params": payload.get("params", {}),
+        "metrics": payload.get("metrics", {}),
+        "artifact_checksums": artifact_checksums,
+        "artifact_hash": hash_data(canonical_json(artifact_checksums)),
+        "source_name": payload.get("source_name", ""),
+        "git_commit": payload.get("git_commit", ""),
+    }
+
+
+def _build_registration_cache_record(
+    model_name: str,
+    model_version: str,
+    run_id: str,
+    artifact_hash: str | None,
+    training_tx: str | None,
+) -> dict:
+    """Build the lifecycle_store ``record`` sub-dict for a registration event."""
+    return {
+        "event_id": str(uuid.uuid4()),
+        "event_type": "model_registered",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "model_name": model_name,
+        "model_version": model_version,
+        "source_run_id": run_id,
+        "artifact_hash": artifact_hash,
+        "previous_tx": training_tx,
+    }
+
+
+def _startup_anchor_lifecycle(settings, model_info, lifecycle_store):
     """Populate lifecycle_store from a freshly auto-trained model's plugin
     anchor results.
 
-    Per the redesign (2026-04-28): this function NO LONGER uploads to
-    Arweave. The plugin's ``anchor()`` and ``ArioMlflowClient`` already
-    uploaded the canonical new-shape envelope inside
-    ``train_and_register_with_params``. This helper just stamps the
-    lifecycle_store with the resulting TX so the UI's verify path can
-    fetch the on-chain envelope by ``arweave_tx_id``.
+    Per the redesign (2026-04-28): this helper NO LONGER uploads to
+    Arweave and NO LONGER builds a legacy local proof. The plugin's
+    ``anchor()`` and ``ArioMlflowClient`` already uploaded the canonical
+    new-shape envelope inside ``train_and_register_with_params``. This
+    helper just writes a thin display cache entry pointing at the real
+    TX so the UI can render and the verify path can fetch by
+    ``arweave_tx_id``.
 
     For pre-existing models loaded from an existing ``mlruns/`` (no
     ``training_anchor_result`` in ``model_info``), this is a no-op —
     per the redesign, pre-existing models are not retro-anchored.
-
-    The legacy ``_anchor_lifecycle_record`` upload path was deleted in
-    Phase 2.C because it was generating LEGACY-shape duplicates on
-    Arweave alongside the plugin's NEW-shape proofs, breaking
-    verification (verify path fetches by ``arweave_tx_id`` which used
-    to point at the legacy upload).
     """
     training_anchor = model_info.get("training_anchor_result")
     if not training_anchor:
@@ -61,22 +104,12 @@ def _startup_anchor_lifecycle(settings, model_info, proof_engine, lifecycle_stor
     model_name = model_info["model_name"]
     model_version = model_info["model_version"]
 
-    # Training entry — stamps the plugin's NEW-shape Arweave TX. We
-    # still build the legacy ``record`` shape for UI display fields
-    # (event_id, run_id, params, metrics, etc.); the local
-    # ``record_hash`` / ``signature`` fields are kept for the demo's
-    # local chain-integrity panel but are NOT what gets verified
-    # against Arweave (verify path fetches the new-shape envelope from
-    # Arweave directly).
+    # Training cache entry — record sub-dict derived from plugin payload,
+    # arweave fields stamped from plugin's anchor result.
     if not lifecycle_store.get_by_run_id(run_id):
-        record = build_training_record(
-            settings.mlflow_tracking_uri, run_id, model_name, model_version,
-        )
-        last = lifecycle_store.list_all()
-        previous_hash = last[-1]["record_hash"] if last else "GENESIS"
-        proof = proof_engine.create_proof(record, previous_hash)
+        record = _build_training_cache_record(model_info)
         envelope = {
-            **proof,
+            "record": record,
             "arweave_tx_id": training_anchor.get("tx_id"),
             "arweave_url": training_anchor.get("url"),
             "turbo_receipt": training_anchor.get("receipt"),
@@ -87,20 +120,21 @@ def _startup_anchor_lifecycle(settings, model_info, proof_engine, lifecycle_stor
             f"tx={training_anchor.get('tx_id')}"
         )
 
-    # Registration entry — the plugin's ArioMlflowClient kicked off the
-    # registration anchor in a daemon thread; we don't have its TX yet.
-    # Schedule the same bridge task /api/train uses to hydrate the entry
-    # once the daemon settles.
+    # Registration cache entry — plugin's ArioMlflowClient kicked off the
+    # registration anchor in a daemon thread; arweave_tx_id starts None
+    # and gets hydrated by the bridge task once the daemon settles.
     if not lifecycle_store.get_by_model_version(model_name, model_version):
-        registration_record = build_registration_record(
-            settings.mlflow_tracking_uri, model_name, model_version,
-            training_anchor.get("tx_id"),
+        registration_record = _build_registration_cache_record(
+            model_name=model_name,
+            model_version=model_version,
+            run_id=run_id,
+            artifact_hash=hash_data(canonical_json(
+                (model_info.get("training_payload") or {}).get("artifact_checksums", {}) or {}
+            )),
+            training_tx=training_anchor.get("tx_id"),
         )
-        last = lifecycle_store.list_all()
-        previous_hash = last[-1]["record_hash"] if last else "GENESIS"
-        registration_proof = proof_engine.create_proof(registration_record, previous_hash)
         registration_envelope = {
-            **registration_proof,
+            "record": registration_record,
             "arweave_tx_id": None,
             "arweave_url": None,
             "turbo_receipt": None,
@@ -160,11 +194,13 @@ async def lifespan(app: FastAPI):
     # AR.IO Verify
     app.state.ario_verify = ArioVerifyClient(settings.ario_verify_url)
 
-    # Anchor training and registration in background thread
+    # Populate lifecycle_store from the plugin's anchor results in a
+    # background thread (so the registration daemon hydration doesn't
+    # block the lifespan). No Arweave I/O happens here — the plugin
+    # already uploaded.
     threading.Thread(
         target=_startup_anchor_lifecycle,
-        args=(settings, app.state.model_info, app.state.proof_engine,
-              app.state.lifecycle_store, app.state.anchor),
+        args=(settings, app.state.model_info, app.state.lifecycle_store),
         daemon=True,
     ).start()
 
@@ -269,35 +305,32 @@ def _run_prediction(app_state, features: list[float]) -> tuple[dict, object]:
             },
         )
 
-        # Legacy RecordStore population for UI compatibility. Use
-        # VerifiedPrediction's decision_id so UI's verify-this-decision
-        # flow can correlate to the real Arweave TX once the daemon
-        # completes. Phase 2.D refactors this away.
-        record = build_decision_record(
-            input_data=input_data,
-            prediction=ui_prediction,
-            model_name=model_info["model_name"],
-            model_version=model_info["model_version"],
-            mlflow_run_id=model_info["run_id"],
-            artifact_uri=model_info["artifact_uri"],
-            trace_id=trace_id,
-            span_id=span_id,
-            latency_ms=latency_ms,
-            service_name=settings.otel_service_name,
-        )
-        # Override the auto-generated decision_id so UI ↔ plugin link up.
-        record["decision_id"] = verified_result.decision_id
-
-        last = app_state.store.get_last()
-        previous_hash = last["record_hash"] if last else "GENESIS"
-
-        # Legacy proof for UI's verify_local check. Plugin's anchored
-        # proof is the real verifiable artifact; this is signed but
-        # not uploaded to Arweave (no double-anchoring).
-        proof = app_state.proof_engine.create_proof(record, previous_hash)
+        # RecordStore display cache. Phase 2.D dropped the legacy
+        # local proof (proof_engine.create_proof) — the verifiable
+        # artifact is the plugin's anchored envelope on Arweave,
+        # fetched by /verify/{decision_id}. The cache holds only
+        # what the UI needs to display: the prediction, latency,
+        # trace correlation, and the eventual TX (hydrated by
+        # background task once VerifiedPrediction's daemon settles).
+        record = {
+            "decision_id": verified_result.decision_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "trace_id": trace_id,
+            "span_id": span_id,
+            "service_name": settings.otel_service_name,
+            "mlflow_run_id": model_info["run_id"],
+            "model_name": model_info["model_name"],
+            "model_version": model_info["model_version"],
+            "artifact_uri": model_info["artifact_uri"],
+            "input_hash": hash_data(canonical_json(input_data)),
+            "output_hash": hash_data(canonical_json(ui_prediction)),
+            "prediction": ui_prediction,
+            "latency_ms": round(latency_ms, 2),
+            "human_override": False,
+        }
 
         envelope = {
-            **proof,
+            "record": record,
             # arweave_tx_id starts None and gets hydrated by the
             # background task from verified_result. UI surfaces
             # "anchoring..." until then.
@@ -399,44 +432,33 @@ def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
         random_state=random_state,
     )
 
-    # Populate the demo's lifecycle_store with old-shape envelopes for
-    # UI compatibility. Phase 2.D replaces this with a thin cache
-    # adapter that reads directly from MLflow tags + Arweave. The
-    # background-task duplicate-anchor pipeline is GONE — the plugin
+    # Populate lifecycle_store cache entries from the plugin's anchor
+    # results. No legacy proof, no duplicate Arweave upload — the plugin
     # already uploaded the real training+registration proofs.
-    training_record = build_training_record(
-        settings.mlflow_tracking_uri, info["run_id"],
-        info["model_name"], info["model_version"],
-    )
-    last = request.app.state.lifecycle_store.list_all()
-    previous_hash = last[-1]["record_hash"] if last else "GENESIS"
-    training_proof = request.app.state.proof_engine.create_proof(training_record, previous_hash)
-    # Hydrate with the plugin's actual Arweave result so the UI shows
-    # the real TX, not None.
     plugin_anchor = info.get("training_anchor_result") or {}
+    training_record = _build_training_cache_record(info)
     training_envelope = {
-        **training_proof,
+        "record": training_record,
         "arweave_tx_id": plugin_anchor.get("tx_id"),
         "arweave_url": plugin_anchor.get("url"),
         "turbo_receipt": plugin_anchor.get("receipt"),
     }
     request.app.state.lifecycle_store.append(training_envelope)
 
-    # Registration record in the legacy store. The plugin's
-    # ArioMlflowClient kicked off the real registration anchor in a
-    # daemon thread; we don't wait for it here. A lazy refresh path
-    # (Phase 2.D) will populate the registration_tx once the daemon
-    # completes.
-    registration_record = build_registration_record(
-        settings.mlflow_tracking_uri, info["model_name"], info["model_version"],
-        training_envelope.get("arweave_tx_id"),
+    # Registration cache entry. The plugin's ArioMlflowClient kicked off
+    # the real registration anchor in a daemon thread; arweave_tx_id
+    # starts None and the bridge task hydrates it when the daemon
+    # settles.
+    registration_record = _build_registration_cache_record(
+        model_name=info["model_name"],
+        model_version=info["model_version"],
+        run_id=info["run_id"],
+        artifact_hash=training_record.get("artifact_hash"),
+        training_tx=plugin_anchor.get("tx_id"),
     )
-    last = request.app.state.lifecycle_store.list_all()
-    previous_hash = last[-1]["record_hash"]
-    registration_proof = request.app.state.proof_engine.create_proof(registration_record, previous_hash)
     registration_envelope = {
-        **registration_proof,
-        "arweave_tx_id": None,  # filled by ArioMlflowClient daemon; UI surfaces "anchoring"
+        "record": registration_record,
+        "arweave_tx_id": None,
         "arweave_url": None,
         "turbo_receipt": None,
     }
@@ -591,11 +613,6 @@ def verify_decision(request: Request, decision_id: str):
     if not envelope:
         return JSONResponse({"error": "Decision not found"}, status_code=404)
 
-    # Legacy local-envelope check, still surfaced as
-    # ``local_verification`` for back-compat with any external API
-    # consumers that read it. UI doesn't depend on this path.
-    local_result = request.app.state.proof_engine.verify_local(envelope)
-
     tx_id = envelope.get("arweave_tx_id")
     plugin_result = None
     external_result = None
@@ -618,15 +635,15 @@ def verify_decision(request: Request, decision_id: str):
                 ario_client=request.app.state.ario_verify,
             )
 
-            # Legacy-shape mappings for back-compat with existing
-            # consumers. Phase 2.E removes once consumers migrate.
+            # Legacy-shape mappings for back-compat with existing API
+            # consumers. The four-check structure is the canonical
+            # result; these are derived projections.
             anchored = plugin_result.get("anchored_bytes", {}) or {}
             ario_block = plugin_result.get("ario_attestation", {}) or {}
             external_result = {
                 "arweave_data_found": True,
                 "arweave_record_hash": anchored.get("computed_hash"),
                 "arweave_matches_original": bool(anchored.get("ok") is True),
-                "local_tampered": not local_result["overall"],
             }
             if ario_block.get("ok") is not None:
                 ario_result = {
@@ -640,8 +657,7 @@ def verify_decision(request: Request, decision_id: str):
 
     result = {
         "decision_id": decision_id,
-        # Legacy fields (backwards compatibility)
-        "local_verification": local_result,
+        # Legacy projection fields for back-compat
         "external_verification": external_result,
         "ario_verification": ario_result,
         # New four-check structure (Phase 3 UI consumes this)
@@ -687,117 +703,10 @@ def export_decision(request: Request, decision_id: str):
     )
 
 
-def compute_chain_integrity(records: list) -> dict:
-    """Pure function: evaluate link + content integrity for a list of envelopes.
-
-    Two concepts are checked independently because a tamper of any single
-    record breaks only one of them at a time:
-
-    1. **Link integrity** — each record's ``previous_hash`` matches the
-       prior record's ``record_hash``. Breaks if a record is deleted or
-       reordered.
-    2. **Content integrity** — each record's ``record`` field still hashes
-       to its own ``record_hash``. Breaks when a field inside the record
-       is modified after signing (what the ``/tamper`` button does).
-
-    The legacy ``intact`` / ``broken_at`` fields are preserved for any
-    old clients and reflect whichever check fails first (link, then
-    content).
-    """
-    from ario_mlflow.proof import canonical_json, hash_data
-
-    if not records:
-        return {
-            "total": 0,
-            "link_intact": True,
-            "content_intact": True,
-            "broken_link_at": None,
-            "changed_records": [],
-            "intact": True,
-            "broken_at": None,
-        }
-
-    broken_link_at = None
-    for i, rec in enumerate(records):
-        expected = records[i - 1]["record_hash"] if i > 0 else "GENESIS"
-        if rec.get("previous_hash") != expected:
-            broken_link_at = i
-            break
-
-    changed_records = []
-    for i, rec in enumerate(records):
-        record_field = rec.get("record") or {}
-        computed = hash_data(canonical_json(record_field))
-        if computed != rec.get("record_hash"):
-            changed_records.append({
-                "index": i,
-                "decision_id": record_field.get("decision_id"),
-                "reason": "content hash mismatch",
-            })
-
-    link_intact = broken_link_at is None
-    content_intact = not changed_records
-    intact = link_intact and content_intact
-    # Legacy broken_at: first broken-link index if any, else first changed record.
-    broken_at = broken_link_at if broken_link_at is not None else (
-        changed_records[0]["index"] if changed_records else None
-    )
-
-    return {
-        "total": len(records),
-        "link_intact": link_intact,
-        "content_intact": content_intact,
-        "broken_link_at": broken_link_at,
-        "changed_records": changed_records,
-        "intact": intact,
-        "broken_at": broken_at,
-    }
-
-
-@app.get("/api/chain-integrity")
-def chain_integrity(request: Request):
-    """Verify link + content integrity across all stored decision records."""
-    return compute_chain_integrity(request.app.state.store.list_all())
-
-
-@app.post("/tamper/{decision_id}")
-def tamper_decision(request: Request, decision_id: str):
-    envelope = request.app.state.store.get_by_id(decision_id)
-    if not envelope:
-        return JSONResponse({"error": "Decision not found"}, status_code=404)
-
-    # Tamper: modify output_hash in the record
-    original_hash = envelope["record"]["output_hash"]
-    envelope["record"]["output_hash"] = "TAMPERED_" + original_hash[:50]
-    envelope["tampered"] = True
-
-    # Re-run local verification so any UI that keys off `last_verification`
-    # (the predictions-page stat cards, the detail page's verification section)
-    # immediately reflects the tamper. The Arweave side of last_verification,
-    # if previously checked, is still accurate and kept — the permanent copy
-    # IS still on the network and matches the ORIGINAL record, even though
-    # the local copy no longer does.
-    local = request.app.state.proof_engine.verify_local(envelope)
-    previous = envelope.get("last_verification") or {}
-    envelope["last_verification"] = {
-        **previous,
-        "hash_valid": local["hash_valid"],
-        "signature_valid": local["signature_valid"],
-        "verified_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-    request.app.state.store.update(decision_id, envelope)
-
-    result = {
-        "decision_id": decision_id,
-        "tampered": True,
-        "original_output_hash": original_hash,
-        "tampered_output_hash": envelope["record"]["output_hash"],
-        "message": "Record tampered locally. Local verification will fail. Arweave record is unaffected.",
-    }
-
-    accept = request.headers.get("accept", "")
-    if "text/html" in accept:
-        return RedirectResponse(f"/ui/decisions/{decision_id}", status_code=303)
-
-    return result
+# Phase 2.D removed:
+# - ``compute_chain_integrity`` + ``/api/chain-integrity`` endpoint
+# - ``/tamper/{decision_id}`` endpoint
+# Both depended on the demo's legacy local-cache hash chain, which is
+# no longer part of the trust model. Phase 3 reintroduces tamper UX
+# with four buttons paired to the four real checks (signature /
+# anchored bytes / live MLflow / ar.io). See task #42.

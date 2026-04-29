@@ -1177,6 +1177,40 @@ def test_verified_model_uses_mv_source_for_load_and_integrity(monkeypatch):
 # --- CodeRabbit round 4 regressions ---------------------------------------
 
 
+def test_artifact_checksums_excludes_registration_metadata(monkeypatch, tmp_path):
+    """MLflow's create_model_version adds a ``registered_model_meta``
+    file to the artifact dir AFTER anchor() has already recorded the
+    artifact_hash for the un-registered state. Without exclusion, a
+    later VerifiedModel re-hash would falsely trip IntegrityError —
+    not because anyone tampered, but because MLflow's own bookkeeping
+    grew the file set. This test pins the exclusion contract.
+    """
+    import ario_mlflow.anchoring as anchoring
+    from ario_mlflow.anchoring import artifact_checksums
+
+    # Stage a fake artifact tree containing a registered_model_meta
+    # file alongside real model files.
+    fake_model_dir = tmp_path / "downloaded_model"
+    fake_model_dir.mkdir()
+    (fake_model_dir / "MLmodel").write_bytes(b"flavors:\n  sklearn: {}\n")
+    (fake_model_dir / "model.pkl").write_bytes(b"\x80\x04\x95fake_pickle_bytes")
+    (fake_model_dir / "registered_model_meta").write_bytes(
+        b'{"model_name": "credit-scorer", "version": "1"}'
+    )
+
+    monkeypatch.setattr(
+        anchoring.mlflow.artifacts, "download_artifacts",
+        lambda run_id, artifact_path: str(fake_model_dir),
+    )
+
+    checksums = artifact_checksums("any-run-id", artifact_path="model")
+    # Real model files hashed:
+    assert "MLmodel" in checksums
+    assert "model.pkl" in checksums
+    # registration bookkeeping NOT hashed:
+    assert "registered_model_meta" not in checksums
+
+
 def test_artifact_checksums_raises_on_download_failure(monkeypatch):
     """Regression for CodeRabbit r4 #1: silent {} on failure would be anchored as a bogus hash."""
     import ario_mlflow.anchoring as anchoring

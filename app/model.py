@@ -248,8 +248,24 @@ def _assert_credit_schema(model) -> None:
         )
 
 
-def load_model(tracking_uri: str, model_name: str) -> dict:
-    """Load the latest model from MLflow. Auto-trains if none found or schema stale."""
+def load_model(
+    tracking_uri: str,
+    model_name: str,
+    *,
+    proof_engine: ProofEngine | None = None,
+    arweave: ArweaveAnchor | None = None,
+) -> dict:
+    """Load the latest model from MLflow + wrap it in a VerifiedModel.
+
+    Returns a dict with both the raw sklearn estimator (used for the
+    demo's UI predict that needs ``predict_proba`` for class
+    probabilities) AND a ``VerifiedModel`` instance (used for the
+    cryptographic prediction proof + Arweave anchoring on every
+    ``predict()`` call).
+
+    Auto-trains a new model if no version is registered yet or the
+    registered version's schema doesn't match the credit-scorer.
+    """
     mlflow.set_tracking_uri(tracking_uri)
 
     model_uri = f"models:/{model_name}/latest"
@@ -259,28 +275,50 @@ def load_model(tracking_uri: str, model_name: str) -> dict:
         client = mlflow.tracking.MlflowClient()
         versions = client.search_model_versions(f"name='{model_name}'")
         latest = max(versions, key=lambda v: int(v.version))
+        version_uri = f"models:/{model_name}/{latest.version}"
+        verified_model = _build_verified_model(version_uri, proof_engine, arweave)
         return {
             "model": model,
+            "verified_model": verified_model,
             "model_name": model_name,
             "model_version": str(latest.version),
             "run_id": latest.run_id,
-            "artifact_uri": f"models:/{model_name}/{latest.version}",
+            "artifact_uri": version_uri,
         }
     except Exception as e:
         if isinstance(e, _IncompatibleSchemaError):
             logger.warning(f"Incompatible registered model for {model_name}: {e}. Re-training.")
         else:
             logger.info(f"No model found ({e}), training new model...")
-        info = train_and_register(tracking_uri, model_name)
+        info = train_and_register(tracking_uri, model_name, proof_engine=proof_engine, arweave=arweave)
         model = mlflow.sklearn.load_model(model_uri)
         _assert_credit_schema(model)
+        version_uri = f"models:/{info['model_name']}/{info['model_version']}"
+        verified_model = _build_verified_model(version_uri, proof_engine, arweave)
         return {
             "model": model,
+            "verified_model": verified_model,
             "model_name": info["model_name"],
             "model_version": info["model_version"],
             "run_id": info["run_id"],
-            "artifact_uri": info["artifact_uri"],
+            "artifact_uri": version_uri,
         }
+
+
+def _build_verified_model(
+    model_uri: str,
+    proof_engine: ProofEngine | None,
+    arweave: ArweaveAnchor | None,
+):
+    """Construct a VerifiedModel wrapping the given URI, using the
+    demo's app-state proof_engine + arweave so the anchored predictions
+    sign with the same key + upload via the same wallet as the rest of
+    the demo's plugin flow."""
+    return ario_mlflow.VerifiedModel(
+        model_uri,
+        proof_engine=proof_engine,
+        anchor=arweave,
+    )
 
 
 def predict(model, features: list[float]) -> dict:

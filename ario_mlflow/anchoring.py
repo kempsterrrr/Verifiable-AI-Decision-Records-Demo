@@ -124,11 +124,34 @@ def parse_runs_uri(source: str | None) -> tuple[str | None, str | None]:
     return (run_id or None), (artifact_path or None)
 
 
+# Files MLflow synthesizes / writes as part of its model-registry
+# bookkeeping after a model version is registered. They are NOT part of
+# the model content; they're pointers MLflow adds saying "this artifact
+# was registered as version X." Excluding them from the integrity hash
+# is essential — otherwise a model anchored *before* registration (the
+# normal anchor()-then-create_model_version order) would re-hash to a
+# different value once registration adds these files, falsely tripping
+# VerifiedModel's IntegrityError.
+#
+# If MLflow adds new bookkeeping filenames in future versions, add them
+# here. The contract: "registered_model_meta and friends are not part
+# of the model's signed content."
+_MLFLOW_REGISTRATION_METADATA_FILES = frozenset({
+    "registered_model_meta",
+})
+
+
 def artifact_checksums(client_or_run_id, run_id: str | None = None, artifact_path: str = "model") -> dict[str, str]:
     """Compute SHA-256 checksums of model artifacts in an MLflow run.
 
     Uses ``mlflow.artifacts.download_artifacts`` which works with both
     file-based and database-backed tracking stores in MLflow 3.x.
+
+    Excludes MLflow's post-registration bookkeeping files (see
+    ``_MLFLOW_REGISTRATION_METADATA_FILES``) so the hash is stable
+    across the anchor→register lifecycle. The model's actual content
+    files (``MLmodel``, ``model.pkl``, ``conda.yaml``, etc.) are
+    hashed normally.
 
     Args:
         client_or_run_id: An MlflowClient (ignored, kept for backward compat) or a run_id string.
@@ -149,6 +172,8 @@ def artifact_checksums(client_or_run_id, run_id: str | None = None, artifact_pat
     checksums: dict[str, str] = {}
     for root, _dirs, files in os.walk(local_path):
         for fname in files:
+            if fname in _MLFLOW_REGISTRATION_METADATA_FILES:
+                continue
             fpath = os.path.join(root, fname)
             rel = os.path.relpath(fpath, local_path)
             try:

@@ -119,13 +119,23 @@ async def lifespan(app: FastAPI):
         settings.ed25519_public_key_path,
     )
 
-    # MLflow model
-    logger.info("Loading MLflow model...")
-    app.state.model_info = load_model(settings.mlflow_tracking_uri, settings.mlflow_model_name)
-    logger.info(f"Model loaded: {settings.mlflow_model_name}/v{app.state.model_info['model_version']}")
-
-    # Arweave anchor
+    # Arweave anchor — initialised BEFORE load_model so the demo's
+    # signing key + wallet are threaded through to VerifiedModel and
+    # any auto-train fallback path. (Phase 2.B)
     app.state.anchor = ArweaveAnchor(settings.arweave_wallet_path, settings.ario_gateway_host)
+
+    # MLflow model — load_model now returns a VerifiedModel alongside
+    # the raw sklearn estimator. The sklearn one is used for the UI's
+    # probability display; the VerifiedModel handles inference-time
+    # commitment anchoring on every predict() call.
+    logger.info("Loading MLflow model...")
+    app.state.model_info = load_model(
+        settings.mlflow_tracking_uri,
+        settings.mlflow_model_name,
+        proof_engine=app.state.proof_engine,
+        arweave=app.state.anchor,
+    )
+    logger.info(f"Model loaded: {settings.mlflow_model_name}/v{app.state.model_info['model_version']}")
 
     # AR.IO Verify
     app.state.ario_verify = ArioVerifyClient(settings.ario_verify_url)
@@ -151,41 +161,101 @@ tracer = trace.get_tracer(__name__)
 app.include_router(ui_router)
 
 
-def _anchor_record(store, anchor, decision_id: str, proof: dict):
-    """Background task: upload proof to Arweave and update stored record."""
+def _hydrate_record_envelope_from_verified_prediction(store, decision_id: str, verified_result):
+    """Background task: wait for VerifiedModel's anchor daemon to settle,
+    then hydrate the demo's RecordStore envelope with the real Arweave
+    TX. Phase 2.B replaces the legacy ``_anchor_record`` background
+    task — VerifiedModel handles the upload itself; this just bridges
+    the result back into the demo's UI store. Phase 2.D refactors
+    RecordStore into a thin UI cache so this bridge goes away.
+    """
     try:
-        anchor_result = anchor.upload_proof(proof)
-        if anchor_result:
-            envelope = store.get_by_id(decision_id)
-            if envelope:
-                envelope["arweave_tx_id"] = anchor_result["tx_id"]
-                envelope["arweave_url"] = anchor_result["url"]
-                envelope["turbo_receipt"] = anchor_result["receipt"]
-                store.update(decision_id, envelope)
-                logger.info(f"Anchored decision {decision_id}: tx={anchor_result['tx_id']}")
-    except Exception as e:
-        logger.error(f"Background anchoring failed for {decision_id}: {e}")
+        finished = verified_result.wait_for_anchor(timeout=60.0)
+        if not finished:
+            logger.warning(
+                f"Prediction anchor for {decision_id} did not complete "
+                f"in 60s; RecordStore entry stays unhydrated."
+            )
+            return
+        if verified_result.proof_status != "anchored" or not verified_result.tx_id:
+            # Could be 'failed' or 'disabled'. UI surfaces "anchoring..."
+            # state until something else hydrates this.
+            return
+        envelope = store.get_by_id(decision_id)
+        if envelope is None:
+            return
+        envelope["arweave_tx_id"] = verified_result.tx_id
+        envelope["arweave_url"] = (
+            f"https://turbo-gateway.com/{verified_result.tx_id}"
+        )
+        # Turbo receipt isn't directly accessible from VerifiedPrediction;
+        # leave as None. UI doesn't strictly require it.
+        store.update(decision_id, envelope)
+        logger.info(
+            f"Hydrated RecordStore envelope for decision {decision_id}: "
+            f"tx={verified_result.tx_id}"
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            f"Failed to hydrate RecordStore envelope for {decision_id}: {e}"
+        )
 
 
-def _run_prediction(app_state, features: list[float]) -> tuple[dict, dict]:
-    """Core prediction flow: inference -> record -> proof -> store. Anchoring happens async."""
+def _run_prediction(app_state, features: list[float]) -> tuple[dict, object]:
+    """Core prediction flow: VerifiedModel anchored predict + legacy
+    RecordStore population for UI compatibility.
+
+    Phase 2.B: VerifiedModel.predict() produces the cryptographic proof
+    + anchors via plugin daemon thread. The legacy proof + RecordStore
+    pattern is retained for UI display compatibility (Phase 2.D
+    refactors RecordStore into a thin cache).
+
+    Returns ``(envelope, verified_result)``. ``verified_result`` is a
+    VerifiedPrediction the caller can pass to the hydration background
+    task so the envelope's TX gets filled in once the daemon settles.
+    """
     settings = app_state.settings
     model_info = app_state.model_info
+    sklearn_model = model_info["model"]
+    verified_model = model_info["verified_model"]
 
     with tracer.start_as_current_span("predict") as span:
         trace_id = format(span.get_span_context().trace_id, "032x")
         span_id = format(span.get_span_context().span_id, "016x")
 
-        # Run inference
         start = time.time()
         input_data = dict(zip(FEATURE_NAMES, features))
-        prediction = predict(model_info["model"], features)
+
+        # UI prediction: use the raw sklearn estimator for class +
+        # probability display. VerifiedModel's pyfunc wrapper would
+        # only return class predictions; the demo's predict() returns
+        # the friendlier {class, class_index, probabilities, features_used}
+        # shape the templates render.
+        ui_prediction = predict(sklearn_model, features)
         latency_ms = (time.time() - start) * 1000
 
-        # Build decision record
+        # Anchored proof: VerifiedModel.predict signs a pure-commitment
+        # envelope, writes ario/predictions/<decision_id>/payload.json
+        # on the model's source run, mirrors fields as trace tags, and
+        # spawns a daemon thread to upload the envelope to Arweave.
+        # OTel context flows through metadata so the signed proof
+        # correlates with the demo's existing OpenTelemetry instrumentation.
+        verified_result = verified_model.predict(
+            input_data,
+            metadata={
+                "otel_trace_id": trace_id,
+                "otel_span_id": span_id,
+                "service_name": settings.otel_service_name,
+            },
+        )
+
+        # Legacy RecordStore population for UI compatibility. Use
+        # VerifiedPrediction's decision_id so UI's verify-this-decision
+        # flow can correlate to the real Arweave TX once the daemon
+        # completes. Phase 2.D refactors this away.
         record = build_decision_record(
             input_data=input_data,
-            prediction=prediction,
+            prediction=ui_prediction,
             model_name=model_info["model_name"],
             model_version=model_info["model_version"],
             mlflow_run_id=model_info["run_id"],
@@ -195,26 +265,30 @@ def _run_prediction(app_state, features: list[float]) -> tuple[dict, dict]:
             latency_ms=latency_ms,
             service_name=settings.otel_service_name,
         )
+        # Override the auto-generated decision_id so UI ↔ plugin link up.
+        record["decision_id"] = verified_result.decision_id
 
-        # Get previous hash for chaining
         last = app_state.store.get_last()
         previous_hash = last["record_hash"] if last else "GENESIS"
 
-        # Create proof
+        # Legacy proof for UI's verify_local check. Plugin's anchored
+        # proof is the real verifiable artifact; this is signed but
+        # not uploaded to Arweave (no double-anchoring).
         proof = app_state.proof_engine.create_proof(record, previous_hash)
 
-        # Build local envelope: proof + placeholder anchoring metadata
         envelope = {
             **proof,
+            # arweave_tx_id starts None and gets hydrated by the
+            # background task from verified_result. UI surfaces
+            # "anchoring..." until then.
             "arweave_tx_id": None,
             "arweave_url": None,
             "turbo_receipt": None,
         }
 
-        # Store immediately (without Arweave data)
         app_state.store.append(envelope)
 
-        return envelope, proof
+        return envelope, verified_result
 
 
 # --- API Endpoints ---
@@ -233,16 +307,17 @@ def api_predict(request: Request, body: dict, background_tasks: BackgroundTasks)
     features = [
         float(body.get(name, FEATURE_DEFAULTS[name])) for name in FEATURE_NAMES
     ]
-    envelope, proof = _run_prediction(request.app.state, features)
+    envelope, verified_result = _run_prediction(request.app.state, features)
     decision_id = envelope["record"]["decision_id"]
-    if request.app.state.anchor.enabled:
-        background_tasks.add_task(
-            _anchor_record,
-            request.app.state.store,
-            request.app.state.anchor,
-            decision_id,
-            proof,
-        )
+    # VerifiedModel handles the Arweave upload via its own daemon
+    # thread. We just bridge the result back into the demo's
+    # RecordStore so the UI shows the real TX once the daemon settles.
+    background_tasks.add_task(
+        _hydrate_record_envelope_from_verified_prediction,
+        request.app.state.store,
+        decision_id,
+        verified_result,
+    )
     return envelope
 
 
@@ -264,16 +339,16 @@ def form_predict(
         "credit_score": credit_score,
     }
     features = [float(form_values[name]) for name in FEATURE_NAMES]
-    envelope, proof = _run_prediction(request.app.state, features)
+    envelope, verified_result = _run_prediction(request.app.state, features)
     decision_id = envelope["record"]["decision_id"]
-    if request.app.state.anchor.enabled:
-        background_tasks.add_task(
-            _anchor_record,
-            request.app.state.store,
-            request.app.state.anchor,
-            decision_id,
-            proof,
-        )
+    # VerifiedModel handles the Arweave upload via its own daemon
+    # thread. Bridge the result back into the demo's RecordStore.
+    background_tasks.add_task(
+        _hydrate_record_envelope_from_verified_prediction,
+        request.app.state.store,
+        decision_id,
+        verified_result,
+    )
     return RedirectResponse(f"/ui/decisions/{decision_id}", status_code=303)
 
 

@@ -37,8 +37,7 @@ def _is_fully_verified(verification: dict | None) -> bool:
     if not verification:
         return False
     return bool(
-        verification.get("hash_valid")
-        and verification.get("signature_valid")
+        verification.get("signature_valid")
         and verification.get("permanent_copy_found")
         and verification.get("hash_match")
     )
@@ -409,7 +408,7 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
     anchored_count = sum(1 for p in model_predictions if p.get("arweave_tx_id"))
     verified_count = sum(
         1 for p in model_predictions
-        if not p.get("tampered") and _is_fully_verified(p.get("last_verification"))
+        if _is_fully_verified(p.get("last_verification"))
     )
 
     # Turbo status for each

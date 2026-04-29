@@ -97,73 +97,12 @@ class ProofEngine:
             self._sk, self._vk = generate_keypair(priv, pub)
 
     # ------------------------------------------------------------------
-    # DEPRECATED LEGACY METHODS (Phase 1 only — delete in Phase 2).
+    # Pure-commitment envelope (~300 bytes on Arweave).
     #
-    # These produce the v1 record-bearing envelope shape. Kept alive
-    # during Phase 1 because the demo's hand-rolled flow imports
-    # ProofEngine and calls these directly. When Phase 2 refactors the
-    # demo to use the plugin's headline API (anchor / VerifiedModel /
-    # ArioMlflowClient), these methods become unused and should be
-    # deleted together with the demo's lifecycle.py / decision_record.py
-    # / hand-rolled _verify_envelope.
-    #
-    # Tracked in:
-    #   - ~/.claude/plans/conduct-an-analysis-of-zany-kahn.md (Part 4,
-    #     "Demo changes" item 1)
-    #   - memory/project_redesign_2026_04_28.md (deprecation marker)
-    # ------------------------------------------------------------------
-
-    def create_proof(self, record: dict, previous_hash: str) -> dict:
-        record_hash = hash_data(canonical_json(record))
-        sign_payload = canonical_json({
-            "record_hash": record_hash,
-            "previous_hash": previous_hash,
-            "timestamp": record["timestamp"],
-        })
-        signed = self._sk.sign(sign_payload)
-        return {
-            "record": record,
-            "record_hash": record_hash,
-            "previous_hash": previous_hash,
-            "signature": signed.signature.hex(),
-            "public_key": bytes(self._vk).hex(),
-        }
-
-    def verify_local(self, envelope: dict) -> dict:
-        record = envelope["record"]
-        stored_hash = envelope["record_hash"]
-        computed_hash = hash_data(canonical_json(record))
-        hash_valid = computed_hash == stored_hash
-
-        sig_valid = False
-        try:
-            vk = VerifyKey(bytes.fromhex(envelope["public_key"]))
-            sign_payload = canonical_json({
-                "record_hash": stored_hash,
-                "previous_hash": envelope["previous_hash"],
-                "timestamp": record["timestamp"],
-            })
-            vk.verify(sign_payload, bytes.fromhex(envelope["signature"]))
-            sig_valid = True
-        except Exception:
-            pass
-
-        return {
-            "hash_valid": hash_valid,
-            "signature_valid": sig_valid,
-            "computed_hash": computed_hash,
-            "stored_hash": stored_hash,
-            "overall": hash_valid and sig_valid,
-        }
-
-    # ------------------------------------------------------------------
-    # Pure-commitment envelope (new shape, ~300 bytes on Arweave).
-    #
-    # Lives alongside create_proof / verify_local during Phase 1 so the
-    # demo's hand-rolled flow (which calls create_proof directly) keeps
-    # working. The plugin's headline API (anchor, ArioMlflowClient,
-    # VerifiedModel) uses the methods below. Phase 2 deletes the legacy
-    # methods after the demo migrates.
+    # Used by the plugin's headline API: ``anchor()``,
+    # ``ArioMlflowClient``, ``VerifiedModel``. Phase 2.E deleted the
+    # legacy ``create_proof`` / ``verify_local`` methods that produced
+    # the v1 record-bearing envelope shape.
     # ------------------------------------------------------------------
 
     def create_commitment(

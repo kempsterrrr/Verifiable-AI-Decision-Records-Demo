@@ -87,22 +87,9 @@ def test_canonical_json_does_not_round_floats_implicitly():
     assert canonical_json(rounded) == b'{"accuracy":0.912346}'
 
 
-def test_proof_engine_roundtrip_with_auto_generated_keys(tmp_path, monkeypatch):
-    monkeypatch.setenv("ARIO_MLFLOW_KEYS_DIR", str(tmp_path))
-    engine = ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub"))
-    proof = engine.create_proof({"foo": "bar", "timestamp": "2026-04-21T00:00:00Z"}, "GENESIS")
-    result = engine.verify_local(proof)
-    assert result["hash_valid"] is True
-    assert result["signature_valid"] is True
-    assert result["overall"] is True
-
-
-def test_proof_engine_rejects_tampered_record(tmp_path):
-    engine = ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub"))
-    proof = engine.create_proof({"foo": "bar", "timestamp": "2026-04-21T00:00:00Z"}, "GENESIS")
-    proof["record"]["foo"] = "mutated"
-    result = engine.verify_local(proof)
-    assert result["overall"] is False
+# Phase 2.E removed the legacy create_proof / verify_local round-trip
+# tests. Their replacements for the new pure-commitment envelope shape
+# follow below.
 
 
 # --- pure-commitment envelope (new shape) ---------------------------------
@@ -2486,13 +2473,13 @@ def test_ario_client_skips_registration_anchor_on_get_run_failure(monkeypatch, c
     source run lookup fails transiently."""
     import ario_mlflow.client as client_module
 
-    captured: dict = {"create_proof_called": False, "upload_called": False}
+    captured: dict = {"create_commitment_called": False, "upload_called": False}
 
     class _FailingClient(client_module.ArioMlflowClient):
         def __init__(self):
             # Skip MlflowClient __init__; we override everything we touch.
             self._proof_engine = type(
-                "PE", (), {"create_proof": lambda *a, **kw: (captured.__setitem__("create_proof_called", True) or {})}
+                "PE", (), {"create_commitment": lambda *a, **kw: (captured.__setitem__("create_commitment_called", True) or {})}
             )()
             self._anchor = type(
                 "A", (), {"enabled": True, "upload_proof": lambda *a, **kw: (captured.__setitem__("upload_called", True) or None)}
@@ -2511,7 +2498,7 @@ def test_ario_client_skips_registration_anchor_on_get_run_failure(monkeypatch, c
     with caplog.at_level("WARNING"):
         c._anchor_registration("fraud", "1", "run-id", "runs:/run-id/model")
 
-    assert captured["create_proof_called"] is False, (
+    assert captured["create_commitment_called"] is False, (
         "Must not mint a registration proof when source-run lookup failed"
     )
     assert captured["upload_called"] is False

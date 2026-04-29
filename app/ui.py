@@ -28,18 +28,27 @@ def _common_context(app):
 def _is_fully_verified(verification: dict | None) -> bool:
     """Full-verification gate shared by lifecycle status and aggregates.
 
-    Treats a record as verified only when the local hash matches, the
-    signature is valid, the permanent copy was found on Arweave, and
-    the on-chain hash matches our local record hash. Missing any one
-    (including still-propagating ``permanent_copy_found``) means the
-    record is not yet verified — not that it failed.
+    Prefers the plugin's event-aware ``overall`` verdict when present
+    (it correctly handles "source_of_truth not applicable for
+    predictions" and "ar.io below threshold"). Falls back to the
+    explicit four-field check for legacy entries written before
+    ``overall`` was persisted.
+
+    Returns ``True`` only when every applicable check passed. Missing
+    or pending checks (``None``) mean "not yet verified", not "failed".
     """
     if not verification:
         return False
+    overall = verification.get("overall")
+    if overall is True:
+        return True
+    if overall is False:
+        return False
+    # Legacy fallback: every required field must be explicitly True.
     return bool(
-        verification.get("signature_valid")
-        and verification.get("permanent_copy_found")
-        and verification.get("hash_match")
+        verification.get("signature_valid") is True
+        and verification.get("permanent_copy_found") is True
+        and verification.get("hash_match") is True
     )
 
 
@@ -56,19 +65,29 @@ def _verify_envelope(app, envelope):
     2. Runs ``ario_mlflow.verify.full_verify`` on it (signature +
        anchored bytes from MLflow + live MLflow re-derivation +
        ar.io Verify attestation).
-    3. Maps the four-check result to the legacy field names
-       (``signature_valid``, ``permanent_copy_found``, ``hash_match``,
-       ``attestation_level``, ``report_url``, ``attested_by``,
-       ``attested_at``) so the existing UI templates keep working
-       without changes. Phase 3 polishes templates to consume the
-       four-check structure directly via ``plugin_full_verify``.
+    3. Maps the four-check result to legacy field names so existing
+       templates keep working, plus surfaces the plugin's
+       ``source_of_truth`` and ``overall`` verdicts directly so the UI
+       can render the live-MLflow-re-derivation check (the demo's
+       headline tamper-detection signal) and treat predictions
+       (which have no re-derivable source) distinctly from
+       training/registration.
+
+    Pending semantics: if the TX is set but Arweave hasn't returned the
+    envelope yet, every check field is ``None`` — templates show
+    "Not checked"/"Pending", not "FAIL". A ``False`` value in this
+    dict only ever means "the check ran and failed".
     """
-    # Default skeleton for "not anchored / fetch failed" so templates
-    # render uniformly regardless of state.
+    # Default skeleton — None means "not yet checked" (pending). A
+    # False value only appears once a check has actually run and
+    # returned a negative result.
     result = {
-        "signature_valid": False,
+        "signature_valid": None,
         "permanent_copy_found": False,
-        "hash_match": False,
+        "hash_match": None,
+        "source_of_truth_ok": None,
+        "source_of_truth_reason": None,
+        "overall": None,
         "attestation_level": None,
         "report_url": None,
         "attested_by": None,
@@ -82,8 +101,9 @@ def _verify_envelope(app, envelope):
 
     plugin_envelope = app.state.anchor.fetch_proof(tx_id)
     if not plugin_envelope:
-        # Couldn't fetch the on-chain copy. permanent_copy_found stays
-        # False so the UI shows "anchoring..." or "fetch pending".
+        # Pending: TX exists but the gateway hasn't indexed it yet, or
+        # a transient fetch error. Leave check fields as None so the
+        # UI shows "Pending", not "FAIL".
         return result
 
     # Inject TX so verify_ario_attestation can call ar.io Verify.
@@ -102,15 +122,23 @@ def _verify_envelope(app, envelope):
         ario_client=app.state.ario_verify,
     )
 
-    # Map the four-check structure to the legacy field names so
-    # existing templates keep working.
+    # Map the four-check structure to legacy field names + surface the
+    # source_of_truth and overall verdicts the templates need to render
+    # the headline tamper-detection lesson honestly.
     sig = full_result.get("signature", {}) or {}
     anchored = full_result.get("anchored_bytes", {}) or {}
+    sot = full_result.get("source_of_truth", {}) or {}
     ario = full_result.get("ario_attestation", {}) or {}
 
-    result["signature_valid"] = bool(sig.get("ok") is True)
+    result["signature_valid"] = sig.get("ok")
     result["permanent_copy_found"] = anchored.get("payload_bytes") is not None
-    result["hash_match"] = bool(anchored.get("ok") is True)
+    result["hash_match"] = anchored.get("ok")
+    # source_of_truth.ok is None for predictions (no re-derivable
+    # MLflow state) and True/False for training/registration. The
+    # UI treats None as "Not applicable" for predictions.
+    result["source_of_truth_ok"] = sot.get("ok")
+    result["source_of_truth_reason"] = sot.get("reason")
+    result["overall"] = full_result.get("overall")
     result["attestation_level"] = ario.get("attestation_level")
     result["report_url"] = ario.get("report_url")
     result["attested_by"] = ario.get("attested_by")

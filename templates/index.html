@@ -217,16 +217,20 @@
         </div>
 
         {% if records %}
-        {# Compute status counts using the four-check verification fields
-           that Phase 2.C populates: signature_valid (plugin signature.ok),
-           permanent_copy_found (anchored payload bytes downloaded), and
-           hash_match (anchored_bytes.ok). The legacy v.hash_valid local-
-           cache check was removed alongside the tamper button — see
-           decision_detail handler for context. #}
+        {# Compute status counts using the plugin's event-aware ``overall``
+           verdict when present, falling back to the four-field check for
+           legacy entries written before ``overall`` was persisted. None
+           values mean "pending" (not yet checked or fetch in flight) —
+           those records fall through to the anchored/anchoring/local
+           branches, NOT the failed branch. #}
         {% set ns = namespace(verified=0, anchored=0, failed=0, local=0, anchoring=0) %}
         {% for env in records %}
             {% set v = env.get('last_verification') %}
-            {% if v and v.signature_valid and v.permanent_copy_found and v.hash_match %}
+            {% if v and v.overall is sameas true %}
+                {% set ns.verified = ns.verified + 1 %}
+            {% elif v and v.overall is sameas false %}
+                {% set ns.failed = ns.failed + 1 %}
+            {% elif v and v.overall is none and v.signature_valid is sameas true and v.permanent_copy_found and v.hash_match is sameas true %}
                 {% set ns.verified = ns.verified + 1 %}
             {% elif v and (v.signature_valid is sameas false or (v.permanent_copy_found and v.hash_match is sameas false)) %}
                 {% set ns.failed = ns.failed + 1 %}
@@ -364,7 +368,11 @@
             <tbody>
                 {% for env in records|reverse %}
                 {% set v = env.get('last_verification') %}
-                {% if v and v.signature_valid and v.permanent_copy_found and v.hash_match %}
+                {% if v and v.overall is sameas true %}
+                    {% set row_status = 'verified' %}
+                {% elif v and v.overall is sameas false %}
+                    {% set row_status = 'failed' %}
+                {% elif v and v.overall is none and v.signature_valid is sameas true and v.permanent_copy_found and v.hash_match is sameas true %}
                     {% set row_status = 'verified' %}
                 {% elif v and (v.signature_valid is sameas false or (v.permanent_copy_found and v.hash_match is sameas false)) %}
                     {% set row_status = 'failed' %}

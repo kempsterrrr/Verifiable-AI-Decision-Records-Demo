@@ -112,27 +112,13 @@
             <div class="section">
                 <div class="section-header">ar.io Verification</div>
                 <div class="section-body">
-                    <div class="verify-row">
-                        <span>Hash Integrity</span>
-                        {% if v %}
-                            <span class="{{ 'check' if v.hash_match else 'cross' }}">{{ 'PASS' if v.hash_match else 'FAIL' }}</span>
-                        {% else %}
-                            <span class="unchecked">Not checked</span>
-                        {% endif %}
-                    </div>
-                    <div class="verify-row">
+                    <div class="verify-row" title="Ed25519 signature on the on-chain pure-commitment envelope.">
                         <span>Signature</span>
                         {% if v %}
-                            <span class="{{ 'check' if v.signature_valid else 'cross' }}">{{ 'PASS' if v.signature_valid else 'FAIL' }}</span>
-                        {% else %}
-                            <span class="unchecked">Not checked</span>
-                        {% endif %}
-                    </div>
-                    <div class="verify-row">
-                        <span>Permanent Copy</span>
-                        {% if v %}
-                            {% if v.permanent_copy_found %}
-                                <span class="check">Found</span>
+                            {% if v.signature_valid is sameas true %}
+                                <span class="check">PASS</span>
+                            {% elif v.signature_valid is sameas false %}
+                                <span class="cross">FAIL</span>
                             {% else %}
                                 <span class="badge badge-yellow">Pending</span>
                             {% endif %}
@@ -140,11 +126,33 @@
                             <span class="unchecked">Not checked</span>
                         {% endif %}
                     </div>
-                    <div class="verify-row">
-                        <span>Hash Match</span>
+                    <div class="verify-row" title="The canonical bytes (ario/payload.json in MLflow) re-hash to the envelope's payload_hash.">
+                        <span>Anchored Bytes Intact</span>
                         {% if v %}
                             {% if v.permanent_copy_found %}
-                                <span class="{{ 'check' if v.hash_match else 'cross' }}">{{ 'PASS' if v.hash_match else 'FAIL' }}</span>
+                                {% if v.hash_match is sameas true %}
+                                    <span class="check">PASS</span>
+                                {% elif v.hash_match is sameas false %}
+                                    <span class="cross">FAIL</span>
+                                {% else %}
+                                    <span class="badge badge-yellow">Pending</span>
+                                {% endif %}
+                            {% else %}
+                                <span class="badge badge-yellow">Pending</span>
+                            {% endif %}
+                        {% else %}
+                            <span class="unchecked">Not checked</span>
+                        {% endif %}
+                    </div>
+                    <div class="verify-row" title="Live MLflow state re-derives to the same canonical bytes that were anchored. This is the check that catches MLflow tampering.">
+                        <span>Source of Truth Matches</span>
+                        {% if v %}
+                            {% if v.source_of_truth_ok is sameas true %}
+                                <span class="check">PASS</span>
+                            {% elif v.source_of_truth_ok is sameas false %}
+                                <span class="cross">FAIL</span>
+                            {% elif v.source_of_truth_reason == 'no_live_fields_for_event_type' or v.source_of_truth_reason == 'no_payload_to_compare' %}
+                                <span class="unchecked">N/A</span>
                             {% else %}
                                 <span class="badge badge-yellow">Pending</span>
                             {% endif %}
@@ -194,12 +202,14 @@
                     <div class="verify-row verify-divider">
                         <strong>Overall</strong>
                         {% if v %}
-                            {% if v.signature_valid and v.permanent_copy_found and v.hash_match %}
-                                <strong class="check">VERIFIED</strong>
-                            {% elif v.signature_valid and not v.permanent_copy_found %}
-                                <span class="badge badge-yellow">Pending</span>
+                            {% if v.overall is sameas true %}
+                                <strong class="check" title="All applicable checks passed.">VERIFIED</strong>
+                            {% elif v.overall is sameas false and v.signature_valid is sameas true and v.hash_match is sameas true and v.source_of_truth_ok is not sameas false and v.attestation_level and v.attestation_level < 2 %}
+                                <span class="badge badge-yellow" title="Cryptographic checks passed. ar.io's attestation is still propagating from Level 1 → Level 2-3 (typically 2-5 minutes after upload). Re-verify in a few minutes.">Pending ar.io confirmation</span>
+                            {% elif v.overall is sameas false %}
+                                <strong class="cross" title="At least one check failed.">FAILED</strong>
                             {% else %}
-                                <strong class="cross">FAILED</strong>
+                                <span class="badge badge-yellow">Pending</span>
                             {% endif %}
                         {% else %}
                             <span class="unchecked">Not verified</span>

@@ -132,6 +132,9 @@ After running `ario-mlflow verify …` (training run or model version):
 
 On `@mlflow.trace` spans emitted by `VerifiedModel.predict()`:
 
+- `ario.payload_json` — the full canonical payload (mirror of the
+  `ario/predictions/<id>/payload.json` artifact). Read by `verify_source_of_truth`
+  as the second MLflow surface for prediction check 3.
 - `ario.decision_id`, `ario.model_name`, `ario.model_version`
 - `ario.input_hash`, `ario.output_hash`, `ario.payload_hash`
 - `ario.proof_status`, `ario.prediction_tx`, `ario.arweave_url`
@@ -146,13 +149,29 @@ ario-mlflow verify trace <trace_id>              # verify an inference proof
 ario-mlflow audit <name>/<version>               # full model-lineage audit
 ```
 
-All `verify` commands run the full four-check flow: signature verification on
-the on-chain envelope, anchored bytes intact (download `ario/payload.json` from
-MLflow → re-hash → compare to envelope's `payload_hash`), live MLflow re-derivation
-(re-build canonical bytes from current run state and compare to anchored
-payload — catches tampering), and ar.io Verify attestation (if
-`ARIO_MLFLOW_ARIO_VERIFY_URL` is set). Results are written back to the MLflow
-tags and the HTML report is regenerated.
+All `verify` commands run the full four-check flow:
+
+1. **Signature** — Ed25519 signature on the on-chain envelope is valid.
+2. **Anchored bytes intact** — download `ario/payload.json` from MLflow,
+   re-hash, compare to envelope's `payload_hash`.
+3. **Source of truth matches** — re-derive canonical bytes from a *separate*
+   live MLflow surface and compare to the anchored payload. This is the
+   tamper-detection check.
+   - `verify run` re-fetches `run.data.params/metrics/artifact_checksums`.
+   - `verify model` re-derives the artifact-verified state from the source run.
+   - `verify trace` re-fetches the `ario.payload_json` trace tag (mirrored
+     by `VerifiedModel.predict` at write time) and compares to the artifact.
+4. **ar.io Verify attestation** — independent third-party check (if
+   `ARIO_MLFLOW_ARIO_VERIFY_URL` is set).
+
+Predictions, training, and registration all run all four checks — feature
+equivalent verification. If a prediction's MLflow trace has been pruned by
+a retention policy, check 3 surfaces as `ok=False, reason=live_refetch_incomplete`
+so an auditor sees a clear "trace not available" rather than a silent pass.
+The proof itself (signature + anchored bytes + ar.io) is unaffected by trace
+retention — those rely only on permanent storage (Arweave + MLflow artifact store).
+
+Results are written back to the MLflow tags and the HTML report is regenerated.
 
 ## What the attestation levels actually mean
 
@@ -188,7 +207,7 @@ this input) is on the roadmap, not in v0.1.
 python -m pytest tests/test_plugin_smoke.py
 ```
 
-87 smoke tests, no network required.
+91 smoke tests, no network required.
 
 ## Related docs
 

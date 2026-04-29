@@ -452,14 +452,18 @@ class VerifiedModel:
         if not self._anchor.enabled:
             result._anchor_done.set()
 
-        # Mirror canonical-payload fields onto the trace as ario.payload.*
-        # tags so an MLflow-UI user can see what was committed. A verifier
-        # should still re-derive canonical bytes from the SOURCE values
-        # (the demo cache or wherever raw input/output is preserved) and
-        # canonicalize identically — the tags are observability, not
-        # authoritative.
+        # Mirror the canonical payload onto the trace as ``ario.payload_json``
+        # so verify_source_of_truth has an independent MLflow surface to
+        # compare against the artifact (parallel to how training's
+        # source-of-truth check re-fetches run.data.params/metrics).
+        # The individual ario.* observability tags below are mirrors for
+        # MLflow-UI users; ario.payload_json is what verify_source_of_truth
+        # reads at audit time.
         if trace_id:
             try:
+                mlflow.set_trace_tag(
+                    trace_id, "ario.payload_json", payload_bytes.decode("utf-8"),
+                )
                 mlflow.set_trace_tag(trace_id, "ario.decision_id", decision_id)
                 mlflow.set_trace_tag(trace_id, "ario.model_name", self.model_name)
                 mlflow.set_trace_tag(trace_id, "ario.model_version", self.model_version)

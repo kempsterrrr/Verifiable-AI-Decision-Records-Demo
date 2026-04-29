@@ -32,7 +32,8 @@ ario_mlflow.anchor() inside mlflow.start_run()
   |---> Write canonical bytes to MLflow as ario/payload.json artifact
   |---> Sign a pure-commitment envelope (event_id, payload_hash, previous_hash, ...)
   |---> Upload commitment to Arweave via ar.io Turbo
-  |---> Tag the run: ario.training_tx, ario.payload_hash, ario.last_training_hash
+  |---> Tag the run: ario.training_tx, ario.payload_hash
+  |---> Update chain head on the registered model: ario.last_training_hash
   |
   v
 ArioMlflowClient.create_model_version(...)
@@ -150,7 +151,7 @@ Navigate to **Decisions** and submit the form with applicant features (income, c
 
 Click a decision ID to see the full record:
 - **Prediction** — class, probabilities with visual bars, features used
-- **ar.io Verification** — four-check verification status (signature, anchored bytes intact, live MLflow re-derivation, ar.io attestation)
+- **ar.io Verification** — four-check panel (signature, anchored bytes intact, source-of-truth re-derivation, ar.io attestation). All four apply to predictions, training, and registration.
 - **Model lineage** — MLflow run ID, version, artifact URI, with link to the full lineage view
 - **ar.io anchoring** — transaction ID, status (Anchoring → Anchored → Confirmed → Permanent)
 - **Upload receipt** — ar.io's timestamp witness: millisecond timestamp, wallet owner, signed receipt
@@ -160,8 +161,13 @@ Click a decision ID to see the full record:
 Click **Verify with ar.io** to run on-demand verification of all four checks:
 - **Signature** — Ed25519 signature on the on-chain commitment is valid
 - **Anchored bytes intact** — `ario/payload.json` in MLflow re-hashes to the envelope's `payload_hash`
-- **Source of truth matches** — re-derive canonical bytes from current MLflow state and compare to the anchored payload (catches MLflow tampering)
+- **Source of truth matches** — re-derive canonical bytes from a *separate* live MLflow surface and compare to the anchored payload. The point is to catch MLflow tampering — if either surface was modified after anchoring, the two won't agree.
+  - **Training:** re-fetches `run.data.params/metrics/artifact_checksums` from the run.
+  - **Registration:** re-derives the artifact-verified state from the source run.
+  - **Predictions:** re-fetches the `ario.payload_json` trace tag (mirrored at predict time) and compares to the artifact.
 - **ar.io Verify attestation** — independent third-party check by an ar.io gateway operator
+
+All four apply to predictions, training, and registration — feature-equivalent verification across the lifecycle. The demo, the `/verify/{decision_id}` endpoint, and the `ario-mlflow verify run|model|trace` CLI all run the same four checks.
 
 ### 6. Tamper Demo (deferred to Phase 3)
 
@@ -185,7 +191,7 @@ The single "Tamper" button was removed. It modified a local cache that isn't par
 | `/predict-form` | POST | Same, from HTML form (redirects to detail) |
 | `/decisions` | GET | List all decision records |
 | `/decisions/{id}` | GET | Get a single decision record |
-| `/verify/{id}` | POST | Verify a decision (four-check: signature + anchored bytes + live MLflow + ar.io) |
+| `/verify/{id}` | POST | Verify a decision (full four-check: signature + anchored bytes + source-of-truth + ar.io) |
 | `/api/activate/{name}/{version}` | POST | Switch the active model to a specific version |
 | `/api/train` | POST | Train a new model version |
 | `/lifecycle` | GET | List all lifecycle records (training, registration) |

@@ -575,21 +575,52 @@ def test_compute_overall_ok_training_passes_when_all_required_green():
     assert out is True
 
 
-def test_compute_overall_ok_prediction_tolerates_none_on_anchored_bytes():
-    """For predictions with legacy subject types (mlflow_trace,
-    mlflow_decision), check 2 returns None and overall should still be
-    able to pass on signature + ar.io. Less strict because v1
-    predictions had no artifact."""
+def test_compute_overall_ok_prediction_requires_full_verification():
+    """v2 predictions require checks 1, 2, 3 to all explicitly pass —
+    same strictness as training. Phase 2 enabled this by mirroring
+    the canonical payload onto the trace as ``ario.payload_json`` so
+    check 3 has a real second MLflow surface to compare against the
+    artifact (parallel to training's params/metrics surface).
+
+    Anything ``None`` on a required check (sig / anchored bytes /
+    source of truth) is treated as a fail rather than silently green —
+    a missing live MLflow surface means we can't actually confirm the
+    state, full stop. ar.io stays optional.
+    """
     from ario_mlflow.verify import _compute_overall_ok
 
     envelope = {"event_type": "prediction"}
-    sig = {"ok": True}
-    bytes_check = {"ok": None}  # legacy subject
-    sot = {"ok": None}
-    ario = {"ok": True}
 
-    out = _compute_overall_ok(envelope, sig, bytes_check, sot, ario)
-    assert out is True  # not as strict as training
+    # All required checks pass → overall True.
+    out = _compute_overall_ok(
+        envelope,
+        {"ok": True},   # sig
+        {"ok": True},   # anchored bytes
+        {"ok": True},   # source of truth (trace tag matches artifact)
+        {"ok": True},   # ar.io
+    )
+    assert out is True
+
+    # Source of truth None (e.g., trace pruned) → overall False.
+    out = _compute_overall_ok(
+        envelope,
+        {"ok": True},
+        {"ok": True},
+        {"ok": None},   # trace gone or no payload to compare
+        {"ok": True},
+    )
+    assert out is False, "predictions with no live surface must fail overall"
+
+    # Anchored bytes None (legacy v1 prediction with no artifact) →
+    # overall False. v1 subjects can't reach v2's bar.
+    out = _compute_overall_ok(
+        envelope,
+        {"ok": True},
+        {"ok": None},   # legacy subject, no artifact
+        {"ok": None},
+        {"ok": True},
+    )
+    assert out is False, "v1 legacy predictions cannot fully verify under v2"
 
 
 def test_anchor_continues_when_upload_raises(monkeypatch, tmp_path):
@@ -2512,3 +2543,126 @@ def test_ario_client_skips_registration_anchor_on_get_run_failure(monkeypatch, c
 # chain-status widget). The on-chain DAG via Arweave tags is the
 # canonical chain; per-event verify is done via the plugin's
 # full_verify. Tests for the removed local helper deleted with it.
+
+
+# --- prediction check 3 (live MLflow re-derivation via trace tag) ----------
+
+
+def test_verify_source_of_truth_for_prediction_passes_when_trace_tag_matches():
+    """Phase 2: predictions get check 3 by mirroring the canonical
+    payload onto the trace as ``ario.payload_json``. When the trace tag
+    matches the anchored artifact, source_of_truth.ok is True."""
+    from ario_mlflow.proof import canonical_json
+    from ario_mlflow.verify import verify_source_of_truth
+
+    payload = {
+        "event_type": "prediction",
+        "decision_id": "abc-123",
+        "model_name": "credit-scorer",
+        "model_version": "1",
+        "input_hash": "0xinput",
+        "output_hash": "0xoutput",
+        "latency_ms": 4.2,
+        "mlflow_trace_id": "tr-trace-1",
+    }
+    payload_bytes = canonical_json(payload)
+
+    # The trace mirrors the artifact verbatim — no tampering.
+    class _Trace:
+        class info:
+            tags = {"ario.payload_json": payload_bytes.decode("utf-8")}
+
+    class _StubClient:
+        def get_trace(self, trace_id):
+            assert trace_id == "tr-trace-1"
+            return _Trace()
+
+    envelope = {"event_type": "prediction"}
+    out = verify_source_of_truth(envelope, payload_bytes, _StubClient())
+    assert out["ok"] is True, out
+
+
+def test_verify_source_of_truth_for_prediction_fails_when_trace_tag_tampered():
+    """Catches the new tamper vector: someone modifies ``ario.payload_json``
+    on the MLflow trace without re-uploading the artifact (or vice versa)."""
+    from ario_mlflow.proof import canonical_json
+    from ario_mlflow.verify import verify_source_of_truth
+
+    payload = {
+        "event_type": "prediction",
+        "decision_id": "abc-123",
+        "model_name": "credit-scorer",
+        "model_version": "1",
+        "input_hash": "0xoriginal",
+        "output_hash": "0xoutput",
+        "latency_ms": 4.2,
+        "mlflow_trace_id": "tr-trace-2",
+    }
+    payload_bytes = canonical_json(payload)
+
+    # Trace tag has been tampered: input_hash differs from artifact.
+    tampered = dict(payload)
+    tampered["input_hash"] = "0xTAMPERED"
+    tampered_json = canonical_json(tampered).decode("utf-8")
+
+    class _Trace:
+        class info:
+            tags = {"ario.payload_json": tampered_json}
+
+    class _StubClient:
+        def get_trace(self, trace_id):
+            return _Trace()
+
+    envelope = {"event_type": "prediction"}
+    out = verify_source_of_truth(envelope, payload_bytes, _StubClient())
+    assert out["ok"] is False, out
+
+
+def test_verify_source_of_truth_for_prediction_fails_when_trace_pruned():
+    """Pruned trace surfaces as a clear failure rather than a silent
+    pass — auditors see ``live_refetch_incomplete`` and can act on it."""
+    from ario_mlflow.proof import canonical_json
+    from ario_mlflow.verify import verify_source_of_truth
+
+    payload = {
+        "event_type": "prediction",
+        "decision_id": "abc-123",
+        "input_hash": "0xa",
+        "output_hash": "0xb",
+        "mlflow_trace_id": "tr-pruned",
+    }
+    payload_bytes = canonical_json(payload)
+
+    class _StubClient:
+        def get_trace(self, trace_id):
+            raise RuntimeError("trace not found (pruned)")
+
+    envelope = {"event_type": "prediction"}
+    out = verify_source_of_truth(envelope, payload_bytes, _StubClient())
+    assert out["ok"] is False, out
+    assert out.get("reason") == "live_refetch_incomplete", out
+
+
+def test_verify_source_of_truth_for_prediction_fails_without_trace_id():
+    """Old-style prediction payloads without ``mlflow_trace_id`` can't be
+    re-derived — surfaces as a clear failure with a descriptive reason."""
+    from ario_mlflow.proof import canonical_json
+    from ario_mlflow.verify import verify_source_of_truth
+
+    payload = {
+        "event_type": "prediction",
+        "decision_id": "abc-123",
+        "input_hash": "0xa",
+        "output_hash": "0xb",
+        # no mlflow_trace_id
+    }
+    payload_bytes = canonical_json(payload)
+
+    class _StubClient:
+        def get_trace(self, trace_id):
+            raise AssertionError("should never be called")
+
+    envelope = {"event_type": "prediction"}
+    out = verify_source_of_truth(envelope, payload_bytes, _StubClient())
+    assert out["ok"] is False, out
+    assert "mlflow_trace_id" in out.get("detail", ""), out

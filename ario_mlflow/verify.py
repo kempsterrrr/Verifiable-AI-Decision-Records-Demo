@@ -181,14 +181,76 @@ def _refetch_registration_live_fields(payload: dict, mlflow_client) -> dict:
     return fresh
 
 
+_PREDICTION_REQUIRED_LIVE_FIELDS = frozenset({"_payload"})
+
+
+def _refetch_prediction_live_fields(payload: dict, mlflow_client) -> dict:
+    """Re-fetch the live prediction payload from the MLflow trace.
+
+    Predictions don't have a re-derivable run.data surface like training
+    does. Instead, ``VerifiedModel.predict`` mirrors the full canonical
+    payload onto the MLflow trace as ``ario.payload_json``. This refetcher
+    reads that tag and returns the parsed dict so
+    :func:`verify_source_of_truth` can compare it to the anchored
+    ``ario/predictions/<id>/payload.json`` artifact.
+
+    The check catches MLflow-side tampering of the trace (someone modifying
+    ``ario.payload_json`` without touching the artifact, or vice versa).
+    Pruned traces are not a verification failure — the trace might be
+    gone for retention reasons; we surface this via ``LiveRefetchError``
+    which becomes ``ok=False, reason="live_refetch_incomplete"`` so the
+    caller can distinguish "trace gone" from "data tampered."
+
+    Raises ``LiveRefetchError`` when the trace can't be fetched, the tag
+    is missing, or the JSON can't be parsed.
+    """
+    import mlflow
+
+    trace_id = payload.get("mlflow_trace_id")
+    if not trace_id:
+        raise LiveRefetchError(
+            "payload missing mlflow_trace_id; cannot refetch prediction live fields"
+        )
+
+    try:
+        trace = mlflow_client.get_trace(trace_id)
+    except Exception as e:  # noqa: BLE001
+        raise LiveRefetchError(
+            f"could not fetch trace {trace_id}: {e}"
+        ) from e
+
+    # Trace tags live under .info.tags in the MLflow Trace object.
+    tags = {}
+    info = getattr(trace, "info", None)
+    if info is not None and getattr(info, "tags", None):
+        tags = dict(info.tags)
+    elif getattr(trace, "tags", None):
+        # Defensive: some backend versions surface tags directly on trace.
+        tags = dict(trace.tags)
+
+    payload_json_tag = tags.get("ario.payload_json")
+    if not payload_json_tag:
+        raise LiveRefetchError(
+            f"trace {trace_id} missing ario.payload_json tag (may have been pruned)"
+        )
+
+    try:
+        live_payload = json.loads(payload_json_tag)
+    except (ValueError, TypeError) as e:
+        raise LiveRefetchError(
+            f"could not parse ario.payload_json from trace {trace_id}: {e}"
+        ) from e
+
+    # Return the parsed payload as the "fresh" overlay. verify_source_of_truth
+    # will rebuild = original | fresh and re-canonicalize. If the trace agrees
+    # with the artifact, rebuilt_bytes == payload_bytes → ok=True.
+    return live_payload
+
+
 _LIVE_FIELD_REFETCHERS = {
     "training_complete": _refetch_training_live_fields,
     "model_registered": _refetch_registration_live_fields,
-    # Predictions have no plugin-level live fields. Their canonical
-    # payload contains hashes of input/output that can only be re-derived
-    # if the caller has the raw values. Auditors verifying predictions
-    # should run check 3 themselves by hashing their copy of the raw
-    # input/output and comparing to the payload's input_hash / output_hash.
+    "prediction": _refetch_prediction_live_fields,
 }
 
 
@@ -534,9 +596,17 @@ def verify_ario_attestation(
 # overall_ok=True. ok=None on either of these for these event types is a
 # FAIL — silent neutrality would hide regressions check 2/3 are meant to
 # catch.
+#
+# Predictions are included because ``VerifiedModel.predict`` mirrors the
+# canonical payload onto the trace as ``ario.payload_json``, giving us
+# a real second MLflow surface to compare against the artifact (parallel
+# to training's params/metrics surface). A pruned trace surfaces as
+# ``ok=False, reason="live_refetch_incomplete"`` — the auditor sees a
+# clear "trace not available" rather than a silent pass.
 _REQUIRES_FULL_MLFLOW_VERIFICATION = frozenset({
     "training_complete",
     "model_registered",
+    "prediction",
 })
 
 

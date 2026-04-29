@@ -44,6 +44,7 @@
         }
         .chain-dot-green { border-color: var(--green); background: var(--green-bg); }
         .chain-dot-yellow { border-color: var(--yellow); background: var(--yellow-bg); }
+        .chain-dot-red { border-color: var(--red); background: var(--red-bg); }
         .chain-dot-gray { border-color: var(--muted); background: var(--gray-bg); }
 
         .chain-card {
@@ -134,7 +135,11 @@
             <div class="chain-node">
                 {% if training %}
                     {% set tv = training.get('last_verification') %}
-                    <div class="chain-dot {% if tv and tv.overall is sameas true %}chain-dot-green{% elif training.arweave_tx_id %}chain-dot-yellow{% else %}chain-dot-gray{% endif %}"></div>
+                    {# Red dot if a real check failed (overall=False AND not just
+                       ar.io still propagating). Yellow if anchored or ar.io
+                       hasn't caught up yet. Green only when fully verified. #}
+                    {% set t_real_fail = tv and tv.overall is sameas false and not (tv.signature_valid is sameas true and tv.hash_match is sameas true and tv.attestation_level and tv.attestation_level < 2) %}
+                    <div class="chain-dot {% if tv and tv.overall is sameas true %}chain-dot-green{% elif t_real_fail %}chain-dot-red{% elif training.arweave_tx_id %}chain-dot-yellow{% else %}chain-dot-gray{% endif %}"></div>
                 {% else %}
                     <div class="chain-dot chain-dot-gray"></div>
                 {% endif %}
@@ -251,7 +256,8 @@
             <div class="chain-node">
                 {% if registration %}
                     {% set rv = registration.get('last_verification') %}
-                    <div class="chain-dot {% if rv and rv.overall is sameas true %}chain-dot-green{% elif registration.arweave_tx_id %}chain-dot-yellow{% else %}chain-dot-gray{% endif %}"></div>
+                    {% set r_real_fail = rv and rv.overall is sameas false and not (rv.signature_valid is sameas true and rv.hash_match is sameas true and rv.attestation_level and rv.attestation_level < 2) %}
+                    <div class="chain-dot {% if rv and rv.overall is sameas true %}chain-dot-green{% elif r_real_fail %}chain-dot-red{% elif registration.arweave_tx_id %}chain-dot-yellow{% else %}chain-dot-gray{% endif %}"></div>
                 {% else %}
                     <div class="chain-dot chain-dot-gray"></div>
                 {% endif %}

@@ -135,13 +135,16 @@
             <div class="chain-node">
                 {% if training %}
                     {% set tv = training.get('last_verification') %}
-                    {# "Pending ar.io" only applies if every other check passed
-                       (sig + hash AND source-of-truth). A source_of_truth_ok=False
-                       result is a real failure regardless of attestation level. #}
+                    {# "Pending ar.io" only applies if every required check passed
+                       (sig + hash AND source-of-truth). The plugin treats
+                       source_of_truth_ok=None as a real failure for training/
+                       registration/prediction (all in _REQUIRES_FULL_MLFLOW_VERIFICATION),
+                       so we require the explicit True here — anything else is a
+                       real fail and should render red, not yellow. #}
                     {% set t_pending_attestation = tv and tv.overall is sameas false
                         and tv.signature_valid is sameas true
                         and tv.hash_match is sameas true
-                        and (tv.source_of_truth_ok is sameas true or tv.source_of_truth_ok is none)
+                        and tv.source_of_truth_ok is sameas true
                         and tv.attestation_level and tv.attestation_level < 2 %}
                     {% set t_real_fail = tv and tv.overall is sameas false and not t_pending_attestation %}
                     <div class="chain-dot {% if tv and tv.overall is sameas true %}chain-dot-green{% elif t_real_fail %}chain-dot-red{% elif training.arweave_tx_id %}chain-dot-yellow{% else %}chain-dot-gray{% endif %}"></div>
@@ -270,7 +273,7 @@
                     {% set r_pending_attestation = rv and rv.overall is sameas false
                         and rv.signature_valid is sameas true
                         and rv.hash_match is sameas true
-                        and (rv.source_of_truth_ok is sameas true or rv.source_of_truth_ok is none)
+                        and rv.source_of_truth_ok is sameas true
                         and rv.attestation_level and rv.attestation_level < 2 %}
                     {% set r_real_fail = rv and rv.overall is sameas false and not r_pending_attestation %}
                     <div class="chain-dot {% if rv and rv.overall is sameas true %}chain-dot-green{% elif r_real_fail %}chain-dot-red{% elif registration.arweave_tx_id %}chain-dot-yellow{% else %}chain-dot-gray{% endif %}"></div>

@@ -312,12 +312,16 @@
                         {% if v %}
                             {% if v.overall is sameas true %}
                                 <strong class="check" title="All applicable checks passed. The signed commitment, the anchored canonical bytes, the live MLflow state (where applicable), and ar.io's attestation all agree.">PROOF CONFIRMED</strong>
-                            {% elif v.overall is sameas false and v.signature_valid is sameas true and v.hash_match is sameas true and (v.source_of_truth_ok is sameas true or v.source_of_truth_ok is none) and v.attestation_level and v.attestation_level < 2 %}
-                                {# All cryptographic + source-of-truth checks pass; only ar.io
-                                   is still propagating from L1 to L2-3. Source-of-truth being
-                                   None (legacy/predictions/refetch unavailable) is acceptable
-                                   here; only an explicit False would be a real failure. #}
-                                <span class="badge badge-yellow" title="Cryptographic checks passed. ar.io's attestation is still propagating from Level 1 → Level 2-3 (typically 2-5 minutes after upload). Re-verify in a few minutes.">Pending ar.io confirmation</span>
+                            {% elif v.overall is sameas false and v.signature_valid is sameas true and v.hash_match is sameas true and v.source_of_truth_ok is sameas true and v.attestation_level and v.attestation_level < 2 %}
+                                {# All required checks (sig + anchored + source-of-truth)
+                                   passed; only ar.io attestation is still propagating from
+                                   L1 to L2-3. The plugin treats source_of_truth_ok=None
+                                   as a real failure for every event type we anchor
+                                   (prediction / training / registration are all in
+                                   _REQUIRES_FULL_MLFLOW_VERIFICATION), so we must NOT
+                                   accept None here — that would silently soften a real
+                                   plugin verdict. #}
+                                <span class="badge badge-yellow" title="Cryptographic + source-of-truth checks passed. ar.io's attestation is still propagating from Level 1 → Level 2-3 (typically 2-5 minutes after upload). Re-verify in a few minutes.">Pending ar.io confirmation</span>
                             {% elif v.overall is sameas false %}
                                 <strong class="cross" title="At least one check failed. See the rows above for details.">FAILED</strong>
                             {% else %}

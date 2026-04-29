@@ -233,7 +233,7 @@
                cleanly and matches Python's _is_fully_verified semantics. #}
             {% if v and v.get('overall') is sameas true %}
                 {% set ns.verified = ns.verified + 1 %}
-            {% elif v and v.get('overall') is sameas false and v.signature_valid is sameas true and v.hash_match is sameas true and (v.source_of_truth_ok is sameas true or v.source_of_truth_ok is none) and v.attestation_level and v.attestation_level < 2 %}
+            {% elif v and v.get('overall') is sameas false and v.signature_valid is sameas true and v.hash_match is sameas true and v.source_of_truth_ok is sameas true and v.attestation_level and v.attestation_level < 2 %}
                 {# "Pending ar.io confirmation" — cryptographic + source-of-truth
                    checks pass, ar.io still propagating from L1 to L2-L3.
                    Counted as anchored, not failed, to match the detail page. #}
@@ -380,7 +380,7 @@
                 {% set v = env.get('last_verification') %}
                 {% if v and v.get('overall') is sameas true %}
                     {% set row_status = 'verified' %}
-                {% elif v and v.get('overall') is sameas false and v.signature_valid is sameas true and v.hash_match is sameas true and (v.source_of_truth_ok is sameas true or v.source_of_truth_ok is none) and v.attestation_level and v.attestation_level < 2 %}
+                {% elif v and v.get('overall') is sameas false and v.signature_valid is sameas true and v.hash_match is sameas true and v.source_of_truth_ok is sameas true and v.attestation_level and v.attestation_level < 2 %}
                     {# "Pending ar.io confirmation" — match detail page. #}
                     {% set row_status = 'anchored' %}
                 {% elif v and v.get('overall') is sameas false %}

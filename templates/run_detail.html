@@ -203,7 +203,7 @@
                         {% if v %}
                             {% if v.overall is sameas true %}
                                 <strong class="check" title="All applicable checks passed.">VERIFIED</strong>
-                            {% elif v.overall is sameas false and v.signature_valid is sameas true and v.hash_match is sameas true and (v.source_of_truth_ok is sameas true or v.source_of_truth_ok is none) and v.attestation_level and v.attestation_level < 2 %}
+                            {% elif v.overall is sameas false and v.signature_valid is sameas true and v.hash_match is sameas true and v.source_of_truth_ok is sameas true and v.attestation_level and v.attestation_level < 2 %}
                                 <span class="badge badge-yellow" title="Cryptographic + source-of-truth checks passed. ar.io's attestation is still propagating from Level 1 → Level 2-3 (typically 2-5 minutes after upload). Re-verify in a few minutes.">Pending ar.io confirmation</span>
                             {% elif v.overall is sameas false %}
                                 <strong class="cross" title="At least one check failed.">FAILED</strong>

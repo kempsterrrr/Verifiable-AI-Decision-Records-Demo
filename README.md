@@ -15,7 +15,7 @@ Each event is:
 
 - **Traced** — OpenTelemetry captures runtime context (trace ID, span ID)
 - **Linked to model lineage** — MLflow records which model version produced the output
-- **Committed** — A pure-commitment envelope (~300 bytes: `event_id`, `event_type`, `subject`, `payload_hash`, `previous_hash`, `signed_at`, signature, public key) is anchored to Arweave
+- **Committed** — A pure-commitment envelope (~500 bytes; bounded 400–700: `event_id`, `event_type`, `subject`, `payload_hash`, `previous_hash`, `signed_at`, signature, public key) is anchored to Arweave
 - **Reproducible** — The canonical bytes that were hashed live alongside the proof as `ario/payload.json` in MLflow, so an auditor can re-compute the hash and re-derive from current MLflow state
 - **Independently verifiable** — ar.io Verify produces on-demand attestations of the on-chain proof
 
@@ -72,7 +72,7 @@ Predictions return instantly (~4ms). Arweave uploads happen in a background thre
 
 ### What Gets Anchored
 
-A pure-commitment envelope per lifecycle event — ~300 bytes on Arweave, no source data:
+A pure-commitment envelope per lifecycle event — ~500 bytes on Arweave (the plugin's smoke test bounds this at 400–700 bytes), no source data:
 
 ```json
 {
@@ -382,7 +382,7 @@ The plugin builds a canonical payload from MLflow state (training params/metrics
 - **Hash committed** — SHA-256 of the canonical bytes goes into a small commitment envelope
 - **Chained per event type** — each event's `previous_hash` points back to the prior anchor of the same kind (training chain head on the registered model; registration chains to its source training TX; predictions chain to their model version's registration TX)
 - **Ed25519 signed** — the envelope (minus signature) is signed; `public_key` travels with it for verification
-- **Anchored to Arweave** — only the ~300-byte envelope is uploaded; no source data leaves your MLflow
+- **Anchored to Arweave** — only the ~500-byte envelope is uploaded (bounded 400–700 by the plugin's smoke test); no source data leaves your MLflow
 
 ### ar.io Turbo — Anchoring
 The proof is uploaded to Arweave permanent storage via ar.io Turbo. The upload returns a signed receipt with a millisecond-precision timestamp — an independent attestation of when the proof was submitted. Once confirmed on Arweave, the data is immutable and publicly accessible.
@@ -412,7 +412,10 @@ An auditor can independently verify any proof with standard cryptographic tools 
    mlflow artifacts download -r <run_id> -a ario/predictions/<decision_id>/payload.json  # prediction
    ```
    Compute `SHA-256` of the raw bytes; compare to the envelope's `payload_hash`.
-4. **Re-derive the canonical bytes** from current MLflow state (params, metrics, artifact checksums for training; input/output for prediction) and compare to the downloaded `payload.json`. Any mismatch means MLflow was modified after anchoring.
+4. **Re-derive the canonical bytes from a separate MLflow surface** and compare to the downloaded `payload.json`. Any mismatch means MLflow was modified after anchoring.
+   - **Training:** rebuild from `run.data.params`, `run.data.metrics`, and `artifact_checksums` (recompute by re-hashing the model artifact files).
+   - **Registration:** re-derive `artifact_verified` from the source run's `ario.artifact_hash` tag and freshly-recomputed artifact checksums.
+   - **Prediction:** read the `ario.payload_json` trace tag (the plugin mirrors the canonical payload onto the trace at predict time) and compare to `ario/predictions/<decision_id>/payload.json`. Don't try to rebuild from raw input/output — predictions commit to *hashes* of input/output, not raw values, so there's nothing to re-derive from app-side data. (To verify the *raw* I/O independently, hash your own copy and compare to the payload's `input_hash`/`output_hash` — but that's a separate caller-side check, not part of MLflow's source-of-truth comparison.)
 5. **Walk the chain.** Each envelope's `previous_hash` should be retrievable on Arweave (or `GENESIS`).
 6. **Optional:** request an ar.io Verify attestation for an independent third-party check.
 

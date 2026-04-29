@@ -109,8 +109,13 @@ On the training run (`anchor()`):
 
 - `ario.enabled`, `ario.version` — via the registered `RunContextProvider`
 - `ario.public_key`, `ario.verify_status`, `ario.artifact_hash`
+- `ario.payload_hash` — SHA-256 of the canonical payload bytes (the same hash committed in the envelope)
 - `ario.training_tx`, `ario.arweave_url` — when the Arweave upload succeeded
 - `ario.wallet_mode` — `user-configured` / `persistent` / `ephemeral`
+
+On the registered model (chain head, written by `anchor()`):
+
+- `ario.last_training_hash` — pointer to the most recent training proof for this registered model; the next training reads it to set its `previous_hash`
 
 On model versions (`ArioMlflowClient`):
 
@@ -127,9 +132,9 @@ After running `ario-mlflow verify …` (training run or model version):
 
 On `@mlflow.trace` spans emitted by `VerifiedModel.predict()`:
 
-- `ario.decision_id`, `ario.model_name`, `ario.model_version`, `ario.run_id`
-- `ario.input_hash`, `ario.output_hash`, `ario.record_hash`
-- `ario.proof_status`, `ario.arweave_tx`, `ario.arweave_url`
+- `ario.decision_id`, `ario.model_name`, `ario.model_version`
+- `ario.input_hash`, `ario.output_hash`, `ario.payload_hash`
+- `ario.proof_status`, `ario.prediction_tx`, `ario.arweave_url`
 - `ario.artifact_verified` (when known)
 
 ## CLI
@@ -141,10 +146,13 @@ ario-mlflow verify trace <trace_id>              # verify an inference proof
 ario-mlflow audit <name>/<version>               # full model-lineage audit
 ```
 
-All `verify` commands check the proof locally (re-hash + Ed25519 signature),
-fetch the permanent copy from Arweave, and (if `ARIO_MLFLOW_ARIO_VERIFY_URL` is
-set) request an ar.io Verify attestation. Results are written back to the
-MLflow tags and the HTML report is regenerated.
+All `verify` commands run the full four-check flow: signature verification on
+the on-chain envelope, anchored bytes intact (download `ario/payload.json` from
+MLflow → re-hash → compare to envelope's `payload_hash`), live MLflow re-derivation
+(re-build canonical bytes from current run state and compare to anchored
+payload — catches tampering), and ar.io Verify attestation (if
+`ARIO_MLFLOW_ARIO_VERIFY_URL` is set). Results are written back to the MLflow
+tags and the HTML report is regenerated.
 
 ## What the attestation levels actually mean
 
@@ -180,7 +188,7 @@ this input) is on the roadmap, not in v0.1.
 python -m pytest tests/test_plugin_smoke.py
 ```
 
-33 smoke tests, no network required.
+87 smoke tests, no network required.
 
 ## Related docs
 

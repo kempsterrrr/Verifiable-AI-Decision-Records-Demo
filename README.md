@@ -11,55 +11,58 @@ This project provides **verifiable provenance for the entire ML lifecycle** — 
 3. **Prediction records** — every inference creates a decision record with full model lineage
 4. **Model lineage** — a cryptographically verifiable audit trail from training → registration → predictions
 
-Each record is:
+Each event is:
 
 - **Traced** — OpenTelemetry captures runtime context (trace ID, span ID)
 - **Linked to model lineage** — MLflow records which model version produced the output
-- **Hashed & signed** — SHA-256 hash chain + Ed25519 digital signature
-- **Anchored to Arweave** — Immutable permanent storage via ar.io Turbo
-- **Independently verifiable** — ar.io Verify produces on-demand attestations
+- **Committed** — A pure-commitment envelope (~300 bytes: `event_id`, `event_type`, `subject`, `payload_hash`, `previous_hash`, `signed_at`, signature, public key) is anchored to Arweave
+- **Reproducible** — The canonical bytes that were hashed live alongside the proof as `ario/payload.json` in MLflow, so an auditor can re-compute the hash and re-derive from current MLflow state
+- **Independently verifiable** — ar.io Verify produces on-demand attestations of the on-chain proof
 
-If someone tampers with a local record, the **Arweave-anchored copy** remains intact and verifiable.
+MLflow stays the system of record (canonical bytes); Arweave is the witness (commitment + signature only). No PII or business data leaves your MLflow.
 
 ## Architecture
 
 ```
-Startup (background thread)
-  |---> MLflow: read training run (params, metrics, artifact checksums)
-  |---> Build training proof → sign → anchor to Arweave
-  |---> MLflow: read model registration metadata
-  |---> Build registration proof → sign → anchor to Arweave
-  |---> Chain: training TX → registration TX
+User trains a model
+  |
+  v
+ario_mlflow.anchor() inside mlflow.start_run()
+  |---> Build canonical payload from MLflow state (params, metrics, artifact checksums)
+  |---> Write canonical bytes to MLflow as ario/payload.json artifact
+  |---> Sign a pure-commitment envelope (event_id, payload_hash, previous_hash, ...)
+  |---> Upload commitment to Arweave via ar.io Turbo
+  |---> Tag the run: ario.training_tx, ario.payload_hash, ario.last_training_hash
+  |
+  v
+ArioMlflowClient.create_model_version(...)
+  |---> Re-hash artifacts, compare to ario.artifact_hash (catches model swap)
+  |---> Sign + anchor a registration commitment chained to ario.training_tx
+  |---> Tag the model version: ario.registration_tx, ario.artifact_verified
 
-User Input
+User submits a prediction
   |
   v
 FastAPI /predict (returns instantly)
-  |---> MLflow (model lineage: run_id, version, artifact_uri)
-  |---> OpenTelemetry (trace_id, span_id)
-  |---> Inference (sklearn LogisticRegression)
+  |---> VerifiedModel.predict({...})
+  |     |---> Load model (integrity-checked at load time)
+  |     |---> Run inference
+  |     |---> Build canonical payload (input/output/trace IDs/...)
+  |     |---> Write ario/predictions/<id>/payload.json to MLflow
+  |     |---> Sign a pure-commitment envelope chained to ario.registration_tx
+  |     |---> Upload to Arweave in background thread
   |
   v
-Decision Record (canonical JSON)
-  |---> SHA-256 hash + hash chain (previous_hash)
-  |---> Ed25519 signature
-  |---> Store locally (instant)
-  |
-  v (background thread)
-Proof upload
-  |---> ar.io Turbo upload to Arweave
-  |---> TX ID written back to stored record
-  |
-  v
-Local storage: proof + anchoring metadata (Arweave TX, Turbo receipt)
-Arweave: proof only (record, hash, chain link, signature, public key)
+RecordStore: display cache (input, output, decision_id, latency, arweave_tx)
 
   ... later, on demand ...
 
-/verify endpoint
-  |---> Local verification (re-hash, check signature)
-  |---> External verification (fetch from Arweave, compare)
-  |---> ar.io Verify attestation (independent third-party check)
+/verify endpoint (or `ario-mlflow verify ...` CLI)
+  |---> Fetch the pure-commitment envelope from Arweave
+  |---> Check 1: Ed25519 signature is valid (cryptographic)
+  |---> Check 2: download ario/payload.json from MLflow → re-hash → matches envelope
+  |---> Check 3: re-derive canonical bytes from current MLflow state → matches anchored
+  |---> Check 4: ar.io Verify attestation (independent third-party check)
 ```
 
 ### Async Anchoring
@@ -68,26 +71,32 @@ Predictions return instantly (~4ms). Arweave uploads happen in a background thre
 
 ### What Gets Anchored
 
-Small JSON proof records (~1-5 KB each) — not model binaries. Each contains:
+A pure-commitment envelope per lifecycle event — ~300 bytes on Arweave, no source data:
 
 ```json
 {
-  "record": { "event_type": "...", "model_name": "...", ... },
-  "record_hash": "SHA-256 of canonical JSON",
-  "previous_hash": "prior record's hash (or GENESIS)",
-  "signature": "Ed25519 signature",
-  "public_key": "Ed25519 public key"
+  "event_id": "uuid",
+  "event_type": "training_complete | model_registered | prediction",
+  "subject": {"type": "mlflow_run", "run_id": "..."},
+  "payload_hash": "SHA-256 of the canonical bytes",
+  "previous_hash": "prior event's payload_hash (or GENESIS)",
+  "signed_at": "ISO-8601",
+  "public_key": "Ed25519 public key",
+  "signature": "Ed25519 signature over canonical(envelope - signature)"
 }
 ```
+
+The canonical bytes that were hashed live in MLflow as `ario/payload.json`. The envelope commits to those bytes; verifiers re-hash and compare. This keeps Arweave costs minimal and PII out of public storage.
 
 ### The Evidence Chain
 
 Each event creates multiple layers of evidence from independent parties:
 
-1. **Proof** (Ed25519 signature) — the AI system attests to the event
-2. **Turbo receipt** (Turbo's signature + ms timestamp) — independent service attests when the proof was submitted
-3. **Arweave block** — network consensus confirms permanent storage
-4. **ar.io Verify** (on-demand, gateway operator's signature) — independent verification of the anchored data
+1. **Commitment + signature** (Ed25519, by the AI system) — attests to the event
+2. **Canonical payload in MLflow** (`ario/payload.json`) — the source bytes that were hashed
+3. **Turbo receipt** (Turbo's signature + ms timestamp) — independent service attests when the proof was submitted
+4. **Arweave block** — network consensus confirms permanent storage
+5. **ar.io Verify** (on-demand, gateway operator's signature) — independent verification of the anchored data
 
 ## Quick Start
 
@@ -141,22 +150,22 @@ Navigate to **Decisions** and submit the form with applicant features (income, c
 
 Click a decision ID to see the full record:
 - **Prediction** — class, probabilities with visual bars, features used
-- **ar.io Verification** — three-level verification status (hash, signature, permanent copy, attestation)
+- **ar.io Verification** — four-check verification status (signature, anchored bytes intact, live MLflow re-derivation, ar.io attestation)
 - **Model lineage** — MLflow run ID, version, artifact URI, with link to the full lineage view
-- **Proof layer** — record hash, chain link, Ed25519 signature
 - **ar.io anchoring** — transaction ID, status (Anchoring → Anchored → Confirmed → Permanent)
 - **Upload receipt** — ar.io's timestamp witness: millisecond timestamp, wallet owner, signed receipt
 
 ### 5. Verify a Record
 
-Click **Verify with ar.io** to run on-demand verification:
-- **Local** — re-hashes the record and checks the Ed25519 signature
-- **Arweave** — fetches the proof from an ar.io gateway and compares hashes
-- **ar.io Verify** — requests an independent attestation from the ar.io gateway operator
+Click **Verify with ar.io** to run on-demand verification of all four checks:
+- **Signature** — Ed25519 signature on the on-chain commitment is valid
+- **Anchored bytes intact** — `ario/payload.json` in MLflow re-hashes to the envelope's `payload_hash`
+- **Source of truth matches** — re-derive canonical bytes from current MLflow state and compare to the anchored payload (catches MLflow tampering)
+- **ar.io Verify attestation** — independent third-party check by an ar.io gateway operator
 
-### 6. Tamper with a Record
+### 6. Tamper Demo (deferred to Phase 3)
 
-Click **Tamper** to modify the local record's output hash, then **Verify with ar.io** — local verification FAILS but the Arweave copy is still intact, proving the local record was modified after anchoring.
+The single "Tamper" button was removed. It modified a local cache that isn't part of the trust model under the new design (MLflow is the system of record). Phase 3 reintroduces tamper UX with four buttons paired to the four real checks above — modify the proof envelope, overwrite `ario/payload.json` in MLflow, mutate MLflow params/metrics, swap in a fake TX ID. Each tamper triggers exactly one check, teaching what that check actually proves.
 
 ## Pages
 
@@ -176,9 +185,9 @@ Click **Tamper** to modify the local record's output hash, then **Verify with ar
 | `/predict-form` | POST | Same, from HTML form (redirects to detail) |
 | `/decisions` | GET | List all decision records |
 | `/decisions/{id}` | GET | Get a single decision record |
-| `/verify/{id}` | POST | Verify a decision (local + Arweave + ar.io Verify) |
-| `/tamper/{id}` | POST | Tamper with a record (demo only) |
+| `/verify/{id}` | POST | Verify a decision (four-check: signature + anchored bytes + live MLflow + ar.io) |
 | `/api/activate/{name}/{version}` | POST | Switch the active model to a specific version |
+| `/api/train` | POST | Train a new model version |
 | `/lifecycle` | GET | List all lifecycle records (training, registration) |
 | `/lifecycle/{event_id}` | GET | Get a single lifecycle record |
 
@@ -187,7 +196,7 @@ Click **Tamper** to modify the local record's output hash, then **Verify with ar
 ```bash
 curl -X POST http://localhost:8000/predict \
   -H "Content-Type: application/json" \
-  -d '{"sepal_length":5.1,"sepal_width":3.5,"petal_length":1.4,"petal_width":0.2}'
+  -d '{"annual_income":78000,"credit_utilization":0.18,"debt_to_income_ratio":0.22,"months_employed":72,"credit_score":745}'
 ```
 
 ### Example: Verify a Decision
@@ -204,7 +213,7 @@ Environment variables (prefix: `VAIDR_`):
 |---|---|---|
 | `VAIDR_ARWEAVE_WALLET_PATH` | `keys/arweave_wallet.json` | Arweave JWK wallet |
 | `VAIDR_MLFLOW_TRACKING_URI` | `mlruns` | MLflow tracking directory |
-| `VAIDR_MLFLOW_MODEL_NAME` | `iris-classifier` | Registered model name |
+| `VAIDR_MLFLOW_MODEL_NAME` | `credit-scorer` | Registered model name |
 | `VAIDR_ARIO_GATEWAY_HOST` | `turbo-gateway.com` | ar.io gateway hostname |
 | `VAIDR_ARIO_VERIFY_URL` | `https://vilenarios.com/local/verify` | ar.io Verify service URL |
 | `VAIDR_RECORDS_FILE` | `data/records.json` | Local record storage path |
@@ -321,9 +330,9 @@ Re-run any `verify` command to pick up newer attestation levels (1 → 2 → 3) 
 
 | MLflow surface | Who writes it | What you see |
 |---|---|---|
-| **Runs** tab → Tags + `ario/` artifacts | `anchor()` | `ario.training_tx`, `ario.artifact_hash`, `ario.verify_status`; `ario/proof.json`, `ario/receipt.json`, `ario/verification.html` |
-| **Models** tab → Model version tags + `ario/` artifacts on the source run | `ArioMlflowClient` | `ario.registration_tx`, `ario.promotion_tx`, `ario.artifact_verified`; `ario/registration_verification.html` |
-| **Traces** tab → Trace tags | `VerifiedModel.predict()` | `ario.decision_id`, `ario.arweave_tx`, `ario.record_hash`, `ario.proof_status`, `ario.artifact_verified` |
+| **Runs** tab → Tags + `ario/` artifacts | `anchor()` | `ario.training_tx`, `ario.payload_hash`, `ario.artifact_hash`, `ario.last_training_hash`, `ario.verify_status`; `ario/payload.json`, `ario/proof.json`, `ario/receipt.json`, `ario/verification.html` |
+| **Models** tab → Model version tags + `ario/` artifacts on the source run | `ArioMlflowClient` | `ario.registration_tx`, `ario.promotion_tx`, `ario.artifact_verified`; `ario/registration_payload.json`, `ario/registration_verification.html` |
+| **Traces** tab → Trace tags | `VerifiedModel.predict()` | `ario.decision_id`, `ario.prediction_tx`, `ario.payload_hash`, `ario.input_hash`, `ario.output_hash`, `ario.proof_status`, `ario.artifact_verified` |
 
 After running the CLI `verify` commands, each surface also carries `ario.verify_status = verified`, `ario.attestation_level`, `ario.report_url`, `ario.attested_by`, `ario.attested_at`.
 
@@ -334,6 +343,8 @@ The plugin writes these tags, all visible in the native MLflow UI:
 | Tag | Where | Written by |
 |---|---|---|
 | `ario.training_tx` | Run | `anchor()` |
+| `ario.payload_hash` | Run, Trace | `anchor()`, `VerifiedModel.predict` |
+| `ario.last_training_hash` | Registered model | `anchor()` (chain head) |
 | `ario.registration_tx` | Model version | `ArioMlflowClient.create_model_version` |
 | `ario.promotion_tx` | Model version | `ArioMlflowClient.transition_model_version_stage` |
 | `ario.artifact_hash` | Run | `anchor()` |
@@ -343,7 +354,10 @@ The plugin writes these tags, all visible in the native MLflow UI:
 | `ario.report_url` | Run, Model version, Trace | CLI verify |
 | `ario.attested_by` | Run, Model version, Trace | CLI verify |
 | `ario.attested_at` | Run, Model version, Trace | CLI verify |
-| `ario.arweave_tx` | Trace | `VerifiedModel.predict` |
+| `ario.prediction_tx` | Trace | `VerifiedModel.predict` |
+| `ario.input_hash`, `ario.output_hash` | Trace | `VerifiedModel.predict` |
+| `ario.decision_id` | Trace | `VerifiedModel.predict` |
+| `ario.proof_status` | Trace | `VerifiedModel.predict` |
 | `ario.arweave_url` | Run, Model version, Trace | all |
 
 ---
@@ -357,10 +371,12 @@ Every prediction is tied to a specific model version. MLflow captures the run ID
 Each prediction creates a distributed trace. The trace ID and span ID are embedded in the decision record, allowing correlation with infrastructure monitoring.
 
 ### Proof Layer — Integrity
-Decision records are serialized to deterministic canonical JSON (sorted keys, compact separators, floats normalized to 6 decimal places), then:
-- **SHA-256 hashed** — any change to the record changes the hash
-- **Hash-chained** — each record links to the previous record's hash
-- **Ed25519 signed** — cryptographic proof of record origin
+The plugin builds a canonical payload from MLflow state (training params/metrics/artifact checksums, or prediction input/output) and serializes it to RFC-8785 (JCS) — a deterministic JSON canonicalization that any RFC-8785 verifier in any language can reproduce. Then:
+- **Canonical bytes preserved** — written to MLflow as `ario/payload.json` (and as `ario/predictions/<id>/payload.json` for inferences)
+- **Hash committed** — SHA-256 of the canonical bytes goes into a small commitment envelope
+- **Chained per event type** — each event's `previous_hash` points back to the prior anchor of the same kind (training chain head on the registered model; registration chains to its source training TX; predictions chain to their model version's registration TX)
+- **Ed25519 signed** — the envelope (minus signature) is signed; `public_key` travels with it for verification
+- **Anchored to Arweave** — only the ~300-byte envelope is uploaded; no source data leaves your MLflow
 
 ### ar.io Turbo — Anchoring
 The proof is uploaded to Arweave permanent storage via ar.io Turbo. The upload returns a signed receipt with a millisecond-precision timestamp — an independent attestation of when the proof was submitted. Once confirmed on Arweave, the data is immutable and publicly accessible.
@@ -377,9 +393,21 @@ When verification is requested, ar.io Verify independently fetches the Arweave d
 These levels describe integrity of the anchored record, not the correctness of the underlying ML decision. Semantic verification (whether *this model* produced *this output* on *this input*) is a separate problem and is on the roadmap, not in v0.1.
 
 ### Auditor Verification
-An auditor can independently verify any proof with standard cryptographic tools:
-1. Fetch the proof from Arweave using the TX ID
-2. Recompute `SHA-256(canonical_json(record))` and compare to `record_hash`
-3. Verify the Ed25519 signature against the `public_key`
-4. Check hash chain links across records
-5. No dependency on ar.io, MLflow, or any external service required
+An auditor can independently verify any proof with standard cryptographic tools (no dependency on the demo's internals):
+
+1. **Fetch the commitment** from Arweave via any ar.io gateway:
+   ```bash
+   curl https://turbo-gateway.com/raw/<tx_id>
+   ```
+2. **Verify the Ed25519 signature.** Strip the `signature` field, JCS-canonicalize (RFC 8785) the remaining envelope, verify against the embedded `public_key`.
+3. **Fetch the canonical bytes** from MLflow:
+   ```bash
+   mlflow artifacts download -r <run_id> -a ario/payload.json     # training/registration
+   mlflow artifacts download -r <run_id> -a ario/predictions/<decision_id>/payload.json  # prediction
+   ```
+   Compute `SHA-256` of the raw bytes; compare to the envelope's `payload_hash`.
+4. **Re-derive the canonical bytes** from current MLflow state (params, metrics, artifact checksums for training; input/output for prediction) and compare to the downloaded `payload.json`. Any mismatch means MLflow was modified after anchoring.
+5. **Walk the chain.** Each envelope's `previous_hash` should be retrievable on Arweave (or `GENESIS`).
+6. **Optional:** request an ar.io Verify attestation for an independent third-party check.
+
+`ario-mlflow verify run|model|trace <id>` runs all of the above in one command and writes the result back to MLflow as `ario.verify_status`, `ario.attestation_level`, etc. No dependency on the demo's internals — works against any MLflow + Arweave deployment.

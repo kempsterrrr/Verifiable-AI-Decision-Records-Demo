@@ -279,21 +279,36 @@ def form_predict(
 
 @app.post("/api/train")
 def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
-    """Train a new model version, register it, and anchor proofs."""
+    """Train a new model version. Phase 2.A: anchoring is handled by
+    the plugin's headline API (anchor() + ArioMlflowClient) — no longer
+    by the demo's hand-rolled proof + background-upload pipeline.
+
+    The lifecycle_store is still populated for UI display compatibility;
+    Phase 2.D refactors it into a UI-only cache populated from MLflow tags.
+    """
     import random
     settings = request.app.state.settings
     max_iter = int(body.get("max_iter", 200))
     random_state = int(body.get("random_state", random.randint(1, 10000)))
 
-    # Train and register (synchronous, <1s)
+    # Train, anchor, and register via the plugin. Anchoring of the
+    # training event happens synchronously inside the run; registration
+    # anchoring spawns a daemon thread (visible via
+    # ArioMlflowClient.anchor_status / wait_for_anchor).
     info = train_and_register_with_params(
         settings.mlflow_tracking_uri,
         settings.mlflow_model_name,
+        proof_engine=request.app.state.proof_engine,
+        arweave=request.app.state.anchor,
         max_iter=max_iter,
         random_state=random_state,
     )
 
-    # Build lifecycle proof records
+    # Populate the demo's lifecycle_store with old-shape envelopes for
+    # UI compatibility. Phase 2.D replaces this with a thin cache
+    # adapter that reads directly from MLflow tags + Arweave. The
+    # background-task duplicate-anchor pipeline is GONE — the plugin
+    # already uploaded the real training+registration proofs.
     training_record = build_training_record(
         settings.mlflow_tracking_uri, info["run_id"],
         info["model_name"], info["model_version"],
@@ -301,9 +316,22 @@ def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
     last = request.app.state.lifecycle_store.list_all()
     previous_hash = last[-1]["record_hash"] if last else "GENESIS"
     training_proof = request.app.state.proof_engine.create_proof(training_record, previous_hash)
-    training_envelope = {**training_proof, "arweave_tx_id": None, "arweave_url": None, "turbo_receipt": None}
+    # Hydrate with the plugin's actual Arweave result so the UI shows
+    # the real TX, not None.
+    plugin_anchor = info.get("training_anchor_result") or {}
+    training_envelope = {
+        **training_proof,
+        "arweave_tx_id": plugin_anchor.get("tx_id"),
+        "arweave_url": plugin_anchor.get("url"),
+        "turbo_receipt": plugin_anchor.get("receipt"),
+    }
     request.app.state.lifecycle_store.append(training_envelope)
 
+    # Registration record in the legacy store. The plugin's
+    # ArioMlflowClient kicked off the real registration anchor in a
+    # daemon thread; we don't wait for it here. A lazy refresh path
+    # (Phase 2.D) will populate the registration_tx once the daemon
+    # completes.
     registration_record = build_registration_record(
         settings.mlflow_tracking_uri, info["model_name"], info["model_version"],
         training_envelope.get("arweave_tx_id"),
@@ -311,24 +339,26 @@ def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
     last = request.app.state.lifecycle_store.list_all()
     previous_hash = last[-1]["record_hash"]
     registration_proof = request.app.state.proof_engine.create_proof(registration_record, previous_hash)
-    registration_envelope = {**registration_proof, "arweave_tx_id": None, "arweave_url": None, "turbo_receipt": None}
+    registration_envelope = {
+        **registration_proof,
+        "arweave_tx_id": None,  # filled by ArioMlflowClient daemon; UI surfaces "anchoring"
+        "arweave_url": None,
+        "turbo_receipt": None,
+    }
     request.app.state.lifecycle_store.append(registration_envelope)
 
-    # Anchor both in background
-    if request.app.state.anchor.enabled:
+    # Background task: wait for ArioMlflowClient's registration anchor
+    # daemon to complete, then read the resulting tags into the
+    # lifecycle_store entry so the UI converges to the real registration_tx.
+    ario_client = info.get("ario_client")
+    if ario_client is not None:
         background_tasks.add_task(
-            _anchor_lifecycle_record,
+            _hydrate_registration_envelope_from_plugin,
             request.app.state.lifecycle_store,
-            request.app.state.anchor,
-            training_record["event_id"],
-            training_proof,
-        )
-        background_tasks.add_task(
-            _anchor_lifecycle_record,
-            request.app.state.lifecycle_store,
-            request.app.state.anchor,
+            ario_client,
+            info["model_name"],
+            info["model_version"],
             registration_record["event_id"],
-            registration_proof,
         )
 
     # Auto-switch to the newly trained model
@@ -343,7 +373,55 @@ def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
         "accuracy": info["accuracy"],
         "training_event_id": training_record["event_id"],
         "registration_event_id": registration_record["event_id"],
+        # Surface the plugin's training TX so callers can verify directly.
+        "training_tx": plugin_anchor.get("tx_id"),
+        "training_payload_hash": info.get("training_payload_hash"),
     }
+
+
+def _hydrate_registration_envelope_from_plugin(
+    lifecycle_store, ario_client, model_name: str, model_version: str, event_id: str,
+):
+    """Wait for ArioMlflowClient's registration anchor daemon to settle,
+    then update the demo's lifecycle_store entry with the real Arweave
+    TX. Bridges Phase 2.A's plugin-anchored registration with the
+    legacy old-shape lifecycle_store the UI still reads from. Phase 2.D
+    deletes both this helper and the legacy lifecycle_store shape.
+    """
+    try:
+        # Wait up to 60s for the daemon. If it fails or times out, the
+        # entry stays at arweave_tx_id=None and the UI shows
+        # "anchoring..." until something else hydrates it.
+        finished = ario_client.wait_for_anchor("registration", model_name, model_version, timeout=60.0)
+        if not finished:
+            logger.warning(
+                f"Registration anchor for {model_name}/v{model_version} did not "
+                f"complete in 60s; lifecycle_store entry stays unhydrated."
+            )
+            return
+        # Read back the model version's tags to find the registration_tx.
+        mv = ario_client.get_model_version(model_name, model_version)
+        tags = (mv.tags or {})
+        tx_id = tags.get("ario.registration_tx")
+        arweave_url = tags.get("ario.arweave_url")
+        if not tx_id:
+            return
+        envelope = lifecycle_store.get_by_event_id(event_id)
+        if envelope is None:
+            return
+        envelope["arweave_tx_id"] = tx_id
+        envelope["arweave_url"] = arweave_url
+        # Turbo receipt isn't accessible from the model version tags
+        # directly; leave as None. UI doesn't strictly require it.
+        lifecycle_store.update(event_id, envelope)
+        logger.info(
+            f"Hydrated lifecycle_store registration envelope for "
+            f"{model_name}/v{model_version}: tx={tx_id}"
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            f"Failed to hydrate registration envelope for {model_name}/v{model_version}: {e}"
+        )
 
 
 @app.post("/api/activate/{model_name}/{version}")

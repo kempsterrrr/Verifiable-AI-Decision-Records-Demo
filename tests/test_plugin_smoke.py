@@ -236,6 +236,48 @@ def test_verify_commitment_signature_covers_public_key(tmp_path):
     assert result["signature_valid"] is False
 
 
+def test_verify_commitment_ignores_underscore_prefixed_caller_annotations(tmp_path):
+    """Caller-attached metadata keys (underscore-prefixed by convention)
+    must not invalidate signature verification.
+
+    Concrete case: ``verify_ario_attestation`` reads ``envelope["_tx_id"]``
+    when set, so the four-check ``full_verify`` flow injects ``_tx_id``
+    onto the envelope before running. Without this exclusion,
+    ``verify_signature`` would canonicalize the *modified* envelope
+    and fail the signature check, breaking ``full_verify`` for any
+    caller passing an envelope through both checks.
+
+    Convention: ``_``-prefixed keys are out-of-band routing metadata,
+    not part of the signed protocol.
+    """
+    engine = ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub"))
+    env = engine.create_commitment(
+        event_type="prediction",
+        subject={"type": "mlflow_decision", "decision_id": "d-1"},
+        payload_bytes=b'{"input_hash":"abc","output_hash":"def"}',
+        previous_hash="GENESIS",
+    )
+
+    # Without any annotation: signature verifies as expected.
+    assert engine.verify_commitment(env)["signature_valid"] is True
+
+    # Caller attaches routing metadata (e.g. for verify_ario_attestation).
+    env_annotated = dict(env)
+    env_annotated["_tx_id"] = "ar-tx-some-id"
+    env_annotated["_other_internal_field"] = {"foo": "bar"}
+
+    # Signature must still verify — _tx_id and _other_internal_field
+    # are stripped before reconstructing the signed body.
+    result = engine.verify_commitment(env_annotated)
+    assert result["signature_valid"] is True, result
+
+    # Sanity: a NON-underscore-prefixed mutation must still fail
+    # verification (so we know the strip is conservative).
+    env_tampered = dict(env)
+    env_tampered["event_type"] = "ATTACKER"
+    assert engine.verify_commitment(env_tampered)["signature_valid"] is False
+
+
 def test_create_commitment_event_id_and_signed_at_overrides(tmp_path):
     """Caller may provide event_id / signed_at for deterministic tests."""
     engine = ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub"))

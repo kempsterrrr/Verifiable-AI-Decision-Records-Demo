@@ -302,6 +302,13 @@ def load_model(
             "model_version": info["model_version"],
             "run_id": info["run_id"],
             "artifact_uri": version_uri,
+            # Surface the plugin's anchor results so the lifespan startup
+            # flow can populate lifecycle_store with the real new-shape
+            # TX without re-anchoring (which would generate legacy-shape
+            # duplicates on Arweave).
+            "training_anchor_result": info.get("training_anchor_result"),
+            "training_envelope": info.get("training_envelope"),
+            "ario_client": info.get("ario_client"),
         }
 
 

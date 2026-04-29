@@ -251,7 +251,19 @@ class ProofEngine:
         """
         sig_valid = False
         try:
-            body = {k: v for k, v in envelope.items() if k != "signature"}
+            # Reconstruct the signed body. Strip:
+            # - ``signature`` itself (it was added after signing).
+            # - Any caller-attached annotation keys (underscore-prefixed,
+            #   e.g. ``_tx_id`` injected so verify_ario_attestation can
+            #   route the call). By convention, ``_*`` keys are
+            #   out-of-band routing metadata, not part of the signed
+            #   protocol. Without this, full_verify would falsely fail
+            #   the signature check when called with an envelope that
+            #   any other check needs to annotate.
+            body = {
+                k: v for k, v in envelope.items()
+                if k != "signature" and not k.startswith("_")
+            }
             vk = VerifyKey(bytes.fromhex(envelope["public_key"]))
             vk.verify(canonical_json(body), bytes.fromhex(envelope["signature"]))
             sig_valid = True

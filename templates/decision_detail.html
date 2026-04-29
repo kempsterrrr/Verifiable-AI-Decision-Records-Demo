@@ -176,19 +176,15 @@
             <div class="page-actions">
                 <a id="verify-btn" href="/ui/decisions/{{ envelope.record.decision_id }}?verify=true" class="btn btn-primary btn-sm" data-loading-text="Verifying..." {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>Verify with ar.io</a>
                 <a href="/api/export/{{ envelope.record.decision_id }}" class="btn btn-outline btn-sm">Download Proof</a>
-                {% if not envelope.get('tampered') %}
-                <form action="/tamper/{{ envelope.record.decision_id }}" method="POST" style="display:inline;" onsubmit="return confirm('This changes the locally-stored record to simulate what happens when internal logs are lost, rotated, or silently edited. The permanent copy on Arweave is unaffected. Continue?')">
-                    <button type="submit" class="btn btn-danger-outline btn-sm" data-loading-text="Simulating...">Simulate lost/changed record</button>
-                </form>
-                {% endif %}
+                {# Phase 2.C removed the single tamper button. The legacy
+                   tamper modified a local JSON cache, but local-cache
+                   integrity isn't part of the new trust model (MLflow is
+                   the system of record, not the cache). Phase 3 (task #42)
+                   reintroduces tamper UX with four buttons paired to the
+                   four real checks: signature / anchored bytes / live
+                   MLflow / ar.io. #}
             </div>
         </div>
-
-        {% if envelope.get('tampered') %}
-        <div class="alert alert-danger">
-            This local record no longer matches what was originally signed — the same failure mode as logs being deleted, rotated, or silently overwritten in production. The permanent copy on Arweave is unaffected, and the re-verification below shows a third party would still catch the discrepancy.
-        </div>
-        {% endif %}
 
         <div class="grid">
             <!-- Prediction -->
@@ -233,9 +229,9 @@
                     <div class="verify-row">
                         <span>Hash Integrity</span>
                         {% if v %}
-                            <span class="{{ 'check' if v.hash_valid else 'cross' }}">{{ 'PASS' if v.hash_valid else 'FAIL' }}</span>
+                            <span class="{{ 'check' if v.hash_match else 'cross' }}">{{ 'PASS' if v.hash_match else 'FAIL' }}</span>
                         {% else %}
-                            <span class="{{ 'check' if local_verification.hash_valid else 'cross' }}">{{ 'PASS' if local_verification.hash_valid else 'FAIL' }}</span>
+                            <span class="unchecked">Not checked</span>
                         {% endif %}
                     </div>
                     <div class="verify-row">
@@ -243,7 +239,7 @@
                         {% if v %}
                             <span class="{{ 'check' if v.signature_valid else 'cross' }}">{{ 'PASS' if v.signature_valid else 'FAIL' }}</span>
                         {% else %}
-                            <span class="{{ 'check' if local_verification.signature_valid else 'cross' }}">{{ 'PASS' if local_verification.signature_valid else 'FAIL' }}</span>
+                            <span class="unchecked">Not checked</span>
                         {% endif %}
                     </div>
                     <div class="verify-row">
@@ -308,11 +304,9 @@
                     <div class="verify-row verify-divider">
                         <strong>Overall</strong>
                         {% if v %}
-                            {% if not v.hash_valid and v.permanent_copy_found and v.hash_match %}
-                                <strong class="cross" title="The local copy no longer matches the proof that was signed — the Arweave-anchored version is still intact.">LOCAL COPY CHANGED</strong>
-                            {% elif v.hash_valid and v.signature_valid and v.permanent_copy_found and v.hash_match %}
-                                <strong class="check" title="Proof blob confirmed on Arweave. This is integrity of the record, not correctness of the decision.">PROOF CONFIRMED</strong>
-                            {% elif v.hash_valid and v.signature_valid and not v.permanent_copy_found %}
+                            {% if v.signature_valid and v.permanent_copy_found and v.hash_match %}
+                                <strong class="check" title="Proof confirmed on Arweave. The signed commitment, the anchored canonical bytes, and ar.io's attestation all agree.">PROOF CONFIRMED</strong>
+                            {% elif v.signature_valid and not v.permanent_copy_found %}
                                 <span class="badge badge-yellow">Pending</span>
                             {% else %}
                                 <strong class="cross">FAILED</strong>
@@ -322,7 +316,7 @@
                         {% endif %}
                     </div>
 
-                    {% if v and not v.permanent_copy_found and v.hash_valid %}
+                    {% if v and not v.permanent_copy_found and v.signature_valid %}
                     <div class="verify-note verify-note-warn">
                         {% if turbo_status and turbo_status.status == 'FINALIZED' %}
                             Data is permanent on Arweave but couldn't be fetched. This may be a temporary gateway issue — try again.
@@ -350,14 +344,7 @@
 
                     {% if not v and envelope.arweave_tx_id %}
                     <div class="verify-meta">
-                        Hash and signature checked locally. Click <strong>Verify with ar.io</strong> for full verification.
-                    </div>
-                    {% endif %}
-
-                    {% if v and not v.hash_valid and v.permanent_copy_found and v.hash_match %}
-                    <div class="verify-note verify-note-ok">
-                        Permanent record intact on ar.io:
-                        <a href="{{ envelope.arweave_url }}" target="_blank">{{ envelope.arweave_tx_id[:24] }}...</a>
+                        Click <strong>Verify with ar.io</strong> to fetch the on-chain commitment and run the full verification flow.
                     </div>
                     {% endif %}
 
@@ -365,13 +352,14 @@
                     <details style="margin-top: 0.75rem; font-size: 0.8rem; color: var(--muted);">
                         <summary style="cursor: pointer; font-weight: 600; color: var(--black); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em;">How to verify independently</summary>
                         <div style="margin-top: 0.5rem; line-height: 1.6;">
-                            <p>1. Fetch the proof from Arweave:</p>
-                            <code style="display: block; background: var(--surface); padding: 0.4rem 0.6rem; border-radius: 4px; margin: 0.25rem 0 0.5rem; font-size: 0.7rem; word-break: break-all; font-family: 'JetBrains Mono', monospace;">curl https://{{ envelope.arweave_url.split('//')[1] if envelope.arweave_url else 'turbo-gateway.com/' + envelope.arweave_tx_id }}</code>
-                            <p>2. Compute <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">SHA-256</code> of the canonical JSON <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">record</code> field (sorted keys, compact separators, floats to 6 decimal places). Compare with <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">record_hash</code>.</p>
-                            <p style="margin-top: 0.25rem;">3. Verify the Ed25519 signature using public key:</p>
-                            <code style="display: block; background: var(--surface); padding: 0.4rem 0.6rem; border-radius: 4px; margin: 0.25rem 0 0.5rem; font-size: 0.7rem; word-break: break-all; font-family: 'JetBrains Mono', monospace;">{{ envelope.public_key }}</code>
-                            <p>4. Check <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">previous_hash</code> matches the prior record's <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">record_hash</code> to verify chain integrity.</p>
-                            <p style="margin-top: 0.25rem; font-style: italic;">No dependency on ar.io, MLflow, or any external service required.</p>
+                            <p>1. Fetch the pure-commitment envelope from Arweave:</p>
+                            <code style="display: block; background: var(--surface); padding: 0.4rem 0.6rem; border-radius: 4px; margin: 0.25rem 0 0.5rem; font-size: 0.7rem; word-break: break-all; font-family: 'JetBrains Mono', monospace;">curl https://turbo-gateway.com/raw/{{ envelope.arweave_tx_id }}</code>
+                            <p>2. Verify the Ed25519 <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">signature</code> using the embedded <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">public_key</code>. The signed body is the envelope minus the <code>signature</code> field, JCS-canonicalized (RFC&nbsp;8785).</p>
+                            <p style="margin-top: 0.25rem;">3. Download the canonical bytes from MLflow:</p>
+                            <code style="display: block; background: var(--surface); padding: 0.4rem 0.6rem; border-radius: 4px; margin: 0.25rem 0 0.5rem; font-size: 0.7rem; word-break: break-all; font-family: 'JetBrains Mono', monospace;">mlflow artifacts download -r &lt;run_id&gt; -a ario/predictions/&lt;decision_id&gt;/payload.json</code>
+                            <p>Compute <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">SHA-256</code> of those raw bytes and compare to the envelope's <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">payload_hash</code>.</p>
+                            <p style="margin-top: 0.25rem;">4. Verify <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">previous_hash</code> matches the model version's registration TX (chain integrity).</p>
+                            <p style="margin-top: 0.25rem; font-style: italic;">Or run <code style="font-family: 'JetBrains Mono', monospace;">ario-mlflow verify trace &lt;decision_id&gt;</code> for all four checks at once.</p>
                         </div>
                     </details>
                     {% endif %}

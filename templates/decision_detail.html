@@ -232,162 +232,93 @@
             <div class="section">
                 <div class="section-header">ar.io Verification</div>
                 <div class="section-body">
-                    <div style="font-size:0.78rem;color:var(--muted);line-height:1.5;margin-bottom:0.75rem;">
-                        Independent checks on the proof record. These verify that <em>what was anchored</em> is intact on the Arweave network — they do <strong>not</strong> speak to whether the decision itself was correct.
-                    </div>
-                    <div class="verify-row" title="Ed25519 signature on the on-chain pure-commitment envelope, verified against the embedded public_key.">
-                        <span>Signature</span>
-                        {% if v %}
-                            {% if v.signature_valid is sameas true %}
-                                <span class="check">PASS</span>
-                            {% elif v.signature_valid is sameas false %}
-                                <span class="cross">FAIL</span>
-                            {% else %}
-                                <span class="badge badge-yellow">Pending</span>
-                            {% endif %}
-                        {% else %}
-                            <span class="unchecked">Not checked</span>
-                        {% endif %}
-                    </div>
-                    <div class="verify-row" title="The canonical bytes anchored alongside the proof (ario/payload.json in MLflow) re-hash to the envelope's payload_hash.">
-                        <span>Anchored Bytes Intact</span>
-                        {% if v %}
-                            {% if v.hash_match is sameas false %}
-                                {# Real check-2 failure: artifact missing,
-                                   unreadable, or hash mismatch. Show FAIL
-                                   even if permanent_copy_found is also False
-                                   (the artifact may have been deleted). #}
-                                <span class="cross">FAIL</span>
-                            {% elif v.permanent_copy_found and v.hash_match is sameas true %}
-                                <span class="check">PASS</span>
-                            {% else %}
-                                <span class="badge badge-yellow">Pending</span>
-                            {% endif %}
-                        {% else %}
-                            <span class="unchecked">Not checked</span>
-                        {% endif %}
-                    </div>
-                    <div class="verify-row" title="Live MLflow state re-derives to the same canonical bytes that were anchored. For predictions, the trace tag ario.payload_json is re-fetched and compared to the artifact. This is the check that catches MLflow tampering of either surface.">
-                        <span>Source of Truth Matches</span>
-                        {% if v %}
-                            {% if v.source_of_truth_ok is sameas true %}
-                                <span class="check">PASS</span>
-                            {% elif v.source_of_truth_ok is sameas false %}
-                                <span class="cross">FAIL</span>
-                            {% else %}
-                                <span class="badge badge-yellow">Pending</span>
-                            {% endif %}
-                        {% else %}
-                            <span class="unchecked">Not checked</span>
-                        {% endif %}
-                    </div>
-                    <div class="verify-row">
-                        <span>Attestation</span>
-                        {% if v and v.attestation_level %}
-                            <span>
-                                {% if v.attestation_level == 3 %}
-                                    <span class="badge badge-green" title="ar.io Verify Level 3 — the digital signature on this record has been independently verified using the original signer's public key. This is a mathematical proof, not a trust claim: the record is intact and attributable to the stated signer."><span class="badge-dot"></span> Cryptographically verified</span>
-                                    <span style="margin-left:0.4rem;font-size:0.72rem;color:var(--muted);">Level 3</span>
-                                {% elif v.attestation_level == 2 %}
-                                    <span class="badge badge-yellow" title="ar.io Verify Level 2 — ar.io downloaded the raw record and independently recomputed its SHA-256 fingerprint. The bytes match the gateway's digest, confirming content integrity. Cryptographic signature verification still pending."><span class="badge-dot"></span> Content integrity confirmed</span>
-                                    <span style="margin-left:0.4rem;font-size:0.72rem;color:var(--muted);">Level 2</span>
-                                {% elif v.attestation_level == 1 %}
-                                    <span class="badge badge-yellow" title="ar.io Verify Level 1 — the record was found in a confirmed block on the Arweave network at a specific block height and timestamp. On Arweave, a confirmed block means the data is permanently stored. Content and signature verification still to come."><span class="badge-dot"></span> Finalized on Arweave</span>
-                                    <span style="margin-left:0.4rem;font-size:0.72rem;color:var(--muted);">Level 1</span>
-                                {% endif %}
-                            </span>
-                        {% elif v %}
-                            <span class="badge badge-yellow">Pending</span>
-                        {% else %}
-                            <span class="unchecked">Not checked</span>
-                        {% endif %}
-                    </div>
+                  <div style="font-size:0.78rem;color:var(--muted);line-height:1.5;margin-bottom:0.75rem;">
+                    Independent verification of MLflow data integrity. These verify this decision record matches the original proof anchored with ar.io at runtime — they do <strong>not</strong> speak to whether the decision itself was correct.
+                  </div>
 
-                    {% if v and v.attested_by %}
-                    <div class="verify-row" title="An ar.io gateway operator ran the verification above and cryptographically signed the result with their wallet. This is an independent statement on the ar.io network, separate from the verification itself.">
-                        <span>Attested by</span>
-                        <span>
-                            <strong>{{ v.attested_by }}</strong>
-                            <span style="margin-left:0.35rem;font-size:0.72rem;color:var(--muted);">independent ar.io operator</span>
-                            {% if v.attested_at %}
-                                <div style="font-size:0.72rem;color:var(--muted);margin-top:0.15rem;">{{ v.attested_at[:19] }}Z</div>
-                            {% endif %}
-                        </span>
-                    </div>
+                  <div class="verify-row" title="The proof exists on Arweave and ar.io can locate it. FAIL means the on-chain anchor is missing or unreachable.">
+                    <span>Proof Found</span>
+                    {% if v %}
+                      {% if v.signature_valid is sameas true and envelope.arweave_tx_id %}
+                        <span class="check">PASS</span>
+                      {% elif v.signature_valid is sameas false %}
+                        <span class="cross">FAIL</span>
+                      {% else %}
+                        <span class="badge badge-yellow">Pending</span>
+                      {% endif %}
+                    {% else %}
+                      <span class="unchecked">Not checked</span>
                     {% endif %}
+                  </div>
 
-                    <div class="verify-row verify-divider">
-                        <strong>Overall</strong>
-                        {% if v %}
-                            {% if v.overall is sameas true %}
-                                <strong class="check" title="All applicable checks passed. The signed commitment, the anchored canonical bytes, the live MLflow state (where applicable), and ar.io's attestation all agree.">PROOF CONFIRMED</strong>
-                            {% elif v.overall is sameas false and v.signature_valid is sameas true and v.hash_match is sameas true and v.source_of_truth_ok is sameas true and v.attestation_level and v.attestation_level < 2 %}
-                                {# All required checks (sig + anchored + source-of-truth)
-                                   passed; only ar.io attestation is still propagating from
-                                   L1 to L2-3. The plugin treats source_of_truth_ok=None
-                                   as a real failure for every event type we anchor
-                                   (prediction / training / registration are all in
-                                   _REQUIRES_FULL_MLFLOW_VERIFICATION), so we must NOT
-                                   accept None here — that would silently soften a real
-                                   plugin verdict. #}
-                                <span class="badge badge-yellow" title="Cryptographic + source-of-truth checks passed. ar.io's attestation is still propagating from Level 1 → Level 2-3 (typically 2-5 minutes after upload). Re-verify in a few minutes.">Pending ar.io confirmation</span>
-                            {% elif v.overall is sameas false %}
-                                <strong class="cross" title="At least one check failed. See the rows above for details.">FAILED</strong>
-                            {% else %}
-                                <span class="badge badge-yellow">Pending</span>
-                            {% endif %}
-                        {% else %}
-                            <span class="unchecked">Not verified</span>
-                        {% endif %}
-                    </div>
-
-                    {% if v and not v.permanent_copy_found and v.signature_valid %}
-                    <div class="verify-note verify-note-warn">
-                        {% if turbo_status and turbo_status.status == 'FINALIZED' %}
-                            Data is permanent on Arweave but couldn't be fetched. This may be a temporary gateway issue — try again.
-                        {% elif turbo_status and turbo_status.status == 'CONFIRMED' %}
-                            Proof is confirmed but hasn't finalized on Arweave yet. Try again later.
-                        {% else %}
-                            Proof was uploaded but isn't available for verification yet. Try again in a few minutes.
-                        {% endif %}
-                    </div>
+                  <div class="verify-row" title="The data in MLflow (both the saved canonical bytes and the live state) hashes to the same value that was anchored on Arweave. ar.io independently re-verifies the bytes. FAIL means MLflow data has been tampered with since anchoring.">
+                    <span>Decision Record Matches</span>
+                    {% if v %}
+                      {% if v.hash_match is sameas false or v.source_of_truth_ok is sameas false %}
+                        <span class="cross">FAIL</span>
+                      {% elif v.permanent_copy_found and v.hash_match is sameas true and v.source_of_truth_ok is sameas true %}
+                        <span class="check">PASS</span>
+                      {% else %}
+                        <span class="badge badge-yellow">Pending</span>
+                      {% endif %}
+                    {% else %}
+                      <span class="unchecked">Not checked</span>
                     {% endif %}
+                  </div>
 
-                    {% if v and v.permanent_copy_found %}
-                    <div class="verify-actions">
-                        {% if v.report_url %}
-                        <a href="{{ v.report_url }}" target="_blank" class="btn btn-outline btn-sm">View Report</a>
-                        {% endif %}
-                        {% if v.pdf_url %}
-                        <a href="{{ v.pdf_url }}" target="_blank" class="btn btn-outline btn-sm">Download PDF</a>
-                        {% endif %}
-                    </div>
-                    <div class="verify-meta">
-                        {% if v.attested_by %}Attested by <strong>{{ v.attested_by }}</strong>{% endif %}{% if v.attested_at %} at {{ v.attested_at[:19] }}Z{% endif %}{% if not v.attested_by %}Last verified: {{ v.verified_at[:19] }}Z{% endif %}
-                    </div>
+                  <div class="verify-row" title="The proof carries a valid signature from the user who issued it. ar.io independently re-verifies the signature. FAIL means the proof was altered after signing.">
+                    <span>Signature Confirmed</span>
+                    {% if v %}
+                      {% if v.signature_valid is sameas true and v.attestation_level and v.attestation_level >= 3 %}
+                        <span class="check">PASS</span>
+                      {% elif v.signature_valid is sameas false %}
+                        <span class="cross">FAIL</span>
+                      {% else %}
+                        <span class="badge badge-yellow">Pending</span>
+                      {% endif %}
+                    {% else %}
+                      <span class="unchecked">Not checked</span>
                     {% endif %}
+                  </div>
 
-                    {% if not v and envelope.arweave_tx_id %}
-                    <div class="verify-meta">
-                        Click <strong>Verify with ar.io</strong> to fetch the on-chain commitment and run the full verification flow.
-                    </div>
-                    {% endif %}
+                  {% if v and v.attested_by %}
+                  <div class="verify-row" title="An ar.io gateway operator ran the verification above and cryptographically signed the result with their wallet. Independent statement on the ar.io network, separate from the verification itself.">
+                    <span>Attested by</span>
+                    <span style="text-align: right;">
+                      <strong>{{ v.attested_by }}</strong>
+                      <span style="font-size:0.7rem;color:var(--muted);margin-left:0.35rem;">independent ar.io operator</span>
+                      {% if v.attested_at %}
+                        <div style="font-size:0.7rem;color:var(--muted);margin-top:0.15rem;">{{ v.attested_at[:19] }}Z</div>
+                      {% endif %}
+                    </span>
+                  </div>
+                  {% endif %}
 
-                    {% if envelope.arweave_tx_id %}
-                    <details style="margin-top: 0.75rem; font-size: 0.8rem; color: var(--muted);">
-                        <summary style="cursor: pointer; font-weight: 600; color: var(--black); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em;">How to verify independently</summary>
-                        <div style="margin-top: 0.5rem; line-height: 1.6;">
-                            <p>1. Fetch the pure-commitment envelope from Arweave:</p>
-                            <code style="display: block; background: var(--surface); padding: 0.4rem 0.6rem; border-radius: 4px; margin: 0.25rem 0 0.5rem; font-size: 0.7rem; word-break: break-all; font-family: 'JetBrains Mono', monospace;">curl https://turbo-gateway.com/raw/{{ envelope.arweave_tx_id }}</code>
-                            <p>2. Verify the Ed25519 <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">signature</code> using the embedded <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">public_key</code>. The signed body is the envelope minus the <code>signature</code> field, JCS-canonicalized (RFC&nbsp;8785).</p>
-                            <p style="margin-top: 0.25rem;">3. Download the canonical bytes from MLflow:</p>
-                            <code style="display: block; background: var(--surface); padding: 0.4rem 0.6rem; border-radius: 4px; margin: 0.25rem 0 0.5rem; font-size: 0.7rem; word-break: break-all; font-family: 'JetBrains Mono', monospace;">mlflow artifacts download -r &lt;run_id&gt; -a ario/predictions/&lt;decision_id&gt;/payload.json</code>
-                            <p>Compute <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">SHA-256</code> of those raw bytes and compare to the envelope's <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">payload_hash</code>.</p>
-                            <p style="margin-top: 0.25rem;">4. Verify <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;">previous_hash</code> matches the model version's registration TX (chain integrity).</p>
-                            <p style="margin-top: 0.25rem; font-style: italic;">Or run <code style="font-family: 'JetBrains Mono', monospace;">ario-mlflow verify trace {{ envelope.record.trace_id }}</code> for all four checks at once: signature, anchored-bytes intact, source-of-truth (re-fetches the trace's <code>ario.payload_json</code> tag and compares to the artifact), and ar.io attestation.</p>
-                        </div>
-                    </details>
+                  <div class="verify-row" style="border-top: 1px solid var(--border); padding-top: 0.75rem; margin-top: 0.25rem;">
+                    <strong style="font-size: 0.85rem;">Overall</strong>
+                    {% if v %}
+                      {% if v.overall is sameas true %}
+                        <strong class="check">PASS</strong>
+                      {% elif v.overall is sameas false %}
+                        <strong class="cross">FAIL</strong>
+                      {% else %}
+                        <span class="badge badge-yellow">Pending</span>
+                      {% endif %}
+                    {% else %}
+                      <span class="unchecked">Not verified</span>
                     {% endif %}
+                  </div>
+
+                  <details style="margin-top: 0.85rem; font-size: 0.75rem; color: var(--muted); border-top: 1px solid var(--border); padding-top: 0.75rem;">
+                    <summary style="cursor: pointer; font-weight: 600; color: var(--black); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em;">▶ How to verify independently</summary>
+                    <div style="margin-top: 0.5rem; line-height: 1.6;">
+                      <p>1. Fetch the pure-commitment envelope from Arweave:</p>
+                      <code style="display: block; background: var(--surface); padding: 0.4rem 0.6rem; border-radius: 4px; margin: 0.25rem 0 0.5rem; font-size: 0.7rem; word-break: break-all; font-family: 'JetBrains Mono', monospace;">curl https://turbo-gateway.com/raw/{{ envelope.arweave_tx_id }}</code>
+                      <p>2. Verify the Ed25519 signature using the embedded public_key (the signed body is the envelope minus the signature field, JCS-canonicalized).</p>
+                      <p style="margin-top: 0.25rem;">3. Download the canonical bytes from MLflow and confirm SHA-256 matches the envelope's payload_hash.</p>
+                      <p style="margin-top: 0.25rem; font-style: italic;">Or run <code style="font-family: 'JetBrains Mono', monospace;">ario-mlflow verify trace {{ envelope.record.trace_id }}</code> for all checks at once.</p>
+                    </div>
+                  </details>
                 </div>
             </div>
 

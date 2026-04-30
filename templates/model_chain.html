@@ -247,12 +247,12 @@
                     <div class="chain-card-footer">
                         <a href="{{ training.arweave_url }}" target="_blank" class="mono mono-sm">TX: {{ training.arweave_tx_id[:16] }}...</a>
                         {% if training_turbo %}
-                            {% if training_turbo.status == 'FINALIZED' %}
+                            {% if training_turbo.status in ('FINALIZED', 'CONFIRMED') %}
                                 <span class="badge badge-green"><span class="badge-dot"></span> Confirmed</span>
-                            {% elif training_turbo.status == 'CONFIRMED' %}
-                                <span class="badge badge-yellow"><span class="badge-dot"></span> Confirmed</span>
+                            {% elif training_turbo.status == 'NOT_FOUND' %}
+                                <span class="badge badge-yellow"><span class="badge-dot badge-dot-pulse"></span> Anchoring</span>
                             {% else %}
-                                <span class="badge badge-yellow"><span class="badge-dot"></span> Pending verification</span>
+                                <span class="badge badge-yellow"><span class="badge-dot"></span> Anchoring</span>
                             {% endif %}
                         {% endif %}
                     </div>
@@ -385,12 +385,12 @@
                     <div class="chain-card-footer">
                         <a href="{{ registration.arweave_url }}" target="_blank" class="mono mono-sm">TX: {{ registration.arweave_tx_id[:16] }}...</a>
                         {% if registration_turbo %}
-                            {% if registration_turbo.status == 'FINALIZED' %}
+                            {% if registration_turbo.status in ('FINALIZED', 'CONFIRMED') %}
                                 <span class="badge badge-green"><span class="badge-dot"></span> Confirmed</span>
-                            {% elif registration_turbo.status == 'CONFIRMED' %}
-                                <span class="badge badge-yellow"><span class="badge-dot"></span> Confirmed</span>
+                            {% elif registration_turbo.status == 'NOT_FOUND' %}
+                                <span class="badge badge-yellow"><span class="badge-dot badge-dot-pulse"></span> Anchoring</span>
                             {% else %}
-                                <span class="badge badge-yellow"><span class="badge-dot"></span> Pending verification</span>
+                                <span class="badge badge-yellow"><span class="badge-dot"></span> Anchoring</span>
                             {% endif %}
                         {% endif %}
                     </div>

@@ -416,7 +416,7 @@
                     </td>
                     <td>
                         {% if env.arweave_tx_id %}
-                            <a href="{{ env.arweave_url }}" target="_blank"><span class="mono">{{ env.arweave_tx_id[:12] }}</span></a>
+                            <a href="{{ env.arweave_url }}" target="_blank" rel="noopener"><span class="mono">{{ env.arweave_tx_id[:12] }}</span></a>
                         {% elif arweave_enabled %}
                             <span style="color: var(--muted); font-size: 0.8rem;">Uploading...</span>
                         {% else %}

@@ -245,7 +245,7 @@
                     </div>
                     {% if training.arweave_tx_id %}
                     <div class="chain-card-footer">
-                        <a href="{{ training.arweave_url }}" target="_blank" class="mono mono-sm">TX: {{ training.arweave_tx_id[:16] }}...</a>
+                        <a href="{{ training.arweave_url }}" target="_blank" rel="noopener" class="mono mono-sm">TX: {{ training.arweave_tx_id[:16] }}...</a>
                         {% if training_turbo %}
                             {% if training_turbo.status in ('FINALIZED', 'CONFIRMED') %}
                                 <span class="badge badge-green"><span class="badge-dot"></span> Confirmed</span>
@@ -383,7 +383,7 @@
                     </div>
                     {% if registration.arweave_tx_id %}
                     <div class="chain-card-footer">
-                        <a href="{{ registration.arweave_url }}" target="_blank" class="mono mono-sm">TX: {{ registration.arweave_tx_id[:16] }}...</a>
+                        <a href="{{ registration.arweave_url }}" target="_blank" rel="noopener" class="mono mono-sm">TX: {{ registration.arweave_tx_id[:16] }}...</a>
                         {% if registration_turbo %}
                             {% if registration_turbo.status in ('FINALIZED', 'CONFIRMED') %}
                                 <span class="badge badge-green"><span class="badge-dot"></span> Confirmed</span>
@@ -533,7 +533,7 @@
                 <div class="panel-footer">
                   {% if training and training.arweave_tx_id %}
                   <span>TX <span style="font-family: 'JetBrains Mono', monospace; color: var(--primary);">{{ training.arweave_tx_id }}</span></span>
-                  <a href="https://turbo-gateway.com/{{ training.arweave_tx_id }}" target="_blank">View on ar.io →</a>
+                  <a href="https://turbo-gateway.com/{{ training.arweave_tx_id }}" target="_blank" rel="noopener">View on ar.io →</a>
                   {% endif %}
                 </div>
               </div>

@@ -89,7 +89,7 @@
             </div>
             <div class="page-actions">
                 <a id="verify-btn" href="/ui/runs/{{ envelope.record.run_id }}?verify=true" class="btn btn-primary btn-sm" data-loading-text="Verifying..." {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>Verify with ar.io</a>
-                <a href="https://turbo-gateway.com/{{ envelope.arweave_tx_id }}" target="_blank" class="btn btn-outline btn-sm" {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>View Proof ↗</a>
+                <a href="https://turbo-gateway.com/{{ envelope.arweave_tx_id }}" target="_blank" rel="noopener" class="btn btn-outline btn-sm" {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>View Proof ↗</a>
             </div>
         </div>
 
@@ -231,7 +231,7 @@
 
                     {% if v and v.permanent_copy_found and v.report_url %}
                     <div class="verify-actions">
-                        <a href="{{ v.report_url }}" target="_blank" class="btn btn-outline btn-sm">View Report</a>
+                        <a href="{{ v.report_url }}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">View Report</a>
                     </div>
                     {% endif %}
 
@@ -399,7 +399,7 @@
                 <div class="panel-footer">
                   {% if envelope.arweave_tx_id %}
                   <span>TX <span style="font-family: 'JetBrains Mono', monospace; color: var(--primary);">{{ envelope.arweave_tx_id }}</span></span>
-                  <a href="https://turbo-gateway.com/{{ envelope.arweave_tx_id }}" target="_blank">View on ar.io →</a>
+                  <a href="https://turbo-gateway.com/{{ envelope.arweave_tx_id }}" target="_blank" rel="noopener">View on ar.io →</a>
                   {% endif %}
                 </div>
               </div>

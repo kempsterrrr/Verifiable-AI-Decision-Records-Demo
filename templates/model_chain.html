@@ -461,7 +461,6 @@
               <div class="tamper-row-info">
                 <div class="tamper-row-title"><span class="num">1</span>Tamper the training run's live data</div>
                 <div class="tamper-row-desc">Mutate the training run's metrics in MLflow — for example, change the recorded accuracy from its real value to 99.9% to make the model look better than it was. <em style="font-family: 'JetBrains Mono', monospace; color: var(--muted); font-style: normal;">Overwrites the <code>accuracy</code> metric on the run.</em> <strong>Breaks → Training Record Matches</strong> on the Training Run node above.</div>
-                <span class="tamper-headline">★ Headline tamper for governance audiences</span>
               </div>
               <button class="btn-tamper" data-tamper-kind="live" data-event-type="training" data-event-id="{{ training.record.run_id }}">Tamper</button>
             </div>
@@ -470,8 +469,9 @@
             {% if registration %}
             <div class="tamper-row">
               <div class="tamper-row-info">
-                <div class="tamper-row-title"><span class="num">2</span>Tamper the registration's live data</div>
-                <div class="tamper-row-desc">Mutate the model version's metadata in MLflow — for example, point this v{{ version }} registration at a different training run, claiming a different model produced it. <em style="font-family: 'JetBrains Mono', monospace; color: var(--muted); font-style: normal;">Overwrites the model version's <code>source_run_id</code> tag.</em> <strong>Breaks → Registration Record Matches</strong> on the Model Registration node above.</div>
+                <div class="tamper-row-title"><span class="num">2</span>Swap the deployed model artifact</div>
+                <div class="tamper-row-desc">Replace the <code>model.pkl</code> file in MLflow with different bytes — the model-swap attack governance teams worry about. Anyone could claim the swapped model is still v{{ version }}, but its artifact hash no longer matches what was anchored at registration time. <em style="font-family: 'JetBrains Mono', monospace; color: var(--muted); font-style: normal;">Overwrites <code>model/model.pkl</code> on the source run.</em> <strong>Breaks → Registration Record Matches</strong> on the Model Registration node above (and Training Record Matches too — the chain catches the swap at every link that references the artifact).</div>
+                <span class="tamper-headline">★ Headline tamper for governance audiences</span>
               </div>
               <button class="btn-tamper" data-tamper-kind="live" data-event-type="registration" data-event-id="{{ registration.record.event_id }}">Tamper</button>
             </div>

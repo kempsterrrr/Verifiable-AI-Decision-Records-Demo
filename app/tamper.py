@@ -190,20 +190,55 @@ def tamper_live(event_type, event_id, *, lifecycle_store, record_store, tracking
             )
 
         elif event_type == "registration":
+            # Model-swap tamper: replace model.pkl bytes on the source run.
+            # This is the visceral "model swapping" attack — someone swaps
+            # the deployed model artifact while keeping the same registered
+            # version. The artifact_checksums hash changes, which breaks
+            # both Registration Record Matches AND Training Record Matches
+            # (since both canonical bytes include artifact_checksums).
             envelope = lifecycle_store.get_by_event_id(event_id)
             if envelope is None:
                 raise KeyError(f"registration {event_id} not found")
-            model_name = envelope["record"]["model_name"]
-            model_version = envelope["record"]["model_version"]
-            mv = client.get_model_version(model_name, model_version)
-            tags = mv.tags or {}
-            old = tags.get("source_run_id", "")
-            client.set_model_version_tag(model_name, model_version,
-                                          "source_run_id", "tampered-fake-run-id")
+            source_run_id = envelope["record"]["source_run_id"]
+            model_artifact_path = "model/model.pkl"
+
+            import tempfile as _tempfile
+            with _tempfile.TemporaryDirectory() as tmpdir:
+                try:
+                    local_path = client.download_artifacts(
+                        source_run_id, model_artifact_path, tmpdir,
+                    )
+                    with open(local_path, "rb") as f:
+                        original_bytes = f.read()
+                except Exception as e:
+                    raise KeyError(
+                        f"could not download {model_artifact_path} for run "
+                        f"{source_run_id}: {e}"
+                    )
+
+                # Swap with a smaller "fake model" payload — bytes that won't
+                # unpickle as a real sklearn estimator, but that's fine for
+                # the demo: we just need the SHA-256 to change.
+                garbage_path = os.path.join(tmpdir, "model.pkl")
+                with open(garbage_path, "wb") as f:
+                    f.write(
+                        b"TAMPERED MODEL ARTIFACT - this is not the registered "
+                        b"model weights. The artifact hash that was anchored "
+                        b"at registration time no longer matches."
+                    )
+                try:
+                    client.log_artifact(
+                        source_run_id, garbage_path, artifact_path="model",
+                    )
+                except Exception as e:
+                    raise RuntimeError(
+                        f"failed to swap model artifact for run {source_run_id}: {e}"
+                    ) from e
+
             snapshot = TamperSnapshot(
                 event_type=event_type, event_id=event_id, kind="live",
-                live_field_name=f"mv_tag:{model_name}:{model_version}:source_run_id",
-                live_field_old_value=old,
+                live_field_name=f"artifact_swap:{source_run_id}:{model_artifact_path}",
+                saved_artifact_bytes=original_bytes,
             )
         else:
             raise ValueError(f"unknown event_type: {event_type}")
@@ -253,6 +288,17 @@ def reset(event_type, event_id, *, lifecycle_store, record_store, tracking_uri):
                         _, name, version, tag = parts
                         client.set_model_version_tag(name, version, tag,
                                                      snap.live_field_old_value or "")
+                    elif kind_prefix == "artifact_swap" and snap.saved_artifact_bytes is not None:
+                        _, run_id, artifact_path = parts[0], parts[1], parts[2]
+                        import tempfile as _tempfile
+                        with _tempfile.TemporaryDirectory() as tmpdir:
+                            local_path = os.path.join(tmpdir, os.path.basename(artifact_path))
+                            with open(local_path, "wb") as f:
+                                f.write(snap.saved_artifact_bytes)
+                            client.log_artifact(
+                                run_id, local_path,
+                                artifact_path=os.path.dirname(artifact_path),
+                            )
                 reverted += 1
                 logger.info(f"Tamper RESET: {event_type}/{event_id}/{kind}")
             except Exception as e:

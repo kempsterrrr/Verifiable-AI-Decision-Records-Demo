@@ -497,16 +497,85 @@
             <span class="collapsible-summary-title">Show the canonical bytes ↔ signed commitment for each chain link</span>
             <span class="collapsible-summary-hint">click to expand</span>
           </summary>
-          <div class="collapsible-body" style="line-height: 1.55; font-size: 0.86rem;">
-            <p>Each node in the chain follows the same pattern: MLflow stores the canonical bytes for that event, ar.io anchors a tiny signed commitment that includes <code style="font-family: 'JetBrains Mono', monospace;">SHA-256(canonical bytes)</code>. The chain links via <code style="font-family: 'JetBrains Mono', monospace;">previous_hash</code> — each event's signed commitment includes the hash of the previous event in this model's history.</p>
-            <p style="margin-top: 0.85rem;">For details, see the <strong>How verification works</strong> section on the {% if training %}<a href="/ui/runs/{{ training.record.run_id }}" style="color: var(--primary); text-decoration: none;">Training Run detail page</a>{% else %}Training Run detail page{% endif %} or any <a href="/ui/decisions" style="color: var(--primary); text-decoration: none;">Decision detail page</a> — same viewer, same equality check, just different canonical bytes per event type.</p>
-            <p style="margin-top: 0.85rem; color: var(--muted); font-style: italic;">Skip duplicating the full split-proof viewer here to keep this page focused on the chain visualization. The detail pages are one click away.</p>
+          <div class="collapsible-body">
+            <div class="viewer-intro">
+              The proof has two parts. Ar.io anchors a tiny <strong>signed commitment</strong> — just hashes and a signature, no source data. MLflow stores the <strong>canonical bytes</strong> that produced the hash. Anyone with both can verify they match. Each node in the chain follows the same pattern; the example below shows the <strong>training run</strong> link.
+            </div>
+
+            <div class="proof-split">
+              <div class="panel">
+                <div class="panel-header">
+                  <div class="panel-title-row"><div class="panel-title">Canonical bytes</div><span class="panel-source-pill pill-mlflow">MLflow</span></div>
+                  <div class="panel-meta">JCS canonicalized · the source · what gets hashed</div>
+                </div>
+                <div class="panel-body">
+                  <div class="json-block" id="canonical-bytes-json">{% if canonical_bytes_json %}{{ canonical_bytes_json }}{% else %}<em style="color:var(--muted)">Click <strong>Verify chain</strong> first to fetch and show the canonical bytes.</em>{% endif %}</div>
+                </div>
+                <div class="panel-footer">
+                  <span style="font-family: monospace;">ario/payload.json</span>
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-header">
+                  <div class="panel-title-row"><div class="panel-title">Signed commitment</div><span class="panel-source-pill pill-arweave">ar.io</span></div>
+                  <div class="panel-meta">~500 bytes · permanent · public · the witness</div>
+                </div>
+                <div class="panel-body">
+                  <div class="json-block" id="signed-commitment-json">{% if signed_commitment_json %}{{ signed_commitment_json }}{% else %}<em style="color:var(--muted)">Click <strong>Verify chain</strong> first to fetch and show the signed commitment.</em>{% endif %}</div>
+                </div>
+                <div class="panel-footer">
+                  {% if training and training.arweave_tx_id %}
+                  <span>TX <span style="font-family: monospace; color: var(--primary);">{{ training.arweave_tx_id }}</span></span>
+                  <a href="https://turbo-gateway.com/{{ training.arweave_tx_id }}" target="_blank">View on ar.io →</a>
+                  {% endif %}
+                </div>
+              </div>
+            </div>
+
+            <div class="equality">
+              <span class="equality-prefix">Verifier recomputes:</span>
+              <div class="equality-formula">
+                <span class="eq-token eq-left">SHA-256(canonical bytes)</span>
+                <span class="eq-op">=</span>
+                <span class="eq-token eq-right">payload_hash</span>
+                {% set tv = training.get('last_verification') if training else None %}
+                {% if tv and tv.hash_match is sameas true %}
+                  <span class="eq-result">✓ matches</span>
+                {% elif tv and tv.hash_match is sameas false %}
+                  <span class="eq-result eq-result-fail">✗ doesn't match</span>
+                {% endif %}
+              </div>
+            </div>
+
+            <div class="legend-row">
+              <div><strong>What you can't do.</strong> Change either side without breaking the equality. The signature on the signed commitment binds <code style="font-family: monospace;">payload_hash</code> to the signer's key — and each event's commitment also includes <code style="font-family: monospace;">previous_hash</code>, chaining the links so a tamper at any point breaks every event after it.</div>
+              <div><strong>What this isn't.</strong> Canonical bytes contain hashes of model artifacts, not the model weights themselves — the model file stays in MLflow, only its hash is anchored.</div>
+            </div>
           </div>
         </details>
 {% endblock %}
 
 {% block scripts %}
     <script>
+    // Highlight the payload_hash line in the signed commitment panel.
+    (function() {
+      const el = document.getElementById('signed-commitment-json');
+      if (!el || !el.textContent) return;
+      // Skip if it's the placeholder (italic em element, no JSON content).
+      if (el.querySelector('em')) return;
+      const text = el.textContent;
+      const lines = text.split('\n');
+      const escape = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const highlighted = lines.map(line => {
+        if (line.trim().startsWith('"payload_hash"')) {
+          return '<span class="payload-hash-line">' + escape(line) + '</span>';
+        }
+        return escape(line);
+      });
+      el.innerHTML = highlighted.join('\n');
+    })();
+
     // Tamper button wiring
     document.querySelectorAll('.btn-tamper').forEach(btn => {
       btn.addEventListener('click', async () => {

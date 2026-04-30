@@ -478,6 +478,8 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
     # Full verification (on-demand)
     training_verify = None
     registration_verify = None
+    canonical_bytes_json = None
+    signed_commitment_json = None
     if verify:
         if training_env:
             training_verify = _verify_envelope(app, training_env)
@@ -487,6 +489,34 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
                 k: v for k, v in training_verify.items() if k != "plugin_full_verify"
             }
             app.state.lifecycle_store.update(training_env["record"]["event_id"], training_env)
+
+            # Phase 3: surface canonical bytes + signed envelope for the
+            # "How verification works" viewer. Use the training event's
+            # bytes since training is the chain's anchor / parent link.
+            try:
+                import json as _json
+                full = training_verify.get("plugin_full_verify") or {}
+                anchored = full.get("anchored_bytes") or {}
+                payload_bytes = anchored.get("payload_bytes")
+                if payload_bytes:
+                    try:
+                        canonical_bytes_json = _json.dumps(
+                            _json.loads(payload_bytes), indent=2
+                        )
+                    except Exception:
+                        canonical_bytes_json = (
+                            payload_bytes.decode("utf-8")
+                            if isinstance(payload_bytes, (bytes, bytearray))
+                            else str(payload_bytes)
+                        )
+                tx_id = training_env.get("arweave_tx_id")
+                plugin_envelope = app.state.anchor.fetch_proof(tx_id) if tx_id else None
+                if plugin_envelope:
+                    signed_commitment_json = _json.dumps(plugin_envelope, indent=2)
+            except Exception:
+                # Display-only: never block the page render on a viewer hiccup.
+                pass
+
         if registration_env:
             registration_verify = _verify_envelope(app, registration_env)
             registration_env["last_verification"] = {
@@ -529,5 +559,7 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
             "prediction_count": len(model_predictions),
             "anchored_count": anchored_count,
             "verified_count": verified_count,
+            "canonical_bytes_json": canonical_bytes_json,
+            "signed_commitment_json": signed_commitment_json,
         },
     )

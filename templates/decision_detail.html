@@ -263,7 +263,7 @@
                   <div class="verify-row" title="The proof carries a valid signature from the user who issued it. ar.io independently re-verifies the signature. FAIL means the proof was altered after signing.">
                     <span>Signature Confirmed</span>
                     {% if v %}
-                      {% if v.signature_valid is sameas true and v.attestation_level and v.attestation_level >= 3 %}
+                      {% if v.signature_valid is sameas true %}
                         <span class="check">PASS</span>
                       {% elif v.signature_valid is sameas false %}
                         <span class="cross">FAIL</span>

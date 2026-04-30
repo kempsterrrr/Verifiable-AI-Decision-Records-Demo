@@ -225,7 +225,7 @@
                           <div class="mini-verify-row">
                             <span>Signature Confirmed</span>
                             {% if tv %}
-                              {% if tv.signature_valid is sameas true and tv.attestation_level and tv.attestation_level >= 3 %}<span class="check">PASS</span>
+                              {% if tv.signature_valid is sameas true %}<span class="check">PASS</span>
                               {% elif tv.signature_valid is sameas false %}<span class="cross">FAIL</span>
                               {% else %}<span class="badge badge-yellow">Pending</span>{% endif %}
                             {% else %}<span class="unchecked">Not checked</span>{% endif %}
@@ -364,7 +364,7 @@
                           <div class="mini-verify-row">
                             <span>Signature Confirmed</span>
                             {% if rv %}
-                              {% if rv.signature_valid is sameas true and rv.attestation_level and rv.attestation_level >= 3 %}<span class="check">PASS</span>
+                              {% if rv.signature_valid is sameas true %}<span class="check">PASS</span>
                               {% elif rv.signature_valid is sameas false %}<span class="cross">FAIL</span>
                               {% else %}<span class="badge badge-yellow">Pending</span>{% endif %}
                             {% else %}<span class="unchecked">Not checked</span>{% endif %}

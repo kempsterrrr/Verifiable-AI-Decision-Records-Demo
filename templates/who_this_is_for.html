@@ -2,6 +2,8 @@
 
 {% block title %}Who this is for — Verifiable AI{% endblock %}
 
+{% block max_width %}1500px{% endblock %}
+
 {% block styles %}
     .wtif-intro {
         max-width: 820px;
@@ -14,8 +16,19 @@
     }
     .persona-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-        gap: 1rem;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 1.1rem;
+        margin-bottom: 2rem;
+    }
+    @media (max-width: 1200px) {
+        .persona-grid {
+            grid-template-columns: repeat(2, 1fr);
+        }
+    }
+    @media (max-width: 700px) {
+        .persona-grid {
+            grid-template-columns: 1fr;
+        }
     }
     .persona-card {
         background: #fff;
@@ -83,7 +96,7 @@
 
     <div class="wtif-intro">
         <p>
-            This is an early-stage demo of <code>ario-mlflow</code>, a plugin that anchors signed proofs of training runs, model registrations, and every individual inference to Arweave via ar.io. Four kinds of people come to this demo for four different reasons — the cards below are each of their doorways in.
+            This is an early-stage demo of <code>ario-mlflow</code>, a plugin that anchors signed proofs of training runs, model registrations, and every individual inference to ar.io. Four kinds of people come to this demo for four different reasons — the cards below are each of their doorways in.
         </p>
     </div>
 
@@ -96,7 +109,7 @@
                 "The regulator just asked about a specific credit decision from Q2 last year. The MLflow run was pruned. I can't reconstruct it."
             </div>
             <div class="persona-answer">
-                Call <code>ario_mlflow.anchor()</code> once inside your training loop and every run mints a signed proof on Arweave. Even if your MLflow server is gone, any third party can fetch the proof and verify exactly what ran.
+                Call <code>ario_mlflow.anchor()</code> once inside your training loop and every run mints a signed proof anchored to ar.io. Even if your MLflow server is gone, any third party can fetch the proof and verify exactly what ran.
             </div>
             <a href="https://github.com/kempsterrrr/Verifiable-AI-Decision-Records-Demo/blob/main/ario_mlflow/README.md" target="_blank" rel="noopener" class="persona-link">Read the plugin README &rarr;</a>
         </div>
@@ -120,7 +133,7 @@
                 "Clients hand me Jupyter notebooks and evaluation CSVs. I have no way to verify those artifacts are the ones actually in production."
             </div>
             <div class="persona-answer">
-                Every anchored proof is independently verifiable — re-hash the canonical record, check the Ed25519 signature, fetch the permanent copy from Arweave. No client access required. A standalone verifier portal is on the roadmap.
+                Every anchored proof is independently verifiable — re-hash the canonical record, verify the signature, fetch the permanent copy from ar.io. No client access required. A standalone verifier portal is on the roadmap.
             </div>
             <a href="/ui/decisions" class="persona-link">Verify a sample decision &rarr;</a>
         </div>
@@ -132,7 +145,7 @@
                 "I published a fine-tune on Hugging Face. Someone claims the weights don't match the results in the paper. I'd like to prove they do."
             </div>
             <div class="persona-answer">
-                The proof format (SHA-256 artifact hash + Ed25519 signature anchored on Arweave) is public-model-publishing friendly. A dedicated <code>huggingface-cli</code> plugin and a model-card badge are on the roadmap — the underlying primitive is usable today.
+                The proof format (SHA-256 artifact hash + signed commitment anchored to ar.io) is public-model-publishing friendly. A dedicated <code>huggingface-cli</code> plugin and a model-card badge are on the roadmap — the underlying primitive is usable today.
             </div>
             <a href="https://github.com/kempsterrrr/Verifiable-AI-Decision-Records-Demo/blob/main/ROADMAP.md" target="_blank" rel="noopener" class="persona-link">Read the roadmap &rarr;</a>
         </div>

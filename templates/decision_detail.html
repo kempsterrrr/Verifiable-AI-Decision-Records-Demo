@@ -187,36 +187,45 @@
         </div>
 
         <div class="grid">
-            <!-- Prediction -->
+            <!-- Decision -->
             <div class="section">
-                <div class="section-header">Prediction</div>
-                <div class="section-body">
-                    <div class="kv">
-                        <div class="kv-row">
-                            <span class="kv-key">Class</span>
-                            <span class="kv-value"><span class="badge badge-primary">{{ envelope.record.prediction['class'] }}</span></span>
-                        </div>
-                        <div class="kv-row">
-                            <span class="kv-key">Index</span>
-                            <span class="kv-value">{{ envelope.record.prediction.class_index }}</span>
-                        </div>
-                        <div class="kv-row">
-                            <span class="kv-key">Features</span>
-                            <span class="kv-value">{{ envelope.record.prediction.features_used | join(', ') }}</span>
-                        </div>
-                    </div>
-                    <div style="margin-top: 0.75rem;">
-                        {% for cls, prob in envelope.record.prediction.probabilities.items() %}
-                        <div class="prob-row">
-                            <span class="prob-label">{{ cls }}</span>
-                            <div class="prob-track">
-                                <div class="prob-fill" style="width: {{ (prob * 100) }}%"></div>
-                            </div>
-                            <span class="prob-value">{{ "%.4f"|format(prob) }}</span>
-                        </div>
-                        {% endfor %}
-                    </div>
+              <div class="section-header">Decision</div>
+              <div class="section-body">
+                <div class="kv">
+                  <div class="kv-row">
+                    <span class="kv-key">Result</span>
+                    <span class="kv-value">
+                      {% if envelope.record.prediction['class'] == 'approve' %}
+                        <span class="badge badge-green"><span class="badge-dot"></span> Approved</span>
+                      {% elif envelope.record.prediction['class'] == 'deny' %}
+                        <span class="badge badge-red"><span class="badge-dot"></span> Denied</span>
+                      {% else %}
+                        {{ envelope.record.prediction['class'] }}
+                      {% endif %}
+                    </span>
+                  </div>
+                  <div class="kv-row">
+                    <span class="kv-key">Confidence</span>
+                    <span class="kv-value">{{ "%.1f"|format(envelope.record.prediction.probabilities[envelope.record.prediction['class']] * 100) }}%</span>
+                  </div>
+                  <div class="kv-row">
+                    <span class="kv-key">Features</span>
+                    <span class="kv-value">{{ envelope.record.prediction.features_used | join(', ') }}</span>
+                  </div>
                 </div>
+                <div style="margin-top: 0.85rem; padding-top: 0.85rem; border-top: 1px solid var(--border);">
+                  <div style="font-size: 0.7rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 0.4rem;">Class probabilities</div>
+                  {% for cls, prob in envelope.record.prediction.probabilities.items() %}
+                  <div class="prob-row">
+                    <span class="prob-label">{{ cls.title() }}</span>
+                    <div class="prob-track">
+                      <div class="prob-fill" style="width: {{ (prob * 100) }}%"></div>
+                    </div>
+                    <span class="prob-value">{{ "%.4f"|format(prob) }}</span>
+                  </div>
+                  {% endfor %}
+                </div>
+              </div>
             </div>
 
             <!-- ar.io Verification -->

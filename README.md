@@ -1,15 +1,15 @@
 # Verifiable AI Decision Records
 
-Tamper-evident AI audit trail anchored to Arweave, covering the full MLflow lifecycle.
+Tamper-evident verifiable record for the full MLflow lifecycle, anchored to ar.io.
 
 ## What This Demonstrates
 
-This project provides **verifiable provenance for the entire ML lifecycle** — from training through to production predictions. Every lifecycle event creates a signed proof record anchored to Arweave via ar.io:
+This project provides **verifiable provenance for the entire ML lifecycle** — from training through to production predictions. Every lifecycle event creates a signed proof record anchored to ar.io:
 
 1. **Training provenance** — params, metrics, and artifact hashes are captured and anchored when a model is trained
 2. **Registration provenance** — model registration events are signed and anchored with a link back to the training proof
 3. **Prediction records** — every inference creates a decision record with full model lineage
-4. **Model lineage** — a cryptographically verifiable audit trail from training → registration → predictions
+4. **Model lineage** — a cryptographically verifiable record from training → registration → predictions
 
 Each event is:
 
@@ -59,11 +59,11 @@ RecordStore: display cache (input, output, decision_id, latency, arweave_tx)
   ... later, on demand ...
 
 /verify endpoint (or `ario-mlflow verify ...` CLI)
-  |---> Fetch the pure-commitment envelope from Arweave
-  |---> Check 1: Ed25519 signature is valid (cryptographic)
-  |---> Check 2: download ario/payload.json from MLflow → re-hash → matches envelope
-  |---> Check 3: re-derive canonical bytes from current MLflow state → matches anchored
-  |---> Check 4: ar.io Verify attestation (independent third-party check)
+  |---> Fetch the pure-commitment envelope from ar.io
+  |---> Check 1 (Proof Found): envelope retrieved from ar.io
+  |---> Check 2 ({Event} Record Matches): download ario/payload.json from MLflow → re-hash → matches envelope, and re-derive canonical bytes from current MLflow state → matches anchored
+  |---> Check 3 (Signature Confirmed): the signature on the envelope verifies against the embedded public key
+  |---> Plus: ar.io Verify attestation (independent third-party check by a gateway operator)
 ```
 
 ### Async Anchoring
@@ -141,37 +141,39 @@ The landing page (`/`) shows the Models page. Click **Train & Anchor** to train 
 
 ### 2. View the Model Lineage
 
-The model lineage page shows the proof chain forming in real time: Training Run → Model Registration → Decisions. Each node shows its verification status and Arweave transaction ID. Compliance readers can think of this as a cryptographically verifiable audit trail.
+The model lineage page shows the proof chain forming in real time: Training Run → Model Registration → Decisions. Each node shows its verification status and ar.io transaction ID. Compliance readers can think of this as a cryptographically verifiable record.
 
 ### 3. Make a Prediction
 
-Navigate to **Decisions** and submit the form with applicant features (income, credit score, etc.). The response is instant — the detail page shows "Anchoring..." with a pulsing indicator, then auto-updates when the Arweave upload completes (~1-2s).
+Navigate to **Decisions** and submit the form with applicant features (income, credit score, etc.). The response is instant — the detail page shows "Anchoring..." with a pulsing indicator, then auto-updates when the ar.io upload completes (~1-2s).
 
 ### 4. View the Decision Record
 
 Click a decision ID to see the full record:
-- **Prediction** — class, probabilities with visual bars, features used
-- **ar.io Verification** — four-check panel (signature, anchored bytes intact, source-of-truth re-derivation, ar.io attestation). All four apply to predictions, training, and registration.
+- **Decision** — result, confidence, probabilities with visual bars, features used
+- **ar.io Verification** — three-row verify card with `Proof Found`, `Decision Record Matches`, `Signature Confirmed`. The same three rows apply to predictions, training (`Training Record Matches`), and registration (`Registration Record Matches`).
 - **Model lineage** — MLflow run ID, version, artifact URI, with link to the full lineage view
-- **ar.io anchoring** — transaction ID, status (Anchoring → Anchored → Confirmed → Permanent)
+- **ar.io anchoring** — transaction ID, status (`Anchoring` → `Pending verification` → `Verified` → `Confirmed`, with `Tampered` / `Not anchored` as failure states)
 - **Upload receipt** — ar.io's timestamp witness: millisecond timestamp, wallet owner, signed receipt
 
 ### 5. Verify a Record
 
-Click **Verify with ar.io** to run on-demand verification:
-- **Signature** — Ed25519 signature on the on-chain commitment is valid
-- **Anchored bytes intact** — `ario/payload.json` in MLflow re-hashes to the envelope's `payload_hash`
-- **Source of truth matches** — re-derive canonical bytes from a *separate* live MLflow surface and compare to the anchored payload. The point is to catch MLflow tampering — if either surface was modified after anchoring, the two won't agree.
+Click **Verify with ar.io** to run on-demand verification. The three-row verify card shows:
+
+- **Proof Found** — the pure-commitment envelope was fetched from ar.io.
+- **Decision Record Matches** *(or `Training Record Matches` / `Registration Record Matches` depending on event type)* — `ario/payload.json` in MLflow re-hashes to the envelope's `payload_hash`, **and** re-deriving the canonical bytes from a *separate* live MLflow surface produces the same bytes. This consolidated check catches MLflow tampering — if either surface was modified after anchoring, the two won't agree.
   - **Training:** re-fetches `run.data.params/metrics/artifact_checksums` from the run.
   - **Registration:** re-derives the artifact-verified state from the source run.
   - **Predictions:** re-fetches the `ario.payload_json` trace tag (mirrored at predict time) and compares to the artifact. If the trace was pruned by an MLflow retention policy, this surfaces as `live_refetch_incomplete` (not a silent pass).
-- **ar.io Verify attestation** — independent third-party check by an ar.io gateway operator. **Conditional:** runs only when `VAIDR_ARIO_VERIFY_URL` (or `ARIO_MLFLOW_ARIO_VERIFY_URL` for the plugin CLI) is configured. Otherwise this check is reported as Pending / Not available, and the overall verdict is computed from the remaining three checks.
+- **Signature Confirmed** — the signature on the envelope verifies against the embedded public key.
 
-The first three checks apply uniformly to predictions, training, and registration — feature-equivalent verification across the lifecycle. The demo, the `/verify/{decision_id}` endpoint, and the `ario-mlflow verify run|model|trace` CLI all run the same checks. Each check returns one of three states: PASS, FAIL, or Pending (transient — re-verify later).
+Plus an **Attested by** line (operator + timestamp) when an ar.io gateway operator has independently signed an attestation. **Conditional:** ar.io Verify runs only when `VAIDR_ARIO_VERIFY_URL` (or `ARIO_MLFLOW_ARIO_VERIFY_URL` for the plugin CLI) is configured. Otherwise the row reads `Pending` and the overall verdict is computed from the three core checks.
 
-### 6. Tamper Demo (deferred to Phase 3)
+The three core checks apply uniformly to predictions, training, and registration — feature-equivalent verification across the lifecycle. The demo, the `/verify/{decision_id}` endpoint, and the `ario-mlflow verify run|model|trace` CLI all run the same checks. Each check returns one of three states: PASS, FAIL, or Pending (transient — re-verify later).
 
-The single "Tamper" button was removed. It modified a local cache that isn't part of the trust model under the new design (MLflow is the system of record). Phase 3 reintroduces tamper UX with four buttons paired to the four real checks above — modify the proof envelope, overwrite `ario/payload.json` in MLflow, mutate MLflow params/metrics, swap in a fake TX ID. Each tamper triggers exactly one check, teaching what that check actually proves.
+### 6. Tamper Demo
+
+The detail and lineage pages expose tamper buttons paired to the real checks — modify the proof envelope, overwrite `ario/payload.json` in MLflow, mutate MLflow params/metrics, swap in a fake TX ID. Each tamper triggers exactly one row to fail, teaching what that row actually proves.
 
 ## Pages
 
@@ -179,7 +181,7 @@ The single "Tamper" button was removed. It modified a local cache that isn't par
 |---|---|---|
 | Models (landing page) | `/` | Model versions, train new models, activate versions |
 | Decisions | `/ui/decisions` | Decision records, stats, prediction form, model provenance card, version filter (`/ui/predictions` 301-redirects here for bookmarks) |
-| Decision detail | `/ui/decisions/{id}` | Full decision record with three-level verification |
+| Decision detail | `/ui/decisions/{id}` | Full decision record with three-row verify card and tamper buttons |
 | Model lineage | `/ui/models/{name}/{version}` | Training → Registration → Decisions chain |
 | Training run detail | `/ui/runs/{run_id}` | Training params, metrics, artifact hashes, verification |
 
@@ -191,7 +193,7 @@ The single "Tamper" button was removed. It modified a local cache that isn't par
 | `/predict-form` | POST | Same, from HTML form (redirects to detail) |
 | `/decisions` | GET | List all decision records |
 | `/decisions/{id}` | GET | Get a single decision record |
-| `/verify/{id}` | POST | Verify a decision (full four-check: signature + anchored bytes + source-of-truth + ar.io) |
+| `/verify/{id}` | POST | Verify a decision (Proof Found + Decision Record Matches + Signature Confirmed + ar.io attestation) |
 | `/api/activate/{name}/{version}` | POST | Switch the active model to a specific version |
 | `/api/train` | POST | Train a new model version |
 | `/lifecycle` | GET | List all lifecycle records (training, registration) |
@@ -388,15 +390,11 @@ The plugin builds a canonical payload from MLflow state (training params/metrics
 The proof is uploaded to Arweave permanent storage via ar.io Turbo. The upload returns a signed receipt with a millisecond-precision timestamp — an independent attestation of when the proof was submitted. Once confirmed on Arweave, the data is immutable and publicly accessible.
 
 ### ar.io Verify — Independent Attestation
-When verification is requested, ar.io Verify independently fetches the Arweave data, recomputes hashes, and checks signatures. The three levels describe **how much of the proof has been independently verified**, not network-confirmation depth:
-
-- **Level 1 — Finalized on Arweave.** The record was found in a confirmed block on the Arweave network at a specific block height and timestamp. On Arweave, a confirmed block is permanent storage. Content and signature verification still to come.
-- **Level 2 — Content integrity confirmed.** ar.io re-downloaded the raw record and recomputed its SHA-256 fingerprint. The bytes match the gateway's digest, so the content is intact. Cryptographic signature verification still pending.
-- **Level 3 — Cryptographically verified.** The digital signature on the record has been independently verified using the original signer's public key (RSA-PSS / Ed25519 / ECDSA, depending on wallet type). This is a mathematical proof, not a trust claim: the record is authentic and attributable to the stated signer.
+When verification is requested, ar.io Verify independently fetches the anchored data, recomputes hashes, and checks signatures. The user-facing result is `Verified` once the record has reached the configured maturity (proof finalized on the network, content bytes match the gateway's digest, and the signature has been independently verified against the original signer's public key — RSA-PSS / Ed25519 / ECDSA, depending on wallet type). Internal `attestation_level` values (1, 2, 3) describe the maturity gradient programmatically; user-facing copy collapses to **`Verified`** / **`Pending verification`**.
 
 **Operator attestation.** When an ar.io gateway operator configures a signing wallet, the verification result is also signed with that operator's wallet. This creates an attestation — an independent statement from a known operator on the ar.io network that they personally verified the record. You'll see "Attested by [operator]" in the Verification section when the operator signing this deployment is attesting. The attestation is itself verifiable: it's standard RSA-PSS SHA-256 over the canonical JSON payload, checkable against the operator's public key.
 
-These levels describe integrity of the anchored record, not the correctness of the underlying ML decision. Semantic verification (whether *this model* produced *this output* on *this input*) is a separate problem and is on the roadmap, not in v0.1.
+This describes integrity of the anchored record, not the correctness of the underlying ML decision. Semantic verification (whether *this model* produced *this output* on *this input*) is a separate problem and is on the roadmap, not in v0.1.
 
 ### Auditor Verification
 An auditor can independently verify any proof with standard cryptographic tools (no dependency on the demo's internals):

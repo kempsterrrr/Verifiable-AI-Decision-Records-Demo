@@ -133,9 +133,11 @@ def _verify_envelope(app, envelope):
     result["signature_valid"] = sig.get("ok")
     result["permanent_copy_found"] = anchored.get("payload_bytes") is not None
     result["hash_match"] = anchored.get("ok")
-    # source_of_truth.ok is None for predictions (no re-derivable
-    # MLflow state) and True/False for training/registration. The
-    # UI treats None as "Not applicable" for predictions.
+    # source_of_truth.ok is True/False for predictions, training, and
+    # registration — the plugin re-derives canonical bytes from the
+    # live trace tag (predictions) or run state (training/registration)
+    # and compares to the anchored payload. None only appears when the
+    # refetch can't complete (legacy event, missing trace tag, etc.).
     result["source_of_truth_ok"] = sot.get("ok")
     result["source_of_truth_reason"] = sot.get("reason")
     result["overall"] = full_result.get("overall")

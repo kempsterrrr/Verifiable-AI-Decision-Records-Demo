@@ -208,9 +208,10 @@
                           <div class="mini-verify-row">
                             <span>Proof Found</span>
                             {% if tv %}
-                              {% if tv.signature_valid is sameas true and training.arweave_tx_id %}<span class="check">PASS</span>
-                              {% elif tv.signature_valid is sameas false %}<span class="cross">FAIL</span>
-                              {% else %}<span class="badge badge-yellow">Pending</span>{% endif %}
+                              {% if tv.permanent_copy_found is sameas true %}<span class="check">PASS</span>
+                              {% elif training.arweave_tx_id and tv.signature_valid is none and tv.hash_match is none %}<span class="badge badge-yellow">Pending</span>
+                              {% elif training.arweave_tx_id %}<span class="check">PASS</span>
+                              {% else %}<span class="unchecked">Not checked</span>{% endif %}
                             {% else %}<span class="unchecked">Not checked</span>{% endif %}
                           </div>
                           <div class="mini-verify-row">
@@ -346,9 +347,10 @@
                           <div class="mini-verify-row">
                             <span>Proof Found</span>
                             {% if rv %}
-                              {% if rv.signature_valid is sameas true and registration.arweave_tx_id %}<span class="check">PASS</span>
-                              {% elif rv.signature_valid is sameas false %}<span class="cross">FAIL</span>
-                              {% else %}<span class="badge badge-yellow">Pending</span>{% endif %}
+                              {% if rv.permanent_copy_found is sameas true %}<span class="check">PASS</span>
+                              {% elif registration.arweave_tx_id and rv.signature_valid is none and rv.hash_match is none %}<span class="badge badge-yellow">Pending</span>
+                              {% elif registration.arweave_tx_id %}<span class="check">PASS</span>
+                              {% else %}<span class="unchecked">Not checked</span>{% endif %}
                             {% else %}<span class="unchecked">Not checked</span>{% endif %}
                           </div>
                           <div class="mini-verify-row">

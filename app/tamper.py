@@ -262,7 +262,10 @@ def reset(event_type, event_id, *, lifecycle_store, record_store, tracking_uri):
     with _lock:
         for kind in ("saved", "live"):
             key = (event_type, event_id, kind)
-            snap = _snapshots.pop(key, None)
+            # Peek the snapshot — only pop after the restore actually succeeds,
+            # so a transient MLflow failure leaves the snapshot in place for
+            # retry rather than dropping the only path back to a clean state.
+            snap = _snapshots.get(key)
             if snap is None:
                 continue
 
@@ -315,9 +318,13 @@ def reset(event_type, event_id, *, lifecycle_store, record_store, tracking_uri):
                                 run_id, local_path,
                                 artifact_path=os.path.dirname(artifact_path),
                             )
+                # Restore succeeded — now drop the snapshot.
+                _snapshots.pop(key, None)
                 reverted += 1
                 logger.info(f"Tamper RESET: {event_type}/{event_id}/{kind}")
             except Exception as e:
-                logger.warning(f"Reset failed for {key}: {e}")
+                logger.warning(
+                    f"Reset failed for {key}; keeping snapshot for retry: {e}"
+                )
 
     return reverted

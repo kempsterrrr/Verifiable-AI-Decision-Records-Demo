@@ -675,7 +675,12 @@
         btn.disabled = true;
         btn.textContent = 'Resetting...';
         try {
-          await fetch(`/tamper/reset/${eventType}/${eventId}`, { method: 'POST' });
+          const r = await fetch(`/tamper/reset/${eventType}/${eventId}`, { method: 'POST' });
+          if (!r.ok) {
+            btn.textContent = 'Reset failed';
+            btn.disabled = false;
+            return;
+          }
           btn.textContent = 'Reset — re-verify';
           setTimeout(() => {
             btn.textContent = 'Reset all';

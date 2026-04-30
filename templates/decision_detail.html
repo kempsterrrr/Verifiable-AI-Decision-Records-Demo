@@ -322,168 +322,66 @@
                 </div>
             </div>
 
-            <!-- Decision Record -->
-            <div class="section">
-                <div class="section-header">Decision Record</div>
-                <div class="section-body">
-                    <div class="kv">
-                        <div class="kv-row">
-                            <span class="kv-key">Decision ID</span>
-                            <span class="kv-value mono mono-sm">{{ envelope.record.decision_id }}</span>
-                        </div>
-                        <div class="kv-row">
-                            <span class="kv-key">Timestamp</span>
-                            <span class="kv-value">{{ envelope.record.timestamp }}</span>
-                        </div>
-                        <div class="kv-row">
-                            <span class="kv-key">Input Hash</span>
-                            <span class="kv-value mono mono-sm">{{ envelope.record.input_hash }}</span>
-                        </div>
-                        <div class="kv-row">
-                            <span class="kv-key">Output Hash</span>
-                            <span class="kv-value mono mono-sm">{{ envelope.record.output_hash }}</span>
-                        </div>
-                        <div class="kv-row">
-                            <span class="kv-key">Latency</span>
-                            <span class="kv-value">{{ envelope.record.latency_ms }} ms</span>
-                        </div>
-                    </div>
-                </div>
+        </div>
+
+        <!-- 2x2 audit context grid -->
+        <div class="grid-2-audit" style="margin-top: 1rem;">
+
+          <div class="section">
+            <div class="section-header">Model</div>
+            <div class="section-body">
+              <div class="kv-row"><span class="kv-key">Name</span><span class="kv-value">{{ envelope.record.model_name }}</span></div>
+              <div class="kv-row"><span class="kv-key">Version</span><span class="kv-value">v{{ envelope.record.model_version }}</span></div>
+              <div class="kv-row"><span class="kv-key">Run ID</span><span class="kv-value"><a class="mono" href="/ui/runs/{{ envelope.record.mlflow_run_id }}" style="word-break: break-all; text-decoration: none;">{{ envelope.record.mlflow_run_id }}</a></span></div>
+              <div class="kv-row"><span class="kv-key">Lineage</span><span class="kv-value"><a href="/ui/models/{{ envelope.record.model_name }}/{{ envelope.record.model_version }}" style="text-decoration: none; color: var(--primary);">View model lineage →</a></span></div>
             </div>
+          </div>
 
-            <!-- ar.io anchoring (TX + upload receipt together) -->
-            <div class="section" id="anchoring-section">
-                <div class="section-header">ar.io anchoring</div>
-                <div class="section-body" id="anchoring-body">
-                    {% if envelope.arweave_tx_id %}
-                    <div class="kv">
-                        <div class="kv-row">
-                            <span class="kv-key">Transaction</span>
-                            <span class="kv-value"><a href="{{ envelope.arweave_url }}" target="_blank"><span class="mono mono-sm">{{ envelope.arweave_tx_id }}</span></a></span>
-                        </div>
-                        <div class="kv-row">
-                            <span class="kv-key">Status</span>
-                            <span class="kv-value" id="turbo-status-badge">
-                                {% if turbo_status and turbo_status.status == 'FINALIZED' %}
-                                    <span class="badge badge-green" title="The proof is permanently stored on the Arweave network and cannot be changed."><span class="badge-dot"></span> Permanent on ar.io</span>
-                                {% elif turbo_status and turbo_status.status == 'CONFIRMED' %}
-                                    <span class="badge badge-yellow" title="ar.io has received and confirmed the proof. It will become permanent once block confirmations accumulate."><span class="badge-dot"></span> Confirmed on ar.io</span>
-                                {% elif turbo_status and turbo_status.status == 'NOT_FOUND' %}
-                                    <span class="badge badge-yellow" title="The proof has been submitted but ar.io has not yet indexed it."><span class="badge-dot badge-dot-pulse"></span> Uploading to ar.io…</span>
-                                {% else %}
-                                    <span class="badge badge-yellow" title="Proof received by ar.io."><span class="badge-dot"></span> Anchored</span>
-                                {% endif %}
-                            </span>
-                        </div>
-                    </div>
-
-                    <div id="anchoring-receipt" style="margin-top:1rem;padding-top:0.9rem;border-top:1px solid var(--border);">
-                        <div style="font-size:0.72rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.1rem;">Upload receipt</div>
-                        <div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.6rem;">Independent timestamp witness — ar.io's signature of what it received, when.</div>
-                        <div class="kv" id="receipt-kv">
-                            {% if envelope.turbo_receipt %}
-                                {% if envelope.turbo_receipt.timestamp %}
-                                <div class="kv-row">
-                                    <span class="kv-key">Timestamp</span>
-                                    <span class="kv-value mono">{{ envelope.turbo_receipt.timestamp }} ms</span>
-                                </div>
-                                {% endif %}
-                                {% if envelope.turbo_receipt.owner %}
-                                <div class="kv-row">
-                                    <span class="kv-key">Owner</span>
-                                    <span class="kv-value mono mono-sm">{{ envelope.turbo_receipt.owner }}</span>
-                                </div>
-                                {% endif %}
-                                {% if envelope.turbo_receipt.version %}
-                                <div class="kv-row">
-                                    <span class="kv-key">Version</span>
-                                    <span class="kv-value">{{ envelope.turbo_receipt.version }}</span>
-                                </div>
-                                {% endif %}
-                                {% if envelope.turbo_receipt.deadlineHeight %}
-                                <div class="kv-row">
-                                    <span class="kv-key">Deadline</span>
-                                    <span class="kv-value mono">{{ envelope.turbo_receipt.deadlineHeight }}</span>
-                                </div>
-                                {% endif %}
-                                {% if envelope.turbo_receipt.signature %}
-                                <div class="kv-row">
-                                    <span class="kv-key">Signature</span>
-                                    <span class="kv-value mono mono-sm">{{ envelope.turbo_receipt.signature[:64] }}...</span>
-                                </div>
-                                {% endif %}
-                            {% else %}
-                                <div class="kv-row" id="receipt-placeholder" style="color:var(--muted);font-size:0.82rem;">
-                                    Waiting for receipt — will populate automatically.
-                                </div>
-                            {% endif %}
-                        </div>
-                    </div>
-                    {% elif arweave_enabled %}
-                    <div style="display: flex; align-items: center; gap: 0.5rem; color: var(--yellow); font-size: 0.85rem;">
-                        <span class="badge badge-yellow"><span class="badge-dot badge-dot-pulse"></span> Anchoring</span>
-                        <span style="color: var(--muted);">Uploading proof to Arweave...</span>
-                    </div>
-                    {% else %}
-                    <div style="color: var(--muted); font-size: 0.85rem;">Not anchored — no wallet configured.</div>
-                    {% endif %}
-                </div>
+          <div class="section">
+            <div class="section-header">Inference</div>
+            <div class="section-body">
+              <div class="kv-row"><span class="kv-key">Timestamp</span><span class="kv-value">{{ envelope.record.timestamp }}</span></div>
+              <div class="kv-row"><span class="kv-key">Latency</span><span class="kv-value">{{ envelope.record.latency_ms }} ms</span></div>
+              <div class="kv-row"><span class="kv-key">Input Hash</span><span class="kv-value mono mono-sm">{{ envelope.record.input_hash }}</span></div>
+              <div class="kv-row"><span class="kv-key">Output Hash</span><span class="kv-value mono mono-sm">{{ envelope.record.output_hash }}</span></div>
             </div>
+          </div>
 
-            {# Phase 2.D removed the legacy "Proof Layer" panel that
-               displayed record_hash / previous_hash / signature /
-               public_key. Those were a local-cache proof, not the
-               actual on-chain commitment. The verifiable artifact is
-               now the pure-commitment envelope on Arweave (fetchable
-               via the "Verify with ar.io" button). Phase 3 introduces
-               a side-by-side viewer of the signed commitment + the
-               canonical bytes that were committed to. #}
-
-            <!-- Model Lineage -->
-            <div class="section">
-                <div class="section-header">Model Lineage</div>
-                <div class="section-body">
-                    <div class="kv">
-                        <div class="kv-row">
-                            <span class="kv-key">Model</span>
-                            <span class="kv-value">{{ envelope.record.model_name }} / v{{ envelope.record.model_version }}</span>
-                        </div>
-                        <div class="kv-row">
-                            <span class="kv-key">Run ID</span>
-                            <span class="kv-value mono mono-sm">{{ envelope.record.mlflow_run_id }}</span>
-                        </div>
-                        <div class="kv-row">
-                            <span class="kv-key">Artifact</span>
-                            <span class="kv-value mono mono-sm">{{ envelope.record.artifact_uri }}</span>
-                        </div>
-                        <div class="kv-row">
-                            <span class="kv-key">Lineage</span>
-                            <span class="kv-value"><a href="/ui/models/{{ envelope.record.model_name }}/{{ envelope.record.model_version }}">View model lineage &rarr;</a></span>
-                        </div>
-                    </div>
-                </div>
+          <div class="section">
+            <div class="section-header">Trace</div>
+            <div class="section-body">
+              <div class="kv-row"><span class="kv-key">Service</span><span class="kv-value">{{ envelope.record.service_name }}</span></div>
+              <div class="kv-row"><span class="kv-key">Trace ID</span><span class="kv-value mono mono-sm">{{ envelope.record.trace_id }}</span></div>
+              <div class="kv-row"><span class="kv-key">Span ID</span><span class="kv-value mono mono-sm">{{ envelope.record.span_id }}</span></div>
             </div>
+          </div>
 
-            <!-- Trace Context -->
-            <div class="section">
-                <div class="section-header">Trace Context</div>
-                <div class="section-body">
-                    <div class="kv">
-                        <div class="kv-row">
-                            <span class="kv-key">Service</span>
-                            <span class="kv-value">{{ envelope.record.service_name }}</span>
-                        </div>
-                        <div class="kv-row">
-                            <span class="kv-key">Trace ID</span>
-                            <span class="kv-value mono mono-sm">{{ envelope.record.trace_id }}</span>
-                        </div>
-                        <div class="kv-row">
-                            <span class="kv-key">Span ID</span>
-                            <span class="kv-value mono mono-sm">{{ envelope.record.span_id }}</span>
-                        </div>
-                    </div>
-                </div>
+          <div class="section" id="anchoring-section">
+            <div class="section-header">ar.io Anchor</div>
+            <div class="section-body" id="anchoring-body">
+              {% if envelope.arweave_tx_id %}
+              <div class="kv-row"><span class="kv-key">Transaction</span><span class="kv-value mono mono-sm">{{ envelope.arweave_tx_id }}</span></div>
+              <div class="kv-row"><span class="kv-key">Status</span><span class="kv-value" id="turbo-status-badge">
+                {% if turbo_status and turbo_status.status in ('FINALIZED', 'CONFIRMED') %}
+                  <span class="badge badge-green"><span class="badge-dot"></span> Confirmed</span>
+                {% elif turbo_status and turbo_status.status == 'NOT_FOUND' %}
+                  <span class="badge badge-yellow"><span class="badge-dot badge-dot-pulse"></span> Anchoring</span>
+                {% else %}
+                  <span class="badge badge-yellow"><span class="badge-dot"></span> Anchoring</span>
+                {% endif %}
+              </span></div>
+              {% if envelope.public_key %}
+              <div class="kv-row"><span class="kv-key">Signer Key</span><span class="kv-value mono mono-sm">ed25519:{{ envelope.public_key }}</span></div>
+              {% endif %}
+              {% if envelope.turbo_receipt and envelope.turbo_receipt.deadlineHeight %}
+              <div class="kv-row"><span class="kv-key">Block</span><span class="kv-value">{{ "{:,}".format(envelope.turbo_receipt.deadlineHeight) }}</span></div>
+              {% endif %}
+              {% else %}
+              <div class="kv-row" style="color: var(--muted);">Not anchored — no wallet configured.</div>
+              {% endif %}
             </div>
+          </div>
+
         </div>
 {% endblock %}
 
@@ -491,13 +389,12 @@
     {% if arweave_enabled %}
     <script>
     (function() {
-        // Unified polling loop covering THREE async things:
-        //   1. The Arweave TX + gateway URL (arrives ~1-2s after prediction).
-        //   2. The upload receipt (arrives in the same envelope shortly after).
+        // Unified polling loop covering three async things:
+        //   1. The Arweave TX (arrives ~1-2s after prediction).
+        //   2. The Turbo upload receipt (arrives shortly after).
         //   3. The Turbo status, which progresses NOT_FOUND → CONFIRMED →
         //      FINALIZED over seconds-to-minutes as the network settles.
-        // Stops once Turbo reports FINALIZED, or after a hard 5-minute cap
-        // so we're not polling forever on a stuck proof.
+        // Stops once Turbo reports FINALIZED, or after a hard 5-minute cap.
         const decisionId = "{{ envelope.record.decision_id }}";
         let haveTx = {{ 'true' if envelope.arweave_tx_id else 'false' }};
         let haveReceipt = {{ 'true' if envelope.turbo_receipt else 'false' }};
@@ -509,19 +406,19 @@
             FINALIZED: {
                 cls: 'badge-green',
                 dot: 'badge-dot',
-                text: 'Permanent on ar.io',
+                text: 'Confirmed',
                 title: 'The proof is permanently stored on the Arweave network and cannot be changed.',
             },
             CONFIRMED: {
-                cls: 'badge-yellow',
+                cls: 'badge-green',
                 dot: 'badge-dot',
-                text: 'Confirmed on ar.io',
+                text: 'Confirmed',
                 title: 'ar.io has received and confirmed the proof. It will become permanent once block confirmations accumulate.',
             },
             NOT_FOUND: {
                 cls: 'badge-yellow',
                 dot: 'badge-dot badge-dot-pulse',
-                text: 'Uploading to ar.io…',
+                text: 'Anchoring',
                 title: 'The proof has been submitted but ar.io has not yet indexed it.',
             },
         };
@@ -529,23 +426,9 @@
             return STATUS_COPY[s] || {
                 cls: 'badge-yellow',
                 dot: 'badge-dot',
-                text: 'Anchored',
+                text: 'Anchoring',
                 title: 'Proof received by ar.io.',
             };
-        }
-
-        // All render functions below build DOM via createElement + textContent /
-        // setAttribute rather than innerHTML concatenation. External strings
-        // (arweave_url, arweave_tx_id, receipt.*) never reach the HTML parser.
-
-        function safeHttpUrl(url) {
-            if (!url) return null;
-            try {
-                const u = new URL(url);
-                return (u.protocol === "http:" || u.protocol === "https:") ? u.href : null;
-            } catch (e) {
-                return null;
-            }
         }
 
         function makeStatusBadge(turboStatus) {
@@ -560,96 +443,7 @@
             return badge;
         }
 
-        function renderAnchoringTop(data) {
-            // First render after TX arrives. Includes a placeholder status
-            // badge that later polls will overwrite via updateStatusBadge.
-            const body = document.getElementById("anchoring-body");
-            if (!body) return;
-            body.replaceChildren();
-
-            // Transaction row — anchor tag with validated URL + text-only TX id.
-            const safeUrl = safeHttpUrl(data.arweave_url);
-            const txSpan = document.createElement("span");
-            txSpan.className = "mono mono-sm";
-            txSpan.textContent = data.arweave_tx_id || "";
-            let txValue;
-            if (safeUrl) {
-                const a = document.createElement("a");
-                a.setAttribute("href", safeUrl);
-                a.setAttribute("target", "_blank");
-                a.setAttribute("rel", "noopener noreferrer");
-                a.appendChild(txSpan);
-                txValue = a;
-            } else {
-                txValue = txSpan;
-            }
-
-            const kv = document.createElement("div");
-            kv.className = "kv";
-
-            const txRow = document.createElement("div");
-            txRow.className = "kv-row";
-            const txKey = document.createElement("span");
-            txKey.className = "kv-key";
-            txKey.textContent = "Transaction";
-            const txValueWrap = document.createElement("span");
-            txValueWrap.className = "kv-value";
-            txValueWrap.appendChild(txValue);
-            txRow.append(txKey, txValueWrap);
-            kv.appendChild(txRow);
-
-            const statusRow = document.createElement("div");
-            statusRow.className = "kv-row";
-            const statusKey = document.createElement("span");
-            statusKey.className = "kv-key";
-            statusKey.textContent = "Status";
-            const statusValue = document.createElement("span");
-            statusValue.className = "kv-value";
-            statusValue.id = "turbo-status-badge";
-            statusValue.appendChild(makeStatusBadge(data.turbo_status));
-            statusRow.append(statusKey, statusValue);
-            kv.appendChild(statusRow);
-
-            body.appendChild(kv);
-
-            // Receipt section — static skeleton; renderReceipt() fills rows.
-            const receipt = document.createElement("div");
-            receipt.id = "anchoring-receipt";
-            receipt.style.cssText = "margin-top:1rem;padding-top:0.9rem;border-top:1px solid var(--border);";
-
-            const title = document.createElement("div");
-            title.style.cssText = "font-size:0.72rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.1rem;";
-            title.textContent = "Upload receipt";
-
-            const subtitle = document.createElement("div");
-            subtitle.style.cssText = "font-size:0.75rem;color:var(--muted);margin-bottom:0.6rem;";
-            subtitle.textContent = "Independent timestamp witness — ar.io’s signature of what it received, when.";
-
-            const receiptKv = document.createElement("div");
-            receiptKv.className = "kv";
-            receiptKv.id = "receipt-kv";
-
-            const waiting = document.createElement("div");
-            waiting.className = "kv-row";
-            waiting.id = "receipt-placeholder";
-            waiting.style.cssText = "color:var(--muted);font-size:0.82rem;";
-            waiting.textContent = "Waiting for receipt — will populate automatically.";
-            receiptKv.appendChild(waiting);
-
-            receipt.append(title, subtitle, receiptKv);
-            body.appendChild(receipt);
-
-            const verifyBtn = document.getElementById("verify-btn");
-            if (verifyBtn) verifyBtn.style.display = "";
-        }
-
-        function updateStatusBadge(turboStatus) {
-            const el = document.getElementById("turbo-status-badge");
-            if (!el) return;
-            el.replaceChildren(makeStatusBadge(turboStatus));
-        }
-
-        function makeReceiptRow(keyText, valueText, extraClass) {
+        function makeKvRow(keyText, valueText, extraClass) {
             const row = document.createElement("div");
             row.className = "kv-row";
             const key = document.createElement("span");
@@ -662,41 +456,57 @@
             return row;
         }
 
-        function renderReceipt(receipt) {
-            const kv = document.getElementById("receipt-kv");
-            if (!kv) return;
-            kv.replaceChildren();
+        function renderAnchoringTop(data) {
+            // First render after TX arrives. Audit grid format: TX, Status,
+            // and (when receipt later arrives) Signer Key + Block rows.
+            const body = document.getElementById("anchoring-body");
+            if (!body) return;
+            body.replaceChildren();
 
-            if (receipt.timestamp != null) {
-                kv.appendChild(makeReceiptRow("Timestamp", receipt.timestamp + " ms", "mono"));
-            }
-            if (receipt.owner) {
-                kv.appendChild(makeReceiptRow("Owner", String(receipt.owner), "mono mono-sm"));
-            }
-            if (receipt.version) {
-                kv.appendChild(makeReceiptRow("Version", String(receipt.version)));
-            }
-            if (receipt.deadlineHeight) {
-                kv.appendChild(makeReceiptRow("Deadline", String(receipt.deadlineHeight), "mono"));
-            }
-            if (receipt.signature) {
-                const sig = String(receipt.signature).substring(0, 64) + "...";
-                kv.appendChild(makeReceiptRow("Signature", sig, "mono mono-sm"));
-            }
+            body.appendChild(makeKvRow("Transaction", data.arweave_tx_id || "", "mono mono-sm"));
 
-            if (!kv.firstChild) {
-                const empty = document.createElement("div");
-                empty.className = "kv-row";
-                empty.style.cssText = "color:var(--muted);font-size:0.82rem;";
-                empty.textContent = "Receipt returned no fields.";
-                kv.appendChild(empty);
+            const statusRow = document.createElement("div");
+            statusRow.className = "kv-row";
+            const statusKey = document.createElement("span");
+            statusKey.className = "kv-key";
+            statusKey.textContent = "Status";
+            const statusValue = document.createElement("span");
+            statusValue.className = "kv-value";
+            statusValue.id = "turbo-status-badge";
+            statusValue.appendChild(makeStatusBadge(data.turbo_status));
+            statusRow.append(statusKey, statusValue);
+            body.appendChild(statusRow);
+
+            const verifyBtn = document.getElementById("verify-btn");
+            if (verifyBtn) verifyBtn.style.display = "";
+        }
+
+        function updateStatusBadge(turboStatus) {
+            const el = document.getElementById("turbo-status-badge");
+            if (!el) return;
+            el.replaceChildren(makeStatusBadge(turboStatus));
+        }
+
+        function appendReceiptRows(envelope) {
+            // Append Signer Key + Block rows once the receipt lands.
+            const body = document.getElementById("anchoring-body");
+            if (!body) return;
+            if (envelope.public_key && !document.getElementById("signer-key-row")) {
+                const row = makeKvRow("Signer Key", "ed25519:" + envelope.public_key, "mono mono-sm");
+                row.id = "signer-key-row";
+                body.appendChild(row);
+            }
+            const receipt = envelope.turbo_receipt || {};
+            if (receipt.deadlineHeight && !document.getElementById("block-row")) {
+                const block = Number(receipt.deadlineHeight).toLocaleString();
+                const row = makeKvRow("Block", block);
+                row.id = "block-row";
+                body.appendChild(row);
             }
         }
 
         const poll = setInterval(function() {
             attempts += 1;
-            // Keep polling until we actually have the Turbo receipt — the
-            // upstream can return FINALIZED before the receipt surfaces.
             if (attempts > maxAttempts || (lastStatus === 'FINALIZED' && haveReceipt)) {
                 clearInterval(poll);
                 return;
@@ -710,7 +520,7 @@
                     }
                     if (!haveReceipt && data.turbo_receipt) {
                         haveReceipt = true;
-                        renderReceipt(data.turbo_receipt);
+                        appendReceiptRows(data);
                     }
                     const newStatus = (data.turbo_status || {}).status || null;
                     if (haveTx && newStatus !== lastStatus) {

@@ -1,8 +1,13 @@
 """CLI: ario-mlflow verify and audit commands.
 
-Updated for the pure-commitment redesign \u2014 runs the four-check
-verification flow (signature / anchored bytes / live MLflow / ar.io
-Verify Level 3) instead of the legacy three-level helpers.
+Updated for the pure-commitment redesign \u2014 runs the three-row verify
+flow (Proof Found / {Event} Record Matches / Signature Confirmed) plus an
+optional ar.io attestation row, matching the dashboard vocabulary.
+
+Internal field names in ``ario_mlflow.verify`` (``signature_valid``,
+``hash_match``, ``source_of_truth_ok``, ``attestation_level``,
+``permanent_copy_found``) are stable API and unchanged \u2014 only the
+printed labels match the UI.
 """
 
 import argparse
@@ -36,6 +41,9 @@ def _get_components():
     return proof_engine, anchor, ario
 
 
+_LABEL_WIDTH = 28
+
+
 def _print_check(label: str, result: dict, value_when_ok: str | None = None):
     """Print one check line. Status: \u2713 / \u2717 / ? (not applicable)."""
     check = "\033[32m\u2713\033[0m"
@@ -52,7 +60,7 @@ def _print_check(label: str, result: dict, value_when_ok: str | None = None):
     else:
         symbol = pending
         suffix = result.get("reason", "not applicable")
-    print(f"  {label:<22} {symbol} {suffix}")
+    print(f"  {label:<{_LABEL_WIDTH}} {symbol} {suffix}")
 
 
 def _print_four_checks(
@@ -60,18 +68,41 @@ def _print_four_checks(
     bytes_check: dict,
     sot: dict,
     ario_attestation: dict,
+    record_label: str = "Record Matches",
 ):
-    """Print the four-check verification panel for a single envelope.
+    """Print the verify panel for a single envelope.
 
-    Always surfaces the ar.io Verify attestation level when present \u2014
-    even on a "below threshold" failure \u2014 so the user can see how the
-    TX is maturing. (Per ROADMAP "Receipts vs. attestation as a
-    two-stage verify UX", attestation level is fundamentally a maturity
-    gradient, not a binary pass/fail.)
+    Three rows match the dashboard vocabulary:
+      1. Proof Found            (envelope retrieved from ar.io)
+      2. {record_label}         ("Decision Record Matches" /
+                                 "Training Record Matches" /
+                                 "Registration Record Matches" \u2014 passed
+                                 in by the caller depending on the
+                                 event type). Consolidates the legacy
+                                 "anchored bytes intact" + "live MLflow
+                                 source-of-truth" checks into one row.
+      3. Signature Confirmed    (signature on envelope verifies)
+
+    Plus the ar.io attestation line \u2014 always surfaces the maturity
+    level when present (even on a "below threshold" failure), so the
+    user can see how the TX is maturing. Per ROADMAP "Receipts vs.
+    attestation as a two-stage verify UX", attestation level is
+    fundamentally a maturity gradient, not a binary pass/fail.
     """
-    _print_check("Cryptographic", sig, "signature valid")
-    _print_check("Anchored bytes", bytes_check, "intact")
-    _print_check("Source of truth", sot, "live MLflow matches anchored bytes")
+    # Row 1: Proof Found \u2014 by the time we got here we already fetched
+    # the envelope, so this is a synthetic ok=True row that keeps the
+    # CLI structurally aligned with the dashboard's three-row card.
+    _print_check("Proof Found", {"ok": True}, "envelope retrieved from ar.io")
+
+    # Row 2: consolidated "{record_label}" \u2014 the new vocabulary folds
+    # the old `Anchored bytes` + `Source of truth` into one row, but
+    # internally we still verify both. Surface a fail if either side
+    # failed, surface pending if either is None.
+    consolidated = _consolidate_record_check(bytes_check, sot)
+    _print_check(record_label, consolidated, "live MLflow matches anchored bytes")
+
+    # Row 3: Signature Confirmed
+    _print_check("Signature Confirmed", sig, "signature valid")
 
     # ar.io Verify \u2014 show the maturity level whenever the API returned
     # something, regardless of whether it passed the threshold. Helps
@@ -80,32 +111,62 @@ def _print_four_checks(
     cross = "\033[31m\u2717\033[0m"
     pending = "\033[33m?\033[0m"
     ok = ario_attestation.get("ok")
-    level = ario_attestation.get("attestation_level")
     attester = ario_attestation.get("attested_by") or "unknown"
-    threshold = ario_attestation.get("min_attestation_level")
 
-    if ok is True and level is not None:
-        print(f"  {'ar.io Verify':<22} {check} Level {level} by {attester}")
+    if ok is True:
+        # User-facing copy collapses to "Verified" \u2014 internal
+        # attestation_level is preserved for programmatic callers.
+        print(f"  {'ar.io attestation':<{_LABEL_WIDTH}} {check} Verified by {attester}")
         if ario_attestation.get("report_url"):
-            print(f"  {'':>22} report: {ario_attestation['report_url']}")
+            print(f"  {'':>{_LABEL_WIDTH}} report: {ario_attestation['report_url']}")
     elif ok is False and ario_attestation.get("reason") == "attestation_level_below_threshold":
-        # Show the actual level + the threshold so the user knows the
-        # TX is maturing, just hasn't reached the bar yet.
+        # TX indexed but maturity not yet at the configured bar.
         print(
-            f"  {'ar.io Verify':<22} {cross} Level {level} (below threshold "
-            f"{threshold}) by {attester}"
+            f"  {'ar.io attestation':<{_LABEL_WIDTH}} {cross} Pending verification "
+            f"(by {attester})"
         )
         print(
-            f"  {'':>22} TX is indexed but not yet at the configured "
+            f"  {'':>{_LABEL_WIDTH}} TX is indexed but not yet at the configured "
             f"attestation bar. Re-run later to check progression."
         )
         if ario_attestation.get("report_url"):
-            print(f"  {'':>22} report: {ario_attestation['report_url']}")
+            print(f"  {'':>{_LABEL_WIDTH}} report: {ario_attestation['report_url']}")
     elif ok is False:
-        print(f"  {'ar.io Verify':<22} {cross} {ario_attestation.get('reason', 'FAILED')}")
+        print(
+            f"  {'ar.io attestation':<{_LABEL_WIDTH}} {cross} "
+            f"{ario_attestation.get('reason', 'FAILED')}"
+        )
     else:
         # ok is None: not applicable / not checked
-        print(f"  {'ar.io Verify':<22} {pending} {ario_attestation.get('reason', 'not checked')}")
+        print(
+            f"  {'ar.io attestation':<{_LABEL_WIDTH}} {pending} "
+            f"{ario_attestation.get('reason', 'not checked')}"
+        )
+
+
+def _consolidate_record_check(bytes_check: dict, sot: dict) -> dict:
+    """Combine the anchored-bytes and source-of-truth checks into one row.
+
+    Truth table:
+      both ok=True  \u2192 ok=True
+      either False  \u2192 ok=False (with the failing reason)
+      either None   \u2192 ok=None (with the unknown reason)
+    Internal field names (``signature_valid``, ``hash_match``,
+    ``source_of_truth_ok``) in the underlying dict stay untouched \u2014
+    this only affects the printed row.
+    """
+    bytes_ok = bytes_check.get("ok")
+    sot_ok = sot.get("ok")
+
+    if bytes_ok is False:
+        return {"ok": False, "reason": bytes_check.get("reason", "anchored_bytes_mismatch")}
+    if sot_ok is False:
+        return {"ok": False, "reason": sot.get("reason", "live_mlflow_mismatch")}
+    if bytes_ok is None:
+        return {"ok": None, "reason": bytes_check.get("reason", "no_payload_to_compare")}
+    if sot_ok is None:
+        return {"ok": None, "reason": sot.get("reason", "live_refetch_incomplete")}
+    return {"ok": True}
 
 
 def _verify_envelope_for_tx(
@@ -114,17 +175,22 @@ def _verify_envelope_for_tx(
     anchor: ArweaveAnchor,
     ario_client: ArioVerifyClient,
     mlflow_client,
+    record_label: str = "Record Matches",
 ) -> tuple[dict, bool]:
-    """Fetch an envelope from Arweave and run all four checks.
+    """Fetch an envelope from ar.io and run the verify checks.
 
     Returns ``(combined_result, overall_ok)``. ``combined_result`` has
     keys ``signature`` / ``anchored_bytes`` / ``source_of_truth`` /
     ``ario_attestation`` for callers that want to programmatically
     inspect; the printed output goes to stdout.
+
+    ``record_label`` controls the row-2 label in the printed panel
+    ("Decision Record Matches" / "Training Record Matches" /
+    "Registration Record Matches"). Internal field names are unchanged.
     """
     envelope = anchor.fetch_proof(tx_id)
     if not envelope:
-        print(f"  Could not fetch envelope from Arweave for TX {tx_id}.")
+        print(f"  Could not fetch envelope from ar.io for TX {tx_id}.")
         return {}, False
 
     sig = verify_signature(envelope, proof_engine)
@@ -140,7 +206,7 @@ def _verify_envelope_for_tx(
     envelope_with_tx["_tx_id"] = tx_id
     ario_result = verify_ario_attestation(envelope_with_tx, ario_client)
 
-    _print_four_checks(sig, bytes_check, sot, ario_result)
+    _print_four_checks(sig, bytes_check, sot, ario_result, record_label=record_label)
 
     # Use the shared overall-ok logic so CLI and full_verify() agree.
     # For training/registration envelopes, ok=None on signature /
@@ -207,7 +273,7 @@ def _regenerate_html(
 
 
 def cmd_verify_run(args):
-    """Verify a training run's commitment via the four-check flow."""
+    """Verify a training run's commitment (Proof Found / Training Record Matches / Signature Confirmed)."""
     proof_engine, anchor, ario_client = _get_components()
     client = mlflow.tracking.MlflowClient()
 
@@ -221,7 +287,10 @@ def cmd_verify_run(args):
     print(f"Verifying training run {args.run_id}")
     print(f"  TX: {tx_id}")
 
-    result, ok = _verify_envelope_for_tx(tx_id, proof_engine, anchor, ario_client, client)
+    result, ok = _verify_envelope_for_tx(
+        tx_id, proof_engine, anchor, ario_client, client,
+        record_label="Training Record Matches",
+    )
     if not result:
         return 1
 
@@ -236,7 +305,7 @@ def cmd_verify_run(args):
 
 
 def cmd_verify_model(args):
-    """Verify a model version's registration commitment via the four-check flow."""
+    """Verify a model version's registration commitment (Proof Found / Registration Record Matches / Signature Confirmed)."""
     proof_engine, anchor, ario_client = _get_components()
     client = mlflow.tracking.MlflowClient()
 
@@ -254,7 +323,10 @@ def cmd_verify_model(args):
     print(f"Verifying model registration {name}/v{version}")
     print(f"  TX: {tx_id}")
 
-    result, ok = _verify_envelope_for_tx(tx_id, proof_engine, anchor, ario_client, client)
+    result, ok = _verify_envelope_for_tx(
+        tx_id, proof_engine, anchor, ario_client, client,
+        record_label="Registration Record Matches",
+    )
     if not result:
         return 1
 
@@ -269,14 +341,15 @@ def cmd_verify_model(args):
 
 
 def cmd_verify_trace(args):
-    """Verify a prediction trace's commitment via the four-check flow.
+    """Verify a prediction trace's commitment (Proof Found / Decision Record Matches / Signature Confirmed).
 
     Note: predictions don't write a payload.json artifact (per the
     privacy-preserving design — canonical fields are mirrored as trace
-    tags). Check 2 (anchored bytes intact) and check 3 (live MLflow
-    matches) report as not-applicable. Check 1 (signature) and check 4
-    (ar.io Verify) work normally. Auditors with the raw input/output
-    can verify input_hash / output_hash directly.
+    tags). When that's the case, the consolidated "Decision Record
+    Matches" row reports as not-applicable. Proof Found, Signature
+    Confirmed, and the ar.io attestation row work normally. Auditors
+    with the raw input/output can verify input_hash / output_hash
+    directly.
     """
     proof_engine, anchor, ario_client = _get_components()
     client = mlflow.tracking.MlflowClient()
@@ -304,7 +377,10 @@ def cmd_verify_trace(args):
     print(f"Verifying trace {args.trace_id}")
     print(f"  TX: {tx_id}")
 
-    result, ok = _verify_envelope_for_tx(tx_id, proof_engine, anchor, ario_client, client)
+    result, ok = _verify_envelope_for_tx(
+        tx_id, proof_engine, anchor, ario_client, client,
+        record_label="Decision Record Matches",
+    )
     if not result:
         return 1
 
@@ -347,7 +423,10 @@ def cmd_audit(args):
 
     print(f"\nTraining (run {mv.run_id or 'unknown'}):")
     if training_tx:
-        _, ok = _verify_envelope_for_tx(training_tx, proof_engine, anchor, ario_client, client)
+        _, ok = _verify_envelope_for_tx(
+            training_tx, proof_engine, anchor, ario_client, client,
+            record_label="Training Record Matches",
+        )
         if not ok:
             all_ok = False
     else:
@@ -357,7 +436,10 @@ def cmd_audit(args):
     registration_tx = mv.tags.get("ario.registration_tx")
     print(f"\nRegistration (v{version}):")
     if registration_tx:
-        _, ok = _verify_envelope_for_tx(registration_tx, proof_engine, anchor, ario_client, client)
+        _, ok = _verify_envelope_for_tx(
+            registration_tx, proof_engine, anchor, ario_client, client,
+            record_label="Registration Record Matches",
+        )
         if not ok:
             all_ok = False
     else:
@@ -367,7 +449,10 @@ def cmd_audit(args):
     promotion_tx = mv.tags.get("ario.promotion_tx")
     print(f"\nPromotion ({mv.current_stage}):")
     if promotion_tx:
-        _, ok = _verify_envelope_for_tx(promotion_tx, proof_engine, anchor, ario_client, client)
+        _, ok = _verify_envelope_for_tx(
+            promotion_tx, proof_engine, anchor, ario_client, client,
+            record_label="Registration Record Matches",
+        )
         if not ok:
             all_ok = False
     else:

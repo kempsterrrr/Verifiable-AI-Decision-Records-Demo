@@ -175,7 +175,7 @@
             </div>
             <div class="page-actions">
                 <a id="verify-btn" href="/ui/decisions/{{ envelope.record.decision_id }}?verify=true" class="btn btn-primary btn-sm" data-loading-text="Verifying..." {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>Verify with ar.io</a>
-                <a href="/api/export/{{ envelope.record.decision_id }}" class="btn btn-outline btn-sm">Download Proof</a>
+                <a href="https://turbo-gateway.com/{{ envelope.arweave_tx_id }}" target="_blank" class="btn btn-outline btn-sm" {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>View Proof ↗</a>
                 {# Phase 2.C removed the single tamper button. The legacy
                    tamper modified a local JSON cache, but local-cache
                    integrity isn't part of the new trust model (MLflow is

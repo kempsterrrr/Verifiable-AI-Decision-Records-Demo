@@ -120,9 +120,11 @@ def _print_four_checks(
         if ario_attestation.get("report_url"):
             print(f"  {'':>{_LABEL_WIDTH}} report: {ario_attestation['report_url']}")
     elif ok is False and ario_attestation.get("reason") == "attestation_level_below_threshold":
-        # TX indexed but maturity not yet at the configured bar.
+        # TX indexed but maturity not yet at the configured bar. This is
+        # transient propagation, not a verification failure — render with
+        # the yellow "pending" glyph rather than a red cross.
         print(
-            f"  {'ar.io attestation':<{_LABEL_WIDTH}} {cross} Pending verification "
+            f"  {'ar.io attestation':<{_LABEL_WIDTH}} {pending} Pending verification "
             f"(by {attester})"
         )
         print(

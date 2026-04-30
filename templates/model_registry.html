@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
 {% block title %}Models — Verifiable AI{% endblock %}
-{% block max_width %}1600px{% endblock %}
+{% block max_width %}1400px{% endblock %}
 {% block nav_models %}active{% endblock %}
 {% block lineage_url %}/ui/models/{{ model_name }}/{{ active_version }}{% endblock %}
 
@@ -240,7 +240,7 @@
                             <span class="badge badge-primary" style="margin-left: 0.3rem;">Active</span>
                         {% endif %}
                     </td>
-                    <td><a class="mono" href="/ui/runs/{{ v.run_id }}" style="font-size: 0.74rem; text-decoration: none; white-space: nowrap;">{{ v.run_id }}</a></td>
+                    <td><a class="mono" href="/ui/runs/{{ v.run_id }}" style="text-decoration: none; white-space: nowrap;" title="{{ v.run_id }}">{{ v.run_id[:12] }}…</a></td>
                     <td>{% if v.accuracy is not none %}{{ "%.4f"|format(v.accuracy) }}{% else %}—{% endif %}</td>
                     <td>
                         {% if v.training_status == 'verified' %}
@@ -264,7 +264,7 @@
                             <span class="badge badge-gray">—</span>
                         {% endif %}
                     </td>
-                    <td>{{ v.created }}</td>
+                    <td style="white-space: nowrap;">{{ v.created }}</td>
                     <td>
                         <div class="actions">
                             <a href="/ui/models/{{ model_name }}/{{ v.version }}" class="btn btn-outline btn-sm">View Chain</a>

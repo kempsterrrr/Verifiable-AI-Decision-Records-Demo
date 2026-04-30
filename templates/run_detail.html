@@ -88,7 +88,7 @@
             </div>
             <div class="page-actions">
                 <a id="verify-btn" href="/ui/runs/{{ envelope.record.run_id }}?verify=true" class="btn btn-primary btn-sm" data-loading-text="Verifying..." {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>Verify with ar.io</a>
-                <a href="https://turbo-gateway.com/{{ envelope.arweave_tx_id }}" target="_blank" rel="noopener" class="btn btn-outline btn-sm" {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>View Proof ↗</a>
+                <a id="view-proof-btn" href="https://turbo-gateway.com/{{ envelope.arweave_tx_id }}" target="_blank" rel="noopener" class="btn btn-outline btn-sm" {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>View Proof ↗</a>
             </div>
         </div>
 
@@ -562,6 +562,14 @@
 
             const verifyBtn = document.getElementById("verify-btn");
             if (verifyBtn) verifyBtn.style.display = "";
+            // Reveal + retarget the View Proof link as soon as the TX
+            // arrives — the link was hidden in the initial render because
+            // arweave_tx_id wasn't set yet.
+            const proofBtn = document.getElementById("view-proof-btn");
+            if (proofBtn && data.arweave_tx_id) {
+                proofBtn.style.display = "";
+                proofBtn.href = "https://turbo-gateway.com/" + data.arweave_tx_id;
+            }
         }
 
         function updateStatusBadge(turboStatus) {

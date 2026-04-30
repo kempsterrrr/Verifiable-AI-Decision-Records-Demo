@@ -255,19 +255,19 @@
 
         <!-- Stats -->
         <div class="stats">
-            <div class="stat-card stat-verified" onclick="filterStatus('verified')" id="filter-verified">
+            <div class="stat-card stat-verified" onclick="filterStatus('verified')" id="filter-verified" role="button" tabindex="0" aria-label="Filter by Verified status">
                 <div class="stat-number">{{ ns.verified }}</div>
                 <div class="stat-label">Verified</div>
             </div>
-            <div class="stat-card stat-anchored" onclick="filterStatus('anchored')" id="filter-anchored">
+            <div class="stat-card stat-anchored" onclick="filterStatus('anchored')" id="filter-anchored" role="button" tabindex="0" aria-label="Filter by Pending verification status">
                 <div class="stat-number">{{ ns.anchored + ns.anchoring }}</div>
                 <div class="stat-label">Pending verification</div>
             </div>
-            <div class="stat-card stat-failed" onclick="filterStatus('failed')" id="filter-failed">
+            <div class="stat-card stat-failed" onclick="filterStatus('failed')" id="filter-failed" role="button" tabindex="0" aria-label="Filter by Tampered status">
                 <div class="stat-number">{{ ns.failed }}</div>
                 <div class="stat-label">Tampered</div>
             </div>
-            <div class="stat-card stat-local" onclick="filterStatus('local')" id="filter-local">
+            <div class="stat-card stat-local" onclick="filterStatus('local')" id="filter-local" role="button" tabindex="0" aria-label="Filter by Not anchored status">
                 <div class="stat-number">{{ ns.local }}</div>
                 <div class="stat-label">Not anchored</div>
             </div>
@@ -472,6 +472,16 @@
         });
         applyFilters();
     }
+
+    // Keyboard activation for the role="button" stat cards.
+    document.querySelectorAll('.stat-card').forEach(card => {
+        card.addEventListener('keydown', e => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                card.click();
+            }
+        });
+    });
 
     function clearAll() {
         activeStatus = null;

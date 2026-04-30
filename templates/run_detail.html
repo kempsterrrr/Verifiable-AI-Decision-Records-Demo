@@ -73,8 +73,6 @@
 
         .verify-actions { margin-top: 0.75rem; display: flex; gap: 0.5rem; }
         .verify-meta { margin-top: 0.5rem; font-size: 0.75rem; color: var(--muted); }
-        .verify-note { margin-top: 0.75rem; padding: 0.6rem 0.75rem; border-radius: 6px; font-size: 0.8rem; }
-        .verify-note-warn { background: var(--yellow-bg); color: var(--yellow); }
 
         @media (max-width: 768px) {
             .grid { grid-template-columns: 1fr; }
@@ -386,7 +384,7 @@
                   <div class="json-block" id="canonical-bytes-json">{% if canonical_bytes_json %}{{ canonical_bytes_json }}{% else %}<em style="color:var(--muted)">Click <strong>Verify with ar.io</strong> first to fetch and show the canonical bytes.</em>{% endif %}</div>
                 </div>
                 <div class="panel-footer">
-                  <span style="font-family: monospace;">ario/payload.json</span>
+                  <span style="font-family: 'JetBrains Mono', monospace;">ario/payload.json</span>
                 </div>
               </div>
 
@@ -400,7 +398,7 @@
                 </div>
                 <div class="panel-footer">
                   {% if envelope.arweave_tx_id %}
-                  <span>TX <span style="font-family: monospace; color: var(--primary);">{{ envelope.arweave_tx_id }}</span></span>
+                  <span>TX <span style="font-family: 'JetBrains Mono', monospace; color: var(--primary);">{{ envelope.arweave_tx_id }}</span></span>
                   <a href="https://turbo-gateway.com/{{ envelope.arweave_tx_id }}" target="_blank">View on ar.io →</a>
                   {% endif %}
                 </div>
@@ -422,7 +420,7 @@
             </div>
 
             <div class="legend-row">
-              <div><strong>What you can't do.</strong> Change either side without breaking the equality. The signature on the signed commitment binds <code style="font-family: monospace;">payload_hash</code> to the signer's key.</div>
+              <div><strong>What you can't do.</strong> Change either side without breaking the equality. The signature on the signed commitment binds <code style="font-family: 'JetBrains Mono', monospace;">payload_hash</code> to the signer's key.</div>
               <div><strong>What this isn't.</strong> Canonical bytes contain hashes of model artifacts, not the model weights themselves — the model file stays in MLflow, only its hash is anchored.</div>
             </div>
           </div>

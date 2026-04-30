@@ -149,6 +149,8 @@
                             {% set tv = training.get('last_verification') %}
                             {% if tv and tv.overall is sameas true %}
                                 <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
+                            {% elif t_pending_attestation %}
+                                <span class="badge badge-yellow" title="Cryptographic + source-of-truth checks passed. ar.io's attestation is still propagating from Level 1 → Level 2-3 (typically 2-5 minutes after upload). Re-verify in a few minutes.">Pending ar.io confirmation</span>
                             {% elif tv and tv.overall is sameas false %}
                                 <span class="badge badge-red"><span class="badge-dot"></span> Failed</span>
                             {% elif training.arweave_tx_id %}
@@ -233,6 +235,7 @@
                               <strong>Overall</strong>
                               {% if tv %}
                                 {% if tv.overall is sameas true %}<strong class="check">PASS</strong>
+                                {% elif t_pending_attestation %}<span class="badge badge-yellow" title="Cryptographic + source-of-truth checks passed. ar.io attestation still propagating.">Pending ar.io</span>
                                 {% elif tv.overall is sameas false %}<strong class="cross">FAIL</strong>
                                 {% else %}<span class="badge badge-yellow">Pending</span>{% endif %}
                               {% else %}<span class="unchecked">Not verified</span>{% endif %}
@@ -279,6 +282,8 @@
                             {% set rv = registration.get('last_verification') %}
                             {% if rv and rv.overall is sameas true %}
                                 <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
+                            {% elif r_pending_attestation %}
+                                <span class="badge badge-yellow" title="Cryptographic + source-of-truth checks passed. ar.io's attestation is still propagating from Level 1 → Level 2-3 (typically 2-5 minutes after upload). Re-verify in a few minutes.">Pending ar.io confirmation</span>
                             {% elif rv and rv.overall is sameas false %}
                                 <span class="badge badge-red"><span class="badge-dot"></span> Failed</span>
                             {% elif registration.arweave_tx_id %}
@@ -368,6 +373,7 @@
                               <strong>Overall</strong>
                               {% if rv %}
                                 {% if rv.overall is sameas true %}<strong class="check">PASS</strong>
+                                {% elif r_pending_attestation %}<span class="badge badge-yellow" title="Cryptographic + source-of-truth checks passed. ar.io attestation still propagating.">Pending ar.io</span>
                                 {% elif rv.overall is sameas false %}<strong class="cross">FAIL</strong>
                                 {% else %}<span class="badge badge-yellow">Pending</span>{% endif %}
                               {% else %}<span class="unchecked">Not verified</span>{% endif %}

@@ -21,6 +21,12 @@ class Settings:
     mlflow_tracking_uri: str = "mlruns"
     mlflow_model_name: str = "credit-scorer"
 
+    # Demo-only routes (e.g. /tamper/*) are gated behind this flag.
+    # Defaults to True for the public demo on Railway. Set
+    # VAIDR_DEMO_MODE=false in any production deployment to disable
+    # the routes that mutate live MLflow state.
+    demo_mode: bool = True
+
     # AR.IO
     ario_gateway_host: str = "turbo-gateway.com"
     # Public ar.io Verify instance operated by an ar.io gateway (vilenarios).
@@ -41,11 +47,16 @@ class Settings:
     def from_env(cls) -> "Settings":
         prefix = "VAIDR_"
         kwargs = {}
-        for f in cls.__dataclass_fields__:
+        for f, field_def in cls.__dataclass_fields__.items():
             env_key = prefix + f.upper()
             val = os.environ.get(env_key)
             if val is not None:
-                kwargs[f] = val
+                # Coerce booleans from common string values; leave other
+                # types as strings (the dataclass declares them str).
+                if field_def.type is bool or field_def.type == "bool":
+                    kwargs[f] = val.strip().lower() in ("1", "true", "yes", "on")
+                else:
+                    kwargs[f] = val
         return cls(**kwargs)
 
 

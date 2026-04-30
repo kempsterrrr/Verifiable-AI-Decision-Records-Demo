@@ -149,6 +149,12 @@
         .btn-danger-outline { background: transparent; color: var(--red); border: 1px solid var(--red-bg); }
         .btn-danger-outline:hover { background: var(--red-bg); }
         .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.75rem; border-radius: 4px; }
+        .btn:focus-visible,
+        .btn-tamper:focus-visible,
+        .btn-reset:focus-visible {
+            outline: 2px solid var(--primary);
+            outline-offset: 2px;
+        }
 
         /* ── Typography ── */
         .mono {

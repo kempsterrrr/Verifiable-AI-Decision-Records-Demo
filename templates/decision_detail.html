@@ -383,6 +383,46 @@
           </div>
 
         </div>
+
+        <!-- ─── Demonstrate Tampering ─── -->
+        <div class="section-label">Demonstrate Tampering</div>
+
+        <details class="tamper-section" id="tamper-section">
+          <summary class="tamper-header">
+            <div class="tamper-header-inner">
+              <span class="tamper-summary-icon"><svg viewBox="0 0 10 10"><path d="M3 1 L7 5 L3 9" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+              <span class="tamper-summary-title">Click to tamper</span>
+              <span class="tamper-summary-hint">simulate two attacks</span>
+            </div>
+          </summary>
+          <div class="tamper-body">
+            <div class="tamper-intro">
+              Two ways someone could try to alter this decision record after the fact — both hit MLflow data, both get caught by the same verification check. Click to see how. Tampers auto-reverse after a short window, or click <em>Reset all</em>.
+            </div>
+            <div class="tamper-row">
+              <div class="tamper-row-info">
+                <div class="tamper-row-title"><span class="num">1</span>Tamper with the saved record</div>
+                <div class="tamper-row-desc">Edit the locally-saved copy of the decision data. <em style="font-family: 'JetBrains Mono', monospace; color: var(--muted); font-style: normal;">Overwrites <code>ario/payload.json</code> in MLflow.</em> <strong>Breaks → Decision Record Matches.</strong></div>
+              </div>
+              <button class="btn-tamper" data-tamper-kind="saved" data-event-type="decision" data-event-id="{{ envelope.record.decision_id }}">Tamper</button>
+            </div>
+            <div class="tamper-row">
+              <div class="tamper-row-info">
+                <div class="tamper-row-title"><span class="num">2</span>Tamper with the live data</div>
+                <div class="tamper-row-desc">Mutate MLflow's underlying record — the same thing an admin with registry access could do. <em style="font-family: 'JetBrains Mono', monospace; color: var(--muted); font-style: normal;">Overwrites the <code>ario.payload_json</code> trace tag.</em> <strong>Breaks → Decision Record Matches.</strong></div>
+                <span class="tamper-headline">★ Headline tamper for governance audiences</span>
+              </div>
+              <button class="btn-tamper" data-tamper-kind="live" data-event-type="decision" data-event-id="{{ envelope.record.decision_id }}">Tamper</button>
+            </div>
+            <div class="tamper-footer">
+              <div style="font-size: 0.74rem; color: var(--muted); line-height: 1.45; font-style: italic;">Both tampers hit different surfaces but the system catches each one — data tampering anywhere in MLflow shows up as the same broken check.</div>
+              <div style="display: flex; align-items: center; padding-top: 0.45rem; border-top: 1px solid var(--border);">
+                <span class="tamper-footer-text">Tampers auto-reverse after a short window. Reset clears all.</span>
+                <button class="btn-reset" data-event-type="decision" data-event-id="{{ envelope.record.decision_id }}">Reset all</button>
+              </div>
+            </div>
+          </div>
+        </details>
 {% endblock %}
 
 {% block scripts %}
@@ -533,4 +573,57 @@
     })();
     </script>
     {% endif %}
+
+    <script>
+    // Tamper button wiring
+    document.querySelectorAll('.btn-tamper').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const kind = btn.dataset.tamperKind;
+        const eventType = btn.dataset.eventType;
+        const eventId = btn.dataset.eventId;
+        btn.disabled = true;
+        btn.textContent = 'Tampering...';
+        try {
+          const r = await fetch(`/tamper/${kind}/${eventType}/${eventId}`, { method: 'POST' });
+          const data = await r.json();
+          if (data.tampered) {
+            btn.textContent = 'Tampered';
+            const sec = document.getElementById('tamper-section');
+            if (sec) sec.style.boxShadow = '0 0 0 2px var(--yellow)';
+            setTimeout(() => {
+              if (sec) sec.style.boxShadow = '';
+              btn.textContent = 'Tamper';
+              btn.disabled = false;
+            }, 4000);
+          } else {
+            btn.textContent = 'Failed';
+            btn.disabled = false;
+          }
+        } catch (e) {
+          btn.textContent = 'Error';
+          btn.disabled = false;
+        }
+      });
+    });
+
+    document.querySelectorAll('.btn-reset').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const eventType = btn.dataset.eventType;
+        const eventId = btn.dataset.eventId;
+        btn.disabled = true;
+        btn.textContent = 'Resetting...';
+        try {
+          await fetch(`/tamper/reset/${eventType}/${eventId}`, { method: 'POST' });
+          btn.textContent = 'Reset complete — re-verify to see';
+          setTimeout(() => {
+            btn.textContent = 'Reset all';
+            btn.disabled = false;
+          }, 2500);
+        } catch (e) {
+          btn.textContent = 'Error';
+          btn.disabled = false;
+        }
+      });
+    });
+    </script>
 {% endblock %}

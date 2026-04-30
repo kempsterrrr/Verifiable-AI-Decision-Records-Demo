@@ -317,13 +317,20 @@
                                 </div>
                                 {% endif %}
                                 {% if training and training.arweave_tx_id and training.record.artifact_hash and registration.record.artifact_hash %}
+                                {# Display paths conditionally prepend "sha256:" — strip it on
+                                   both sides so the equality check works regardless of which
+                                   side carries the prefix. #}
+                                {% set _train_hash = (training.record.artifact_hash or '')|replace('sha256:', '') %}
+                                {% set _reg_hash = (registration.record.artifact_hash or '')|replace('sha256:', '') %}
                                 <div class="kv-row">
                                     <span class="kv-key">Artifact Integrity</span>
                                     <span class="kv-value">
-                                        {% if registration.record.artifact_hash == training.record.artifact_hash %}
+                                        {% if _reg_hash and _train_hash and _reg_hash == _train_hash %}
                                             <span class="badge badge-green"><span class="badge-dot"></span> Matches training</span>
-                                        {% else %}
+                                        {% elif _reg_hash and _train_hash %}
                                             <span class="badge badge-red"><span class="badge-dot"></span> Mismatch — artifacts changed after training</span>
+                                        {% else %}
+                                            <span class="badge badge-gray"><span class="badge-dot"></span> —</span>
                                         {% endif %}
                                     </span>
                                 </div>

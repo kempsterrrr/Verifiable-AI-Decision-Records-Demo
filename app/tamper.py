@@ -140,47 +140,41 @@ def tamper_live(event_type, event_id, *, lifecycle_store, record_store, tracking
             # Read the payload artifact to find the mlflow_trace_id.
             run_id = envelope["record"]["mlflow_run_id"]
             artifact_path = _payload_artifact_path("decision", event_id)
-            trace_id = None
+            import tempfile
+            with tempfile.TemporaryDirectory() as tmpdir:
+                local_path = client.download_artifacts(run_id, artifact_path, tmpdir)
+                with open(local_path, "r") as f:
+                    payload = json.load(f)
+            trace_id = payload.get("mlflow_trace_id")
+            if not trace_id:
+                raise KeyError(
+                    f"decision {event_id} has no MLflow trace_id available; cannot tamper live data"
+                )
+
+            # Read the current tag value for the snapshot (best-effort; fall back to "").
             old = ""
             try:
-                import tempfile
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    local_path = client.download_artifacts(run_id, artifact_path, tmpdir)
-                    with open(local_path, "r") as f:
-                        payload = json.load(f)
-                    trace_id = payload.get("mlflow_trace_id")
-            except Exception as e:
-                logger.warning(f"Could not read payload artifact for decision {event_id}: {e}")
+                trace = client.get_trace(trace_id)
+                tags = {}
+                info = getattr(trace, "info", None)
+                if info is not None and getattr(info, "tags", None):
+                    tags = dict(info.tags)
+                elif getattr(trace, "tags", None):
+                    tags = dict(trace.tags)
+                old = tags.get("ario.payload_json", "")
+            except Exception:
+                old = ""
 
-            if trace_id:
-                try:
-                    trace = client.get_trace(trace_id)
-                    tags = {}
-                    info = getattr(trace, "info", None)
-                    if info is not None and getattr(info, "tags", None):
-                        tags = dict(info.tags)
-                    elif getattr(trace, "tags", None):
-                        tags = dict(trace.tags)
-                    old = tags.get("ario.payload_json", "")
-                except Exception:
-                    old = ""
-                try:
-                    client.set_trace_tag(trace_id, "ario.payload_json",
-                                         '{"tampered": "this is no longer the canonical bytes"}')
-                except Exception as e:
-                    logger.warning(
-                        f"set_trace_tag unavailable for decision {event_id}: {e}. "
-                        f"Live tamper may be a no-op on this MLflow version."
-                    )
-            else:
-                logger.warning(
-                    f"No mlflow_trace_id in payload for decision {event_id}; "
-                    f"live tamper degraded (no trace tag to mutate)."
-                )
+            # Write mutation — must not be swallowed; if it fails the tamper did not happen.
+            try:
+                client.set_trace_tag(trace_id, "ario.payload_json",
+                                     '{"tampered": "this is no longer the canonical bytes"}')
+            except Exception as e:
+                raise RuntimeError(f"failed to mutate trace tag for decision {event_id}: {e}") from e
 
             snapshot = TamperSnapshot(
                 event_type=event_type, event_id=event_id, kind="live",
-                live_field_name=f"trace_tag:{trace_id}:ario.payload_json" if trace_id else None,
+                live_field_name=f"trace_tag:{trace_id}:ario.payload_json",
                 live_field_old_value=old,
             )
 

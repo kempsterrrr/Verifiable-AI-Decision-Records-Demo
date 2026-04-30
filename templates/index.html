@@ -212,7 +212,7 @@
         <div class="page-header">
             <div>
                 <h1>Decisions</h1>
-                <p>Every credit-decision below has a signed proof anchored on Arweave via ar.io — verifiable by any third party, without trusting this app.</p>
+                <p>Every decision below carries a signed proof anchored to ar.io. Anyone can verify the live record matches what was anchored — without trusting this app.</p>
             </div>
         </div>
 
@@ -261,15 +261,15 @@
             </div>
             <div class="stat-card stat-anchored" onclick="filterStatus('anchored')" id="filter-anchored">
                 <div class="stat-number">{{ ns.anchored + ns.anchoring }}</div>
-                <div class="stat-label">Anchored</div>
+                <div class="stat-label">Pending verification</div>
             </div>
             <div class="stat-card stat-failed" onclick="filterStatus('failed')" id="filter-failed">
                 <div class="stat-number">{{ ns.failed }}</div>
-                <div class="stat-label">Failed</div>
+                <div class="stat-label">Tampered</div>
             </div>
             <div class="stat-card stat-local" onclick="filterStatus('local')" id="filter-local">
                 <div class="stat-number">{{ ns.local }}</div>
-                <div class="stat-label">Local Only</div>
+                <div class="stat-label">Not anchored</div>
             </div>
         </div>
 
@@ -289,9 +289,9 @@
                     {% if training_status == 'verified' %}
                         <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
                     {% elif training_status == 'anchored' %}
-                        <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
+                        <span class="badge badge-yellow"><span class="badge-dot"></span> Pending verification</span>
                     {% elif training_status == 'local' %}
-                        <span class="badge badge-gray"><span class="badge-dot"></span> Local</span>
+                        <span class="badge badge-gray"><span class="badge-dot"></span> Not anchored</span>
                     {% else %}
                         <span class="badge badge-gray">--</span>
                     {% endif %}
@@ -301,9 +301,9 @@
                     {% if registration_status == 'verified' %}
                         <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
                     {% elif registration_status == 'anchored' %}
-                        <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
+                        <span class="badge badge-yellow"><span class="badge-dot"></span> Pending verification</span>
                     {% elif registration_status == 'local' %}
-                        <span class="badge badge-gray"><span class="badge-dot"></span> Local</span>
+                        <span class="badge badge-gray"><span class="badge-dot"></span> Not anchored</span>
                     {% else %}
                         <span class="badge badge-gray">--</span>
                     {% endif %}
@@ -334,14 +334,14 @@
                 <label>Credit Score (300–850)</label>
                 <input type="number" name="credit_score" value="745" step="1" min="300" max="850" required>
             </div>
-            <button type="submit" class="btn btn-primary" data-loading-text="Predicting...">Predict &amp; Record</button>
+            <button type="submit" class="btn btn-primary" data-loading-text="Predicting...">Make a decision</button>
         </form>
 
         {% if records %}
         <!-- Records table -->
         <div class="toolbar">
             <div class="toolbar-left">
-                <h2>Records</h2>
+                <h2>Recent decisions</h2>
                 <span class="record-count">{{ records|length }}</span>
             </div>
             <div class="toolbar-right">
@@ -369,8 +369,8 @@
                     <th>Decision ID</th>
                     <th>Timestamp</th>
                     <th>Model</th>
-                    <th>Prediction</th>
-                    <th>Arweave TX</th>
+                    <th>Result</th>
+                    <th>ar.io Anchor</th>
                     <th>Status</th>
                     <th>Actions</th>
                 </tr>
@@ -400,7 +400,19 @@
                     <td><a href="/ui/decisions/{{ env.record.decision_id }}"><span class="mono">{{ env.record.decision_id[:8] }}</span></a></td>
                     <td>{{ env.record.timestamp[:19] }}</td>
                     <td>v{{ env.record.model_version }}</td>
-                    <td>{{ env.record.prediction['class'] if env.record.prediction is defined else 'N/A' }}</td>
+                    <td>
+                      {% if env.record.prediction is defined %}
+                        {% if env.record.prediction['class'] == 'approve' %}
+                          <span class="badge badge-green"><span class="badge-dot"></span> Approved</span>
+                        {% elif env.record.prediction['class'] == 'deny' %}
+                          <span class="badge badge-red"><span class="badge-dot"></span> Denied</span>
+                        {% else %}
+                          {{ env.record.prediction['class'] }}
+                        {% endif %}
+                      {% else %}
+                        N/A
+                      {% endif %}
+                    </td>
                     <td>
                         {% if env.arweave_tx_id %}
                             <a href="{{ env.arweave_url }}" target="_blank"><span class="mono">{{ env.arweave_tx_id[:12] }}</span></a>
@@ -414,13 +426,13 @@
                         {% if row_status == 'verified' %}
                             <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
                         {% elif row_status == 'failed' %}
-                            <span class="badge badge-red"><span class="badge-dot"></span> Failed</span>
+                            <span class="badge badge-red"><span class="badge-dot"></span> Tampered</span>
                         {% elif row_status == 'anchored' %}
-                            <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
+                            <span class="badge badge-yellow"><span class="badge-dot"></span> Pending verification</span>
                         {% elif row_status == 'anchoring' %}
                             <span class="badge badge-yellow"><span class="badge-dot badge-dot-pulse"></span> Anchoring</span>
                         {% else %}
-                            <span class="badge badge-gray"><span class="badge-dot"></span> Local Only</span>
+                            <span class="badge badge-gray"><span class="badge-dot"></span> Not anchored</span>
                         {% endif %}
                     </td>
                     <td>

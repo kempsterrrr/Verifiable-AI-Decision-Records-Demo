@@ -240,7 +240,13 @@
                             <span class="badge badge-primary" style="margin-left: 0.3rem;">Active</span>
                         {% endif %}
                     </td>
-                    <td><a class="mono" href="/ui/runs/{{ v.run_id }}" style="text-decoration: none; white-space: nowrap;" title="{{ v.run_id }}">{{ v.run_id[:12] }}…</a></td>
+                    <td>
+                        {% if v.run_id %}
+                            <a class="mono" href="/ui/runs/{{ v.run_id }}" style="text-decoration: none; white-space: nowrap;" title="{{ v.run_id }}">{{ v.run_id[:12] }}…</a>
+                        {% else %}
+                            <span style="color: var(--muted);">—</span>
+                        {% endif %}
+                    </td>
                     <td>{% if v.accuracy is not none %}{{ "%.4f"|format(v.accuracy) }}{% else %}—{% endif %}</td>
                     <td>
                         {% if v.training_status == 'verified' %}

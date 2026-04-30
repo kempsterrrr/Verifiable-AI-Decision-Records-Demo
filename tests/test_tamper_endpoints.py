@@ -25,8 +25,14 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("VAIDR_MLFLOW_TRACKING_URI", f"file://{tmp_path}/mlruns")
     # Disable Arweave so anchoring doesn't try to hit the network.
     monkeypatch.setenv("VAIDR_ARWEAVE_WALLET_PATH", "")
+    # Clear the lru_cache so get_settings() picks up the monkeypatched env.
+    from app.config import get_settings
+    get_settings.cache_clear()
     from app.main import app
-    return TestClient(app)
+    # Use as context manager to trigger lifespan (which trains the model,
+    # sets app.state.settings, etc.).
+    with TestClient(app) as c:
+        yield c
 
 
 def _make_decision(client):

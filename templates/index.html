@@ -256,19 +256,19 @@
 
         <!-- Stats -->
         <div class="stats">
-            <div class="stat-card stat-verified" onclick="filterStatus('verified')" id="filter-verified" role="button" tabindex="0" aria-label="Filter by Verified status">
+            <div class="stat-card stat-verified" onclick="filterStatus('verified')" id="filter-verified" role="button" tabindex="0" aria-label="Filter by Verified status" aria-pressed="false">
                 <div class="stat-number">{{ ns.verified }}</div>
                 <div class="stat-label">Verified</div>
             </div>
-            <div class="stat-card stat-anchored" onclick="filterStatus('anchored')" id="filter-anchored" role="button" tabindex="0" aria-label="Filter by Pending verification status">
+            <div class="stat-card stat-anchored" onclick="filterStatus('anchored')" id="filter-anchored" role="button" tabindex="0" aria-label="Filter by Pending verification status" aria-pressed="false">
                 <div class="stat-number">{{ ns.anchored + ns.anchoring }}</div>
                 <div class="stat-label">Pending verification</div>
             </div>
-            <div class="stat-card stat-failed" onclick="filterStatus('failed')" id="filter-failed" role="button" tabindex="0" aria-label="Filter by Tampered status">
+            <div class="stat-card stat-failed" onclick="filterStatus('failed')" id="filter-failed" role="button" tabindex="0" aria-label="Filter by Tampered status" aria-pressed="false">
                 <div class="stat-number">{{ ns.failed }}</div>
                 <div class="stat-label">Tampered</div>
             </div>
-            <div class="stat-card stat-local" onclick="filterStatus('local')" id="filter-local" role="button" tabindex="0" aria-label="Filter by Not anchored status">
+            <div class="stat-card stat-local" onclick="filterStatus('local')" id="filter-local" role="button" tabindex="0" aria-label="Filter by Not anchored status" aria-pressed="false">
                 <div class="stat-number">{{ ns.local }}</div>
                 <div class="stat-label">Not anchored</div>
             </div>
@@ -469,7 +469,9 @@
     function filterStatus(status) {
         activeStatus = (activeStatus === status) ? null : status;
         document.querySelectorAll('.stat-card').forEach(el => {
-            el.classList.toggle('active', activeStatus && el.id === 'filter-' + activeStatus);
+            const isActive = !!(activeStatus && el.id === 'filter-' + activeStatus);
+            el.classList.toggle('active', isActive);
+            el.setAttribute('aria-pressed', isActive ? 'true' : 'false');
         });
         applyFilters();
     }
@@ -489,7 +491,10 @@
         document.getElementById('date-from').value = '';
         document.getElementById('date-to').value = '';
         document.getElementById('version-filter').value = '';
-        document.querySelectorAll('.stat-card').forEach(el => el.classList.remove('active'));
+        document.querySelectorAll('.stat-card').forEach(el => {
+            el.classList.remove('active');
+            el.setAttribute('aria-pressed', 'false');
+        });
         document.querySelectorAll('#records-table tbody tr').forEach(row => row.classList.remove('hidden'));
     }
 

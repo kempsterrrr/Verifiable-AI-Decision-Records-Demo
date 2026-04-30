@@ -8,6 +8,7 @@ __pycache__/
 .env
 .venv/
 .agents/
+.superpowers/
 *.egg-info/
 .DS_Store
 *.plugin

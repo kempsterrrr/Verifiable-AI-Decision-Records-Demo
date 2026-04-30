@@ -373,6 +373,8 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
     if not envelope:
         return HTMLResponse("<h1>Training run not found</h1>", status_code=404)
 
+    canonical_bytes_json = None
+    signed_commitment_json = None
     if verify and envelope.get("arweave_tx_id"):
         result = _verify_envelope(app, envelope)
         result["verified_at"] = datetime.now(timezone.utc).isoformat()
@@ -383,6 +385,33 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
         persistable = {k: v for k, v in result.items() if k != "plugin_full_verify"}
         envelope["last_verification"] = persistable
         app.state.lifecycle_store.update(envelope["record"]["event_id"], envelope)
+
+        # Phase 3: surface canonical bytes + signed envelope as
+        # pretty-printed JSON for the "How verification works" viewer
+        # (mirrors the decision_detail plumbing).
+        try:
+            import json as _json
+            full = result.get("plugin_full_verify") or {}
+            anchored = full.get("anchored_bytes") or {}
+            payload_bytes = anchored.get("payload_bytes")
+            if payload_bytes:
+                try:
+                    canonical_bytes_json = _json.dumps(
+                        _json.loads(payload_bytes), indent=2
+                    )
+                except Exception:
+                    canonical_bytes_json = (
+                        payload_bytes.decode("utf-8")
+                        if isinstance(payload_bytes, (bytes, bytearray))
+                        else str(payload_bytes)
+                    )
+            tx_id = envelope.get("arweave_tx_id")
+            plugin_envelope = app.state.anchor.fetch_proof(tx_id) if tx_id else None
+            if plugin_envelope:
+                signed_commitment_json = _json.dumps(plugin_envelope, indent=2)
+        except Exception:
+            # Display-only: never block the page render on a viewer hiccup.
+            pass
 
     turbo_status = None
     if envelope.get("arweave_tx_id"):
@@ -424,6 +453,8 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
             # absolute path (e.g. "/app/mlruns" on Railway) leaks
             # deployment detail and isn't useful to the reader.
             "mlflow_tracking_uri": app.state.settings.mlflow_tracking_uri,
+            "canonical_bytes_json": canonical_bytes_json,
+            "signed_commitment_json": signed_commitment_json,
         },
     )
 

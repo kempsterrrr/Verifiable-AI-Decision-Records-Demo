@@ -178,7 +178,7 @@
         <!-- Context Banner -->
         <div class="context-banner">
             <h2>How would you prove, 18 months from now, which model made a specific decision?</h2>
-            <p>Train a model below, make a prediction, then try to break the audit trail — either by changing the local record directly, or by imagining that MLflow runs get deleted, models get silently retrained, or institutional memory is lost. Because every proof is anchored on Arweave via ar.io, a third party can verify what actually happened without trusting this app or any records it stores locally.</p>
+            <p>Train a model below, make a prediction, then try to break the verifiable record — either by tampering with MLflow data directly, or by imagining the runs get deleted, models get silently retrained, or institutional memory is lost. Because every proof is anchored to ar.io, a third party can verify what actually happened without trusting this app or any records it stores locally.</p>
             <a href="https://github.com/kempsterrrr/Verifiable-AI-Decision-Records-Demo/blob/main/ario_mlflow/README.md" target="_blank" rel="noopener" class="context-cta">Read the plugin README &rarr;</a>
         </div>
 
@@ -187,7 +187,7 @@
             <div class="train-hero-top">
                 <div class="train-hero-text">
                     <h2>Train a New Model</h2>
-                    <p>Train, register, and anchor provenance to Arweave</p>
+                    <p>Train, register, and anchor provenance to ar.io</p>
                 </div>
                 <button class="btn btn-primary btn-train" onclick="document.getElementById('train-panel').classList.toggle('open')">Train &amp; Anchor</button>
             </div>
@@ -208,8 +208,8 @@
                 <div class="train-progress" id="train-progress">
                     <div class="train-step" id="step-train"><span class="step-icon"></span> Training model...</div>
                     <div class="train-step" id="step-register"><span class="step-icon"></span> Registering in MLflow...</div>
-                    <div class="train-step" id="step-anchor-train"><span class="step-icon"></span> Anchoring training proof to Arweave...</div>
-                    <div class="train-step" id="step-anchor-reg"><span class="step-icon"></span> Anchoring registration proof to Arweave...</div>
+                    <div class="train-step" id="step-anchor-train"><span class="step-icon"></span> Anchoring training proof to ar.io...</div>
+                    <div class="train-step" id="step-anchor-reg"><span class="step-icon"></span> Anchoring registration proof to ar.io...</div>
                 </div>
 
                 <div class="train-result" id="train-result"></div>
@@ -240,15 +240,15 @@
                             <span class="badge badge-primary" style="margin-left: 0.3rem;">Active</span>
                         {% endif %}
                     </td>
-                    <td><span class="mono">{{ v.run_id[:12] }}</span></td>
+                    <td><a class="mono" href="/ui/runs/{{ v.run_id }}" style="word-break: break-all; font-size: 0.74rem; text-decoration: none;">{{ v.run_id }}</a></td>
                     <td>{% if v.accuracy is not none %}{{ "%.4f"|format(v.accuracy) }}{% else %}—{% endif %}</td>
                     <td>
                         {% if v.training_status == 'verified' %}
                             <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
                         {% elif v.training_status == 'anchored' %}
-                            <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
+                            <span class="badge badge-yellow"><span class="badge-dot"></span> Pending verification</span>
                         {% elif v.training_status == 'local' %}
-                            <span class="badge badge-gray"><span class="badge-dot"></span> Local</span>
+                            <span class="badge badge-gray"><span class="badge-dot"></span> Not anchored</span>
                         {% else %}
                             <span class="badge badge-gray">—</span>
                         {% endif %}
@@ -257,9 +257,9 @@
                         {% if v.registration_status == 'verified' %}
                             <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
                         {% elif v.registration_status == 'anchored' %}
-                            <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
+                            <span class="badge badge-yellow"><span class="badge-dot"></span> Pending verification</span>
                         {% elif v.registration_status == 'local' %}
-                            <span class="badge badge-gray"><span class="badge-dot"></span> Local</span>
+                            <span class="badge badge-gray"><span class="badge-dot"></span> Not anchored</span>
                         {% else %}
                             <span class="badge badge-gray">—</span>
                         {% endif %}
@@ -325,7 +325,7 @@
                 setStepActive('step-anchor-reg');
                 return pollAnchor(data.registration_event_id, 'step-anchor-reg');
             }).then(() => {
-                result.innerHTML = 'Model v' + data.model_version + ' trained (accuracy: ' + data.accuracy.toFixed(4) + ') and anchored to Arweave. Redirecting to model lineage...';
+                result.innerHTML = 'Model v' + data.model_version + ' trained (accuracy: ' + data.accuracy.toFixed(4) + ') and anchored to ar.io. Redirecting to model lineage...';
                 result.classList.add('show');
                 btn.textContent = 'Start Training';
                 btn.disabled = false;

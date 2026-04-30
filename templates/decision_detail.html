@@ -169,7 +169,7 @@
         {% set v = envelope.get('last_verification') %}
 
         <div class="page-header">
-            <div class="page-header-left">
+            <div>
                 <h1>Decision Record</h1>
                 <div class="page-id">{{ envelope.record.decision_id }}</div>
             </div>
@@ -682,7 +682,7 @@
         btn.textContent = 'Resetting...';
         try {
           await fetch(`/tamper/reset/${eventType}/${eventId}`, { method: 'POST' });
-          btn.textContent = 'Reset complete — re-verify to see';
+          btn.textContent = 'Reset — re-verify';
           setTimeout(() => {
             btn.textContent = 'Reset all';
             btn.disabled = false;

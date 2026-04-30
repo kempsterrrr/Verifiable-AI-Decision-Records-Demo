@@ -485,10 +485,10 @@
 
             <div class="tamper-footer">
               <div style="font-size: 0.74rem; color: var(--muted); line-height: 1.45; font-style: italic;">Each tamper changes the live MLflow data at a different link in the chain. The verifier re-derives canonical bytes from the current state and compares to what was anchored — any divergence breaks the matching record's check, and the chain breaks at exactly the link that was attacked.</div>
-              <div style="display: flex; align-items: center; padding-top: 0.45rem; border-top: 1px solid var(--border);">
+              <div style="display: flex; align-items: center; gap: 0.4rem; padding-top: 0.45rem; border-top: 1px solid var(--border); flex-wrap: wrap;">
                 <span class="tamper-footer-text">Tampers auto-reverse after a short window. Reset clears each.</span>
                 {% if training %}<button class="btn-reset" data-event-type="training" data-event-id="{{ training.record.run_id }}">Reset training</button>{% endif %}
-                {% if registration %}<button class="btn-reset" data-event-type="registration" data-event-id="{{ registration.record.event_id }}" style="margin-left: 0.4rem;">Reset registration</button>{% endif %}
+                {% if registration %}<button class="btn-reset" data-event-type="registration" data-event-id="{{ registration.record.event_id }}">Reset registration</button>{% endif %}
               </div>
             </div>
           </div>
@@ -622,7 +622,7 @@
         btn.textContent = 'Resetting...';
         try {
           await fetch(`/tamper/reset/${eventType}/${eventId}`, { method: 'POST' });
-          btn.textContent = 'Reset complete — re-verify';
+          btn.textContent = 'Reset — re-verify';
           setTimeout(() => {
             btn.textContent = originalText;
             btn.disabled = false;

@@ -423,6 +423,72 @@
             </div>
           </div>
         </details>
+
+        <!-- ─── How verification works ─── -->
+        <div class="section-label">How verification works</div>
+
+        <details class="collapsible">
+          <summary>
+            <span class="collapsible-summary-icon"><svg viewBox="0 0 10 10"><path d="M3 1 L7 5 L3 9" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            <span class="collapsible-summary-title">Show the canonical bytes ↔ signed commitment</span>
+            <span class="collapsible-summary-hint">click to expand</span>
+          </summary>
+          <div class="collapsible-body">
+            <div class="viewer-intro">
+              The proof has two parts. Ar.io anchors a tiny <strong>signed commitment</strong> — just hashes and a signature, no source data. MLflow stores the <strong>canonical bytes</strong> that produced the hash. Anyone with both can verify they match.
+            </div>
+
+            <div class="proof-split">
+              <div class="panel">
+                <div class="panel-header">
+                  <div class="panel-title-row"><div class="panel-title">Canonical bytes</div><span class="panel-source-pill pill-mlflow">MLflow</span></div>
+                  <div class="panel-meta">JCS canonicalized · the source · what gets hashed</div>
+                </div>
+                <div class="panel-body">
+                  <div class="json-block" id="canonical-bytes-json">{% if canonical_bytes_json %}{{ canonical_bytes_json }}{% else %}<em style="color:var(--muted)">Click <strong>Verify with ar.io</strong> first to fetch and show the canonical bytes.</em>{% endif %}</div>
+                </div>
+                <div class="panel-footer">
+                  <span style="font-family: monospace;">ario/predictions/{{ envelope.record.decision_id }}/payload.json</span>
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-header">
+                  <div class="panel-title-row"><div class="panel-title">Signed commitment</div><span class="panel-source-pill pill-arweave">ar.io</span></div>
+                  <div class="panel-meta">~500 bytes · permanent · public · the witness</div>
+                </div>
+                <div class="panel-body">
+                  <div class="json-block" id="signed-commitment-json">{% if signed_commitment_json %}{{ signed_commitment_json }}{% else %}<em style="color:var(--muted)">Click <strong>Verify with ar.io</strong> first to fetch and show the signed commitment.</em>{% endif %}</div>
+                </div>
+                <div class="panel-footer">
+                  {% if envelope.arweave_tx_id %}
+                  <span>TX <span style="font-family: monospace; color: var(--primary);">{{ envelope.arweave_tx_id }}</span></span>
+                  <a href="https://turbo-gateway.com/{{ envelope.arweave_tx_id }}" target="_blank">View on ar.io →</a>
+                  {% endif %}
+                </div>
+              </div>
+            </div>
+
+            <div class="equality">
+              <span class="equality-prefix">Verifier recomputes:</span>
+              <div class="equality-formula">
+                <span class="eq-token eq-left">SHA-256(canonical bytes)</span>
+                <span class="eq-op">=</span>
+                <span class="eq-token eq-right">payload_hash</span>
+                {% if v and v.hash_match is sameas true %}
+                  <span class="eq-result">✓ matches</span>
+                {% elif v and v.hash_match is sameas false %}
+                  <span class="eq-result eq-result-fail">✗ doesn't match</span>
+                {% endif %}
+              </div>
+            </div>
+
+            <div class="legend-row">
+              <div><strong>What you can't do.</strong> Change either side without breaking the equality. The signature on the signed commitment binds <code style="font-family: monospace;">payload_hash</code> to the signer's key.</div>
+              <div><strong>What this isn't.</strong> Canonical bytes contain hashes of input/output, not the values themselves — predictions stay private.</div>
+            </div>
+          </div>
+        </details>
 {% endblock %}
 
 {% block scripts %}
@@ -625,5 +691,24 @@
         }
       });
     });
+
+    // Highlight the payload_hash line in the signed commitment panel.
+    (function() {
+      const el = document.getElementById('signed-commitment-json');
+      if (!el || !el.textContent) return;
+      const text = el.textContent;
+      // Skip if it's the placeholder (italic em element).
+      if (el.querySelector('em')) return;
+      const lines = text.split('\n');
+      const highlighted = lines.map(line => {
+        if (line.trim().startsWith('"payload_hash"')) {
+          // Escape the line for HTML (basic XSS guard for safety).
+          const escaped = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          return '<span class="payload-hash-line">' + escaped + '</span>';
+        }
+        return line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      });
+      el.innerHTML = highlighted.join('\n');
+    })();
     </script>
 {% endblock %}

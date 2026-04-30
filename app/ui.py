@@ -298,6 +298,8 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
     # model. Phase 3 reintroduces tamper UX with four buttons paired to
     # the four real checks (signature / anchored bytes / live MLflow /
     # ar.io). Tracked as task #42.
+    canonical_bytes_json = None
+    signed_commitment_json = None
     if verify and envelope.get("arweave_tx_id"):
         result = _verify_envelope(app, envelope)
         result["verified_at"] = datetime.now(timezone.utc).isoformat()
@@ -306,6 +308,39 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
         persistable = {k: v for k, v in result.items() if k != "plugin_full_verify"}
         envelope["last_verification"] = persistable
         app.state.store.update(decision_id, envelope)
+
+        # Phase 3: surface canonical bytes + signed envelope as
+        # pretty-printed JSON for the "How verification works" viewer.
+        # The plugin's full_verify already fetched both during
+        # _verify_envelope, so just re-format from its outputs.
+        try:
+            import json as _json
+            full = result.get("plugin_full_verify") or {}
+            anchored = full.get("anchored_bytes") or {}
+            payload_bytes = anchored.get("payload_bytes")
+            if payload_bytes:
+                # Bytes from MLflow are already JCS-canonicalized; pretty-
+                # print the parsed JSON so the viewer is human-readable.
+                try:
+                    canonical_bytes_json = _json.dumps(
+                        _json.loads(payload_bytes), indent=2
+                    )
+                except Exception:
+                    canonical_bytes_json = (
+                        payload_bytes.decode("utf-8")
+                        if isinstance(payload_bytes, (bytes, bytearray))
+                        else str(payload_bytes)
+                    )
+            # Re-fetch the on-chain envelope and pretty-print it. The
+            # plugin's verify path mutates a local copy with `_tx_id`;
+            # fetch fresh from the gateway for clean display.
+            tx_id = envelope.get("arweave_tx_id")
+            plugin_envelope = app.state.anchor.fetch_proof(tx_id) if tx_id else None
+            if plugin_envelope:
+                signed_commitment_json = _json.dumps(plugin_envelope, indent=2)
+        except Exception:
+            # Display-only: never block the page render on a viewer hiccup.
+            pass
 
     # Check Turbo status for anchored records (fast, single HTTP call)
     turbo_status = None
@@ -324,6 +359,8 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
             # fully migrated in Phase 3.
             "local_verification": None,
             "turbo_status": turbo_status,
+            "canonical_bytes_json": canonical_bytes_json,
+            "signed_commitment_json": signed_commitment_json,
         },
     )
 

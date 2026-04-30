@@ -196,48 +196,53 @@ def tamper_live(event_type, event_id, *, lifecycle_store, record_store, tracking
             # version. The artifact_checksums hash changes, which breaks
             # both Registration Record Matches AND Training Record Matches
             # (since both canonical bytes include artifact_checksums).
+            #
+            # MLflow 3.x stores model artifacts in two places: the run's
+            # artifact directory (mlruns/{exp}/{run_id}/artifacts/model/)
+            # AND the LoggedModel store (mlruns/{exp}/models/m-{uuid}/
+            # artifacts/). The verifier's `artifact_checksums` resolves
+            # via `mlflow.artifacts.download_artifacts(run_id, "model")`,
+            # which returns the LoggedModel path. To actually break the
+            # hash, we have to write to that path — `client.log_artifact`
+            # only updates the run's directory, not the LoggedModel store.
             envelope = lifecycle_store.get_by_event_id(event_id)
             if envelope is None:
                 raise KeyError(f"registration {event_id} not found")
             source_run_id = envelope["record"]["source_run_id"]
-            model_artifact_path = "model/model.pkl"
 
-            import tempfile as _tempfile
-            with _tempfile.TemporaryDirectory() as tmpdir:
-                try:
-                    local_path = client.download_artifacts(
-                        source_run_id, model_artifact_path, tmpdir,
-                    )
-                    with open(local_path, "rb") as f:
-                        original_bytes = f.read()
-                except Exception as e:
-                    raise KeyError(
-                        f"could not download {model_artifact_path} for run "
-                        f"{source_run_id}: {e}"
-                    )
+            # Resolve the actual on-disk artifact directory the verifier
+            # will read from.
+            try:
+                resolved_dir = mlflow.artifacts.download_artifacts(
+                    run_id=source_run_id, artifact_path="model",
+                )
+            except Exception as e:
+                raise KeyError(
+                    f"could not resolve model artifact dir for run {source_run_id}: {e}"
+                )
 
-                # Swap with a smaller "fake model" payload — bytes that won't
-                # unpickle as a real sklearn estimator, but that's fine for
-                # the demo: we just need the SHA-256 to change.
-                garbage_path = os.path.join(tmpdir, "model.pkl")
-                with open(garbage_path, "wb") as f:
-                    f.write(
-                        b"TAMPERED MODEL ARTIFACT - this is not the registered "
-                        b"model weights. The artifact hash that was anchored "
-                        b"at registration time no longer matches."
-                    )
-                try:
-                    client.log_artifact(
-                        source_run_id, garbage_path, artifact_path="model",
-                    )
-                except Exception as e:
-                    raise RuntimeError(
-                        f"failed to swap model artifact for run {source_run_id}: {e}"
-                    ) from e
+            model_pkl_path = os.path.join(resolved_dir, "model.pkl")
+            if not os.path.isfile(model_pkl_path):
+                raise KeyError(
+                    f"model.pkl not found at {model_pkl_path} for run {source_run_id}"
+                )
+
+            with open(model_pkl_path, "rb") as f:
+                original_bytes = f.read()
+
+            # Direct filesystem overwrite — for the file:// MLflow backend,
+            # `download_artifacts` returns the canonical local path with
+            # no copy, so writing here mutates the actual store.
+            with open(model_pkl_path, "wb") as f:
+                f.write(
+                    b"TAMPERED MODEL ARTIFACT - this is not the registered "
+                    b"model weights. The artifact hash that was anchored "
+                    b"at registration time no longer matches."
+                )
 
             snapshot = TamperSnapshot(
                 event_type=event_type, event_id=event_id, kind="live",
-                live_field_name=f"artifact_swap:{source_run_id}:{model_artifact_path}",
+                live_field_name=f"artifact_swap_path:{model_pkl_path}",
                 saved_artifact_bytes=original_bytes,
             )
         else:
@@ -288,7 +293,18 @@ def reset(event_type, event_id, *, lifecycle_store, record_store, tracking_uri):
                         _, name, version, tag = parts
                         client.set_model_version_tag(name, version, tag,
                                                      snap.live_field_old_value or "")
+                    elif kind_prefix == "artifact_swap_path" and snap.saved_artifact_bytes is not None:
+                        # The live_field_name encodes the absolute on-disk path
+                        # we wrote to. Restore by writing the snapshot bytes back.
+                        _, target_path = snap.live_field_name.split(":", 1)
+                        try:
+                            with open(target_path, "wb") as f:
+                                f.write(snap.saved_artifact_bytes)
+                        except Exception as e:
+                            logger.warning(f"Could not restore artifact at {target_path}: {e}")
                     elif kind_prefix == "artifact_swap" and snap.saved_artifact_bytes is not None:
+                        # Legacy log_artifact-based variant (pre-fix); kept so
+                        # any in-flight snapshot from before the upgrade restores.
                         _, run_id, artifact_path = parts[0], parts[1], parts[2]
                         import tempfile as _tempfile
                         with _tempfile.TemporaryDirectory() as tmpdir:

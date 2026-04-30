@@ -1,7 +1,7 @@
 # ario-mlflow
 
 Verifiable provenance for the MLflow lifecycle — training, registration, promotion, inference.
-Signed cryptographic proofs are anchored to Arweave via ar.io, so an auditor can verify a model
+Signed cryptographic proofs are anchored to ar.io, so an auditor can verify a model
 or decision long after your MLflow server is gone.
 
 > **Status.** Early-shape idea, not a production-ready system. Default behaviors
@@ -149,55 +149,74 @@ ario-mlflow verify trace <trace_id>              # verify an inference proof
 ario-mlflow audit <name>/<version>               # full model-lineage audit
 ```
 
-All `verify` commands run the full four-check flow:
+All `verify` commands run the same three-row verify flow plus the optional
+ar.io attestation:
 
-1. **Signature** — Ed25519 signature on the on-chain envelope is valid.
-2. **Anchored bytes intact** — download `ario/payload.json` from MLflow,
-   re-hash, compare to envelope's `payload_hash`.
-3. **Source of truth matches** — re-derive canonical bytes from a *separate*
-   live MLflow surface and compare to the anchored payload. This is the
-   tamper-detection check.
-   - `verify run` re-fetches `run.data.params/metrics/artifact_checksums`.
-   - `verify model` re-derives the artifact-verified state from the source run.
-   - `verify trace` re-fetches the `ario.payload_json` trace tag (mirrored
-     by `VerifiedModel.predict` at write time) and compares to the artifact.
-4. **ar.io Verify attestation** — independent third-party check (if
-   `ARIO_MLFLOW_ARIO_VERIFY_URL` is set).
+1. **Proof Found** — fetch the pure-commitment envelope from ar.io for the
+   recorded TX ID.
+2. **Decision / Training / Registration Record Matches** — download
+   `ario/payload.json` from MLflow, re-hash, compare to the envelope's
+   `payload_hash`, **and** re-derive canonical bytes from a *separate*
+   live MLflow surface and compare to the anchored payload. This catches
+   MLflow tampering — if either surface was modified after anchoring, the
+   two won't agree.
+   - `verify run` (`Training Record Matches`) re-fetches
+     `run.data.params/metrics/artifact_checksums`.
+   - `verify model` (`Registration Record Matches`) re-derives the
+     artifact-verified state from the source run.
+   - `verify trace` (`Decision Record Matches`) re-fetches the
+     `ario.payload_json` trace tag (mirrored by `VerifiedModel.predict` at
+     write time) and compares to the artifact.
+3. **Signature Confirmed** — the signature on the envelope verifies
+   against the embedded public key.
 
-Predictions, training, and registration all run all four checks — feature
-equivalent verification. If a prediction's MLflow trace has been pruned by
-a retention policy, check 3 surfaces as `ok=False, reason=live_refetch_incomplete`
-so an auditor sees a clear "trace not available" rather than a silent pass.
-The proof itself (signature + anchored bytes + ar.io) is unaffected by trace
-retention — those rely only on permanent storage (Arweave + MLflow artifact store).
+Plus an `Attested by` line — independent third-party check by an ar.io
+gateway operator (when `ARIO_MLFLOW_ARIO_VERIFY_URL` is configured).
+
+Predictions, training, and registration all run the same three checks —
+feature-equivalent verification. If a prediction's MLflow trace has been
+pruned by a retention policy, the row-2 check surfaces as `ok=False,
+reason=live_refetch_incomplete` so an auditor sees a clear "trace not
+available" rather than a silent pass. The proof itself (signature +
+anchored bytes + ar.io) is unaffected by trace retention — those rely only
+on permanent storage (ar.io + MLflow artifact store).
+
+Internal field names in `ario_mlflow/verify.py` (`signature_valid`,
+`hash_match`, `source_of_truth_ok`, `attestation_level`,
+`permanent_copy_found`) are stable API and unchanged — only the printed
+labels match the dashboard vocabulary.
 
 Results are written back to the MLflow tags and the HTML report is regenerated.
 
-## What the attestation levels actually mean
+## What the ar.io attestation actually means
 
-`ario-mlflow verify` reports an ar.io attestation level. The levels describe
+`ario-mlflow verify` reports the ar.io attestation as `Verified` or
+`Pending verification` in user-facing output. Internally, the result has
+a maturity gradient (`attestation_level` = 1, 2, or 3) that describes
 **how much of the proof has been independently verified**, not network-
 confirmation depth:
 
-- **Level 1 — Finalized on Arweave.** The proof was found in a confirmed block
-  on the Arweave network at a specific block height and timestamp. On Arweave,
-  a confirmed block means permanent storage.
-- **Level 2 — Content integrity confirmed.** ar.io re-downloaded the raw proof
-  and recomputed its SHA-256 fingerprint. The bytes match the gateway's digest.
-  Cryptographic signature verification still pending.
-- **Level 3 — Cryptographically verified.** The digital signature on the proof
-  has been independently verified against the original signer's public key.
-  This is a mathematical proof, not a trust claim.
+- The proof was found in a confirmed block on the network at a specific
+  block height and timestamp (permanent storage).
+- ar.io re-downloaded the raw proof and recomputed its SHA-256 fingerprint;
+  the bytes match the gateway's digest.
+- The signature on the proof has been independently verified against the
+  original signer's public key (RSA-PSS / Ed25519 / ECDSA depending on
+  wallet type) — a mathematical proof, not a trust claim.
+
+Once all three are satisfied, user-facing copy reads `Verified`. The
+internal `attestation_level` field is preserved for programmatic callers
+and stays stable as a public API.
 
 **Operator attestation.** When an ar.io gateway operator has configured a
 signing wallet, the verification result is itself signed with that operator's
 wallet and `ario.attested_by` / `ario.attested_at` are written back to your
 MLflow tags. This is an independent statement from a known ar.io operator that
-they personally verified the proof — separate from and additional to the level
-above. The operator signature is standard RSA-PSS SHA-256 over canonical JSON,
-so any third party can verify it with the operator's public key.
+they personally verified the proof — separate from and additional to the
+attestation above. The operator signature is standard RSA-PSS SHA-256 over
+canonical JSON, so any third party can verify it with the operator's public key.
 
-These levels and attestations cover integrity and authenticity of the anchored
+These attestations cover integrity and authenticity of the anchored
 record. Semantic verification (whether this model produced this decision on
 this input) is on the roadmap, not in v0.1.
 

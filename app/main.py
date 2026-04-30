@@ -689,28 +689,16 @@ def get_lifecycle_event(request: Request, event_id: str):
     return envelope
 
 
-@app.get("/api/export/{decision_id}")
-def export_decision(request: Request, decision_id: str):
-    """Download a decision record as a JSON file."""
-    envelope = request.app.state.store.get_by_id(decision_id)
-    if not envelope:
-        return JSONResponse({"error": "Decision not found"}, status_code=404)
-    import json
-    content = json.dumps(envelope, indent=2)
-    return Response(
-        content=content,
-        media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="decision-{decision_id[:8]}.json"'},
-    )
-
-
 # Phase 2.D removed:
 # - ``compute_chain_integrity`` + ``/api/chain-integrity`` endpoint
 # - ``/tamper/{decision_id}`` endpoint
-# Both depended on the demo's legacy local-cache hash chain, which is
-# no longer part of the trust model. Phase 3 reintroduces tamper UX
-# with four buttons paired to the four real checks (signature /
-# anchored bytes / live MLflow / ar.io). See task #42.
+# Phase 3 removed:
+# - ``/api/export/{decision_id}`` endpoint — replaced by direct
+#   ar.io gateway link in the ``View Proof ↗`` button on
+#   templates/decision_detail.html. Arweave is the source of truth
+#   for the proof; a server-rendered JSON export is no longer needed.
+# Phase 3 reintroduces tamper UX with two buttons per page paired to
+# the verification rows.
 
 
 @app.post("/tamper/saved/{event_type}/{event_id}")

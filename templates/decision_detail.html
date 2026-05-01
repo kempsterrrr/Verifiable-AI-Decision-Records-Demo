@@ -684,7 +684,9 @@
         btn.textContent = 'Resetting...';
         try {
           const r = await fetch(`/tamper/reset/${eventType}/${eventId}`, { method: 'POST' });
-          if (!r.ok) {
+          let data = {};
+          try { data = await r.json(); } catch (_) { /* non-JSON body, treat as failure */ }
+          if (!r.ok || !data.reset) {
             btn.textContent = 'Reset failed';
             btn.disabled = false;
             return;

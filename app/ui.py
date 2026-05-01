@@ -340,9 +340,13 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
             plugin_envelope = app.state.anchor.fetch_proof(tx_id) if tx_id else None
             if plugin_envelope:
                 signed_commitment_json = _json.dumps(plugin_envelope, indent=2)
-        except Exception:
-            # Display-only: never block the page render on a viewer hiccup.
-            pass
+        except Exception as e:  # noqa: BLE001
+            # Display-only: never block the page render on a viewer hiccup,
+            # but log so verification regressions are diagnosable.
+            logger.warning(
+                "decision_detail proof-viewer hydration failed for %s: %s",
+                envelope.get("record", {}).get("decision_id"), e,
+            )
 
     # Check Turbo status for anchored records (fast, single HTTP call)
     turbo_status = None
@@ -411,9 +415,13 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
             plugin_envelope = app.state.anchor.fetch_proof(tx_id) if tx_id else None
             if plugin_envelope:
                 signed_commitment_json = _json.dumps(plugin_envelope, indent=2)
-        except Exception:
-            # Display-only: never block the page render on a viewer hiccup.
-            pass
+        except Exception as e:  # noqa: BLE001
+            # Display-only: never block the page render on a viewer hiccup,
+            # but log so verification regressions are diagnosable.
+            logger.warning(
+                "run_detail proof-viewer hydration failed for run %s: %s",
+                envelope.get("record", {}).get("run_id"), e,
+            )
 
     turbo_status = None
     if envelope.get("arweave_tx_id"):
@@ -515,9 +523,13 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
                 plugin_envelope = app.state.anchor.fetch_proof(tx_id) if tx_id else None
                 if plugin_envelope:
                     signed_commitment_json = _json.dumps(plugin_envelope, indent=2)
-            except Exception:
-                # Display-only: never block the page render on a viewer hiccup.
-                pass
+            except Exception as e:  # noqa: BLE001
+                # Display-only: never block the page render on a viewer hiccup,
+                # but log so verification regressions are diagnosable.
+                logger.warning(
+                    "model_chain proof-viewer hydration failed for %s/v%s: %s",
+                    model_name, version, e,
+                )
 
         if registration_env:
             registration_verify = _verify_envelope(app, registration_env)

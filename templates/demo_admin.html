@@ -203,11 +203,13 @@
         resetBtn.disabled = true;
         const original = resetBtn.textContent;
         resetBtn.textContent = 'Resetting…';
+        let redirecting = false;
         try {
             const r = await fetch('/demo/reset', { method: 'POST' });
             let data = {};
             try { data = await r.json(); } catch (_) { /* non-JSON body */ }
             if (r.ok && data.reset) {
+                redirecting = true;
                 window.location.href = '/';
                 return;
             }
@@ -215,8 +217,7 @@
         } catch (e) {
             showError(`Reset failed: ${e.message || e}`);
         } finally {
-            // Only re-enable if we didn't redirect.
-            if (!window.location.href.endsWith('/')) {
+            if (!redirecting) {
                 resetBtn.disabled = false;
                 resetBtn.textContent = original;
             }

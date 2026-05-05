@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import threading
@@ -23,6 +24,7 @@ from ario_mlflow.verify import ArioVerifyClient
 from app.model import load_model, predict, train_and_register_with_params, FEATURE_NAMES
 from app.ui import router as ui_router
 from app import tamper as tamper_mod
+from app.reset import reset_demo_state
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -704,7 +706,34 @@ def get_lifecycle_event(request: Request, event_id: str):
 # Tamper routes mutate live MLflow state and are intended for the
 # public demo only. They register only when ``demo_mode`` is True
 # (the default; override with VAIDR_DEMO_MODE=false in production).
+#
+# Module-level lock so two concurrent /demo/reset requests don't race
+# on the wipe + re-init. Other endpoints intentionally don't check this
+# lock — accept that requests during the ~5-10s reset window may briefly
+# see inconsistent state.
+_RESET_LOCK = asyncio.Lock()
+
 if get_settings().demo_mode:
+
+    @app.post("/demo/reset")
+    async def demo_reset_route(request: Request):
+        """Wipe all seeded demo data and re-train a fresh v1.
+
+        Sales / pre-sales workflow: pre-seed the demo before a customer
+        call, then wipe afterward so the next call starts clean. Anchored
+        proofs already on Arweave are not affected (they remain permanent
+        on the network).
+        """
+        async with _RESET_LOCK:
+            try:
+                # reset_demo_state is synchronous and CPU/IO-bound (model
+                # auto-train + filesystem wipes). Run in a thread so the
+                # event loop doesn't stall while v1 trains.
+                new_version = await asyncio.to_thread(reset_demo_state, request.app)
+            except Exception as e:  # noqa: BLE001
+                logger.exception("Demo reset failed")
+                return JSONResponse({"error": str(e)}, status_code=500)
+            return {"reset": True, "new_version": new_version}
 
     @app.post("/tamper/saved/{event_type}/{event_id}")
     def tamper_saved_route(request: Request, event_type: str, event_id: str,

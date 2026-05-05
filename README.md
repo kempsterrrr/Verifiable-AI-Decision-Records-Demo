@@ -226,6 +226,11 @@ Environment variables (prefix: `VAIDR_`):
 | `VAIDR_ARIO_VERIFY_URL` | `https://vilenarios.com/local/verify` | ar.io Verify service URL |
 | `VAIDR_RECORDS_FILE` | `data/records.json` | Local record storage path |
 | `VAIDR_LIFECYCLE_FILE` | `data/lifecycle.json` | Lifecycle record storage path |
+| `VAIDR_DEMO_MODE` | `true` | Register `/demo/*` and `/tamper/*` routes; set `false` in production |
+
+### Demo administration (sales workflow)
+
+Sales / pre-sales users can pre-seed the demo with example data before a customer call, then wipe everything afterward so the next call starts clean. Open `/demo/admin` to access the reset page. Resetting wipes all decisions, training runs, and model versions; a fresh v1 is auto-trained on the next request. Anchored proofs on Arweave are not deleted (they remain permanent on the network). The `/demo/admin` page and `/demo/reset` endpoint are only registered when `VAIDR_DEMO_MODE=true` (the default for the public demo on Railway). Production deployments should set `VAIDR_DEMO_MODE=false` to disable.
 
 ---
 

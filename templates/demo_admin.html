@@ -198,14 +198,21 @@
         }
     });
 
+    let resetInFlight = false;
     confirmBtn.addEventListener('click', async () => {
+        if (resetInFlight) return;
+        resetInFlight = true;
+        confirmBtn.disabled = true;
+        cancelBtn.disabled = true;
         closeModal();
         resetBtn.disabled = true;
         const original = resetBtn.textContent;
         resetBtn.textContent = 'Resetting…';
         let redirecting = false;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
         try {
-            const r = await fetch('/demo/reset', { method: 'POST' });
+            const r = await fetch('/demo/reset', { method: 'POST', signal: controller.signal });
             let data = {};
             try { data = await r.json(); } catch (_) { /* non-JSON body */ }
             if (r.ok && data.reset) {
@@ -215,9 +222,17 @@
             }
             showError(data.error ? `Reset failed: ${data.error}` : 'Reset failed. Check server logs.');
         } catch (e) {
-            showError(`Reset failed: ${e.message || e}`);
+            if (e.name === 'AbortError') {
+                showError('Reset timed out. Please try again.');
+            } else {
+                showError(`Reset failed: ${e.message || e}`);
+            }
         } finally {
+            clearTimeout(timeoutId);
+            resetInFlight = false;
             if (!redirecting) {
+                confirmBtn.disabled = false;
+                cancelBtn.disabled = false;
                 resetBtn.disabled = false;
                 resetBtn.textContent = original;
             }

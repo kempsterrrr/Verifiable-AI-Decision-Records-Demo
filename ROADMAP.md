@@ -4,14 +4,19 @@ This document tracks what we're building next and what we've explicitly parked. 
 
 ## Where we are today
 
-The `ario-mlflow` plugin and the Railway-hosted demo are an **early-stage proof of a verifiable-provenance pipeline** — not a production compliance product. Core primitives (hash, sign, anchor to Arweave via ar.io, verify) are in place and end-to-end working. The plugin installs, the demo runs, all 33 smoke tests pass.
+The repo contains two parts: **`ario_mlflow/`** is the product (a standalone MLflow plugin), and **`app/`** is a sales-facing demo of what the plugin enables.
 
-The goal of the current phase was *not* to build more features. It was to:
+We're at an **early-stage proof of a verifiable-provenance pipeline** — not yet a production compliance product. Core primitives (hash, sign, anchor to Arweave via ar.io, verify) are in place and end-to-end working. The plugin installs cleanly, the demo runs on Railway with proper persistence, and 104 tests pass.
 
-- **Goal A — Make the plugin usable.** Zero-config spin-up, clear errors, honest status when things go wrong, a README that pip-installed users actually see.
-- **Goal B — Make the demo speak broadly.** Replace Iris with a relatable credit-decision scenario. Honest copy about what each verification level actually proves. One doorway for each of four plausible audiences.
+Recent work:
 
-Both goals landed on branch `phase3/harden-plugin-broaden-demo`. What follows is what we chose not to build yet, grouped by theme.
+- **Plugin redesign — Phase 1** (PR #7, merged 2026-04-28): pure-commitment ~500-byte envelopes, canonical bytes preserved as `ario/payload.json` in MLflow, four-check verification flow, RFC-8785 (JCS) canonicalization, conservative Arweave tag policy. The plugin's three integration points (`anchor()`, `ArioMlflowClient`, `VerifiedModel`) are stable.
+- **Demo migration to plugin's headline API** (PR #8, merged 2026-04-30): the demo dropped its hand-rolled lifecycle/decision/verify code and now wraps the plugin as a thin presentation layer. The demo is no longer ahead of or duplicating plugin behavior.
+- **Demo UX polish** (PR #9, merged 2026-05-05): three-row verification cards, tamper backend with snapshot/TTL/auto-revert, split proof viewer, ar.io vocabulary sweep across UI + CLI + docs.
+- **Reset feature for sales workflow** (PR #10, merged 2026-05-05): one-click `/demo/admin` page that wipes all demo state and auto-trains a fresh v1.
+- **Production persistence config** (2026-05-05): Railway volume at `/app/persistent` covers all demo state; `VAIDR_*` env vars route every path there. See `docs/deployment.md`.
+
+Active work in `docs/plans/active/`. What follows is what we chose not to build yet, grouped by theme.
 
 ## Near-term focus
 
@@ -19,7 +24,7 @@ When we come back to this project, the highest-leverage next moves are:
 
 1. **Receipts vs. attestation as a two-stage verify UX** *(fast follow after Phase 1 lands)* — the plugin currently treats ar.io Verify as a pass/fail check, but the underlying reality is two separate things: (a) the **Turbo receipt** comes back synchronously at anchor time and proves the upload was received; (b) the **ar.io Verify attestation level** matures asynchronously over hours/days as the network settles and gateways pick it up. The verify UX should surface both: receipt as a synchronous "did it land" check, attestation level as an explicit maturity gradient (Level 1 → 2 → 3) with appropriate context. Phase 1 ships a configurable threshold (default Level 2) as an interim — this is the cleaner refactor that follows.
 2. **Input-side anchoring** — include dataset hash, source-code SHA, and container digest in the training proof. This closes the biggest honesty gap in the current offering ("we hash the model output, not the training inputs").
-3. **External identity binding** — sign with something linkable to a real organization, not an auto-generated key at `~/.ario-mlflow/keys/`. Even a registered-public-keys directory is a step up. *Fast-follow opportunity after Phase 3:* a "trusted issuer key" check (~10–20 lines in `app/ui.py::_verify_envelope`) that compares the proof's embedded `public_key` against an env-configured expected key. This unlocks a third tamper button in the demo — *"Use a proof signed by someone else"* — that demonstrates catching forged-proof attacks where an attacker signs with their own key. Today the verifier accepts any mathematically valid signature; this v0 of identity binding rejects keys outside a configured allowlist. Originally scoped for Phase 3, deferred to keep that PR tight.
+3. **External identity binding** — sign with something linkable to a real organization, not an auto-generated key at `~/.ario-mlflow/keys/`. Even a registered-public-keys directory is a step up. **In-flight as Piece C of the active plan** at `docs/plans/active/2026-05-05-verification-correctness-piece-b-c.md`: trusted-issuer-key check threaded through the plugin's `verify_signature`, with a CLI flag, demo env var, and a third tamper button — *"Use a proof signed by someone else"* — that demonstrates the check catching forged proofs. Single-key for v1; multi-key trusted lists are a follow-up.
 4. **Continuous verification** — a background job that re-checks every anchored proof on a cadence and alerts when attestation doesn't land. Today "anchored" can silently mean "we called an API that may or may not have worked three weeks ago."
 
 Each of these would be its own branch + plan. The plugin's current API surface doesn't need to change to accommodate any of them.
@@ -69,7 +74,6 @@ Grouped by theme. Each item notes which audience (see *Audiences* below) it most
 
 | Item | What | Why | Serves |
 |---|---|---|---|
-| Demo persistence | Use a Railway volume or small Postgres so `data/records.json` survives restarts | Today every Railway dyno restart wipes the records table. Fine for the core "this works" demo, bad for anyone returning to a URL they bookmarked. | All |
 | MLflow UI mount alongside FastAPI on Railway | A reverse-proxied MLflow UI on the same Railway service at `/mlflow/*` so technical evaluators see the native MLflow UI | The current implementation shows the live MLflow tags on the run detail page, which covers the "prove it's not a facade" signal. Running an actual MLflow server alongside uvicorn is a separate infra lift (subprocess management, `--static-prefix`, proxying). | P1, P4 |
 
 ## Audiences
@@ -107,5 +111,8 @@ Archive section is below — empty for now.
 
 ## Archive
 
+### Demo persistence — done 2026-05-05
+Originally listed as "use a Railway volume or small Postgres so `data/records.json` survives restarts." Solved by: Railway volume `verifiable-ai-demo-volume` mounted at `/app/persistent`; all `VAIDR_*` path env vars route demo state (mlruns, records, lifecycle, keys) to the volume; `/demo/admin` Reset button wipes on demand for the sales workflow. See `docs/deployment.md`.
+
 ### Vocabulary pass — done 2026-04-22
-"Chain of custody" is replaced by "Model lineage" (primary) with "audit trail" as a secondary phrase for GRC-leaning readers. Decision was informed by a short desk audit of ML (MLflow, W&B, Databricks, ClearML), GRC (Vanta, Drata, OneTrust), audit (Splunk, Datadog, CloudTrail), and AI-governance (Brundage et al., METR, Apollo) vocabulary: no surveyed tool uses "chain of custody" as a primary label; "lineage" dominates the ML world and "audit trail" is the cross-audience workhorse. See branch `phase3/harden-plugin-broaden-demo`.
+"Chain of custody" replaced by "Model lineage" (primary) with "audit trail" as a secondary phrase for GRC-leaning readers. Informed by a desk audit of ML (MLflow, W&B, Databricks, ClearML), GRC (Vanta, Drata, OneTrust), audit (Splunk, Datadog, CloudTrail), and AI-governance (Brundage et al., METR, Apollo) vocabulary: no surveyed tool uses "chain of custody" as a primary label; "lineage" dominates ML, "audit trail" is the cross-audience workhorse.

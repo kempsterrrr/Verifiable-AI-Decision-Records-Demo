@@ -227,18 +227,15 @@
                     Independent verification of MLflow data integrity. These verify this decision record matches the original proof anchored with ar.io at runtime — they do <strong>not</strong> speak to whether the decision itself was correct.
                   </div>
 
-                  <div class="verify-row" title="The proof exists on Arweave and ar.io can locate it. FAIL means the on-chain anchor is missing or unreachable.">
+                  <div class="verify-row" title="The proof envelope was successfully retrieved from Arweave at its anchored TX. FAIL means the on-chain proof is missing or unreachable.">
                     <span>Proof Found</span>
                     {% if v %}
-                      {% if v.permanent_copy_found is sameas true %}
+                      {% if v.proof_found is sameas true %}
                         <span class="check">PASS</span>
-                      {% elif envelope.arweave_tx_id and v.signature_valid is none and v.hash_match is none %}
-                        {# Verifier hasn't run yet (no fetch attempted). #}
-                        <span class="badge badge-yellow">Pending</span>
-                      {% elif envelope.arweave_tx_id %}
-                        <span class="check">PASS</span>
+                      {% elif v.proof_found is sameas false %}
+                        <span class="cross">FAIL</span>
                       {% else %}
-                        <span class="unchecked">Not checked</span>
+                        <span class="badge badge-yellow">Pending</span>
                       {% endif %}
                     {% else %}
                       <span class="unchecked">Not checked</span>

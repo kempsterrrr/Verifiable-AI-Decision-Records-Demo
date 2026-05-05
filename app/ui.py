@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from app.config import get_settings
 from ario_mlflow.proof import canonical_json, hash_data
 from ario_mlflow.verify import full_verify as _plugin_full_verify
 
@@ -18,10 +19,14 @@ templates = Jinja2Templates(directory="templates")
 
 def _common_context(app):
     """Shared template context for all pages (status bar, model info)."""
+    settings = app.state.settings
     return {
         "model_info": app.state.model_info,
         "arweave_enabled": app.state.anchor.enabled if app.state.anchor else False,
         "ario_verify_enabled": app.state.ario_verify.enabled if app.state.ario_verify else False,
+        # Surfaced so base.html can conditionally render the demo-admin
+        # nav link and so other templates can gate demo-only UI.
+        "demo_mode": settings.demo_mode,
     }
 
 
@@ -577,3 +582,19 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
             "signed_commitment_json": signed_commitment_json,
         },
     )
+
+
+# Demo administration page — sales / pre-sales workflow only. Registers
+# only when ``demo_mode`` is True (the default; override with
+# VAIDR_DEMO_MODE=false in production). The page hosts the "Reset demo
+# data" button which calls ``POST /demo/reset`` (see ``app/main.py``).
+if get_settings().demo_mode:
+
+    @router.get("/demo/admin", response_class=HTMLResponse)
+    def demo_admin(request: Request):
+        app = request.app
+        return templates.TemplateResponse(
+            request,
+            "demo_admin.html",
+            _common_context(app),
+        )

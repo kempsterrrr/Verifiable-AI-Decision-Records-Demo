@@ -100,6 +100,19 @@
         }
         .topbar-nav a:hover { color: var(--black); text-decoration: none; }
         .topbar-nav a.active { color: var(--black); font-weight: 600; }
+        /* Demo-mode admin link — visible to sales but visually low-key
+           so it doesn't compete with the primary nav items. */
+        .topbar-nav a.topbar-nav-admin {
+            font-size: 0.72rem;
+            font-weight: 500;
+            color: var(--muted);
+            opacity: 0.7;
+            margin-left: 0.5rem;
+            padding: 0.15rem 0.45rem;
+            border: 1px solid var(--border);
+            border-radius: 3px;
+        }
+        .topbar-nav a.topbar-nav-admin:hover { opacity: 1; color: var(--black); }
 
         /* ── Main content ── */
         .main { padding: 2rem; max-width: {% block max_width %}1400px{% endblock %}; margin: 0 auto; }
@@ -493,6 +506,9 @@
                 <a href="/ui/decisions" class="{% block nav_decisions %}{% endblock %}">Decisions</a>
                 <a href="{% block lineage_url %}/{% endblock %}" class="{% block nav_lineage %}{% endblock %}">Model Lineage</a>
                 <a href="/ui/who-this-is-for" class="{% block nav_wtif %}{% endblock %}">Who this is for</a>
+                {% if demo_mode %}
+                <a href="/demo/admin" class="topbar-nav-admin {% block nav_admin %}{% endblock %}" title="Sales / pre-sales: reset demo data">admin</a>
+                {% endif %}
             </div>
         </div>
         <div class="topbar-right">

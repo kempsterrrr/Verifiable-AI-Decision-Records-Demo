@@ -1,0 +1,227 @@
+{% extends "base.html" %}
+
+{% block title %}Demo administration — Verifiable AI{% endblock %}
+
+{% block max_width %}780px{% endblock %}
+
+{% block nav_admin %}active{% endblock %}
+
+{% block styles %}
+    .admin-intro {
+        font-size: 0.95rem;
+        color: var(--muted);
+        line-height: 1.65;
+        margin-bottom: 2rem;
+        max-width: 640px;
+    }
+    .admin-card {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 1.75rem;
+        background: var(--white);
+    }
+    .admin-card h2 {
+        font-family: 'Besley', serif;
+        font-weight: 800;
+        font-size: 1.1rem;
+        color: var(--black);
+        margin-bottom: 0.4rem;
+    }
+    .admin-card-desc {
+        font-size: 0.86rem;
+        color: var(--muted);
+        line-height: 1.6;
+        margin-bottom: 1.25rem;
+    }
+    .btn-destructive {
+        background: var(--red);
+        color: var(--white);
+        border: none;
+        padding: 0.7rem 1.4rem;
+        font-size: 0.9rem;
+        font-weight: 700;
+        font-family: 'Plus Jakarta Sans', sans-serif;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: background 0.15s;
+    }
+    .btn-destructive:hover { background: #b51724; }
+    .btn-destructive:disabled { opacity: 0.6; cursor: not-allowed; }
+    .reset-error {
+        margin-top: 0.85rem;
+        padding: 0.6rem 0.85rem;
+        background: var(--red-bg);
+        color: var(--red);
+        border-radius: 4px;
+        font-size: 0.82rem;
+        display: none;
+    }
+    .reset-error.visible { display: block; }
+
+    /* Confirmation modal */
+    .modal-backdrop {
+        display: none;
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(35, 35, 45, 0.55);
+        z-index: 100;
+        align-items: center;
+        justify-content: center;
+        padding: 1rem;
+    }
+    .modal-backdrop.visible { display: flex; }
+    .modal {
+        background: var(--white);
+        border-radius: 10px;
+        max-width: 480px;
+        width: 100%;
+        padding: 1.5rem;
+        box-shadow: 0 14px 32px rgba(0, 0, 0, 0.18);
+    }
+    .modal h3 {
+        font-family: 'Besley', serif;
+        font-weight: 800;
+        font-size: 1.05rem;
+        margin-bottom: 0.6rem;
+    }
+    .modal p {
+        font-size: 0.88rem;
+        color: var(--black);
+        line-height: 1.6;
+        margin-bottom: 1.25rem;
+    }
+    .modal-actions {
+        display: flex;
+        gap: 0.6rem;
+        justify-content: flex-end;
+    }
+    .btn-cancel {
+        background: var(--surface);
+        color: var(--black);
+        border: 1px solid var(--border);
+        padding: 0.55rem 1.1rem;
+        font-size: 0.85rem;
+        font-weight: 600;
+        font-family: 'Plus Jakarta Sans', sans-serif;
+        border-radius: 6px;
+        cursor: pointer;
+    }
+    .btn-cancel:hover { background: var(--border); }
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>Demo administration</h1>
+        <p>Sales / pre-sales workflow.</p>
+    </div>
+</div>
+
+<p class="admin-intro">
+    This page is for sales / pre-sales use. Reset wipes all seeded
+    decisions, training runs, and model versions, then auto-trains a
+    fresh v1. Anchored proofs on Arweave are not affected (they remain
+    permanent on the network).
+</p>
+
+<div class="admin-card">
+    <h2>Reset demo data</h2>
+    <p class="admin-card-desc">
+        Use this between customer calls so the next session starts
+        from a clean v1. Takes ~5–10 seconds while the new model
+        trains.
+    </p>
+    <button id="reset-btn" class="btn-destructive" type="button">
+        Reset demo data
+    </button>
+    <div id="reset-error" class="reset-error"></div>
+</div>
+
+<div id="confirm-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <div class="modal">
+        <h3 id="confirm-title">Reset demo data?</h3>
+        <p>
+            This will delete all decisions, training runs, and model
+            versions. A fresh v1 will be auto-trained. Anchored proofs
+            on Arweave are not affected. Continue?
+        </p>
+        <div class="modal-actions">
+            <button id="cancel-btn" class="btn-cancel" type="button">Cancel</button>
+            <button id="confirm-btn" class="btn-destructive" type="button">Reset</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    const resetBtn = document.getElementById('reset-btn');
+    const errorEl = document.getElementById('reset-error');
+    const modal = document.getElementById('confirm-modal');
+    const cancelBtn = document.getElementById('cancel-btn');
+    const confirmBtn = document.getElementById('confirm-btn');
+
+    function openModal() {
+        modal.classList.add('visible');
+        cancelBtn.focus();
+    }
+    function closeModal() {
+        modal.classList.remove('visible');
+        resetBtn.focus();
+    }
+    function showError(msg) {
+        errorEl.textContent = msg;
+        errorEl.classList.add('visible');
+    }
+    function clearError() {
+        errorEl.textContent = '';
+        errorEl.classList.remove('visible');
+    }
+
+    resetBtn.addEventListener('click', () => {
+        clearError();
+        openModal();
+    });
+
+    cancelBtn.addEventListener('click', closeModal);
+
+    // Close modal on backdrop click (but not inner clicks).
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeModal();
+    });
+
+    // Close modal on Escape.
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && modal.classList.contains('visible')) {
+            closeModal();
+        }
+    });
+
+    confirmBtn.addEventListener('click', async () => {
+        closeModal();
+        resetBtn.disabled = true;
+        const original = resetBtn.textContent;
+        resetBtn.textContent = 'Resetting…';
+        try {
+            const r = await fetch('/demo/reset', { method: 'POST' });
+            let data = {};
+            try { data = await r.json(); } catch (_) { /* non-JSON body */ }
+            if (r.ok && data.reset) {
+                window.location.href = '/';
+                return;
+            }
+            showError(data.error ? `Reset failed: ${data.error}` : 'Reset failed. Check server logs.');
+        } catch (e) {
+            showError(`Reset failed: ${e.message || e}`);
+        } finally {
+            // Only re-enable if we didn't redirect.
+            if (!window.location.href.endsWith('/')) {
+                resetBtn.disabled = false;
+                resetBtn.textContent = original;
+            }
+        }
+    });
+})();
+</script>
+{% endblock %}

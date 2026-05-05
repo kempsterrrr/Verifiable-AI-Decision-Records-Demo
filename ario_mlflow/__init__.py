@@ -15,6 +15,15 @@ Public API:
   :func:`full_verify` — the four-check verification helpers. Re-exported
   here so consumers can import them without spelunking
   ``ario_mlflow.verify``.
+- :func:`verify_record` — auditor-shaped foundation primitive. Given an
+  envelope plus its canonical bytes, runs signature + payload-hash
+  match + optional ar.io attestation. No MLflow access required —
+  what an auditor uses against a portable bundle.
+- :func:`verify_proof_by_tx` — operator-side wrapper. Fetches the
+  envelope from Arweave by TX, then runs all four checks (composing
+  ``verify_record`` with the live MLflow source-of-truth check). Adds
+  ``proof_found`` so callers can distinguish "envelope retrieved" from
+  "envelope was missing."
 - :class:`ArioVerifyClient` — ar.io Verify REST client.
 """
 
@@ -38,6 +47,8 @@ def __getattr__(name):
         "verify_source_of_truth",
         "verify_ario_attestation",
         "full_verify",
+        "verify_record",
+        "verify_proof_by_tx",
         "ArioVerifyClient",
     ):
         from ario_mlflow import verify as _verify
@@ -55,5 +66,7 @@ __all__ = [
     "verify_source_of_truth",
     "verify_ario_attestation",
     "full_verify",
+    "verify_record",
+    "verify_proof_by_tx",
     "ArioVerifyClient",
 ]

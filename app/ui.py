@@ -9,7 +9,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import get_settings
 from ario_mlflow.proof import canonical_json, hash_data
-from ario_mlflow.verify import full_verify as _plugin_full_verify
+from ario_mlflow.verify import verify_proof_by_tx as _plugin_verify_proof_by_tx
 
 logger = logging.getLogger(__name__)
 
@@ -58,35 +58,33 @@ def _is_fully_verified(verification: dict | None) -> bool:
 
 
 def _verify_envelope(app, envelope):
-    """Verify via the plugin's full_verify against the pure-commitment
-    envelope on Arweave.
+    """Verify via the plugin's ``verify_proof_by_tx`` against the
+    pure-commitment envelope on Arweave.
 
     The lifecycle_store / RecordStore envelope (passed in) is the demo's
     local display cache; the actual proof being verified is the plugin's
     pure-commitment envelope on Arweave at ``envelope["arweave_tx_id"]``.
-    This helper:
 
-    1. Fetches the plugin envelope from Arweave by TX.
-    2. Runs ``ario_mlflow.verify.full_verify`` on it (signature +
-       anchored bytes from MLflow + live MLflow re-derivation +
-       ar.io Verify attestation).
-    3. Maps the four-check result to legacy field names so existing
-       templates keep working, plus surfaces the plugin's
-       ``source_of_truth`` and ``overall`` verdicts directly so the UI
-       can render the live-MLflow-re-derivation check (the demo's
-       headline tamper-detection signal) and treat predictions
-       (which have no re-derivable source) distinctly from
-       training/registration.
+    ``verify_proof_by_tx`` collapses the previous fetch + full_verify
+    pair into one call and returns ``proof_found`` so the demo's
+    "Proof Found" UI row can distinguish "envelope retrieved from
+    Arweave" from "envelope was missing" — what that row is supposed
+    to express.
 
-    Pending semantics: if the TX is set but Arweave hasn't returned the
-    envelope yet, every check field is ``None`` — templates show
-    "Not checked"/"Pending", not "FAIL". A ``False`` value in this
-    dict only ever means "the check ran and failed".
+    Pending vs failure semantics:
+    - No ``arweave_tx_id`` → ``proof_found=None`` (anchoring may still
+      be in progress); other check fields stay at their defaults.
+    - TX set but gateway returns no envelope → ``proof_found=False``
+      and other checks remain ``None`` (the plugin doesn't run them
+      when the fetch fails).
+    - TX set and gateway returns the envelope → ``proof_found=True``
+      and all four checks run.
     """
     # Default skeleton — None means "not yet checked" (pending). A
     # False value only appears once a check has actually run and
     # returned a negative result.
     result = {
+        "proof_found": None,
         "signature_valid": None,
         "permanent_copy_found": False,
         "hash_match": None,
@@ -104,32 +102,26 @@ def _verify_envelope(app, envelope):
     if not tx_id:
         return result
 
-    plugin_envelope = app.state.anchor.fetch_proof(tx_id)
-    if not plugin_envelope:
-        # Pending: TX exists but the gateway hasn't indexed it yet, or
-        # a transient fetch error. Leave check fields as None so the
-        # UI shows "Pending", not "FAIL".
-        return result
-
-    # Inject TX so verify_ario_attestation can call ar.io Verify.
-    plugin_envelope["_tx_id"] = tx_id
-
-    # Plugin's full_verify needs the demo's MlflowClient for check 2
-    # (download payload.json) and check 3 (re-derive from live state).
     settings = app.state.settings
     mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
     mlflow_client = mlflow.tracking.MlflowClient()
 
-    full_result = _plugin_full_verify(
-        plugin_envelope,
+    full_result = _plugin_verify_proof_by_tx(
+        tx_id,
+        anchor=app.state.anchor,
         proof_engine=app.state.proof_engine,
         mlflow_client=mlflow_client,
         ario_client=app.state.ario_verify,
     )
 
+    result["proof_found"] = full_result.get("proof_found")
+    result["plugin_full_verify"] = full_result
+
     # Map the four-check structure to legacy field names + surface the
     # source_of_truth and overall verdicts the templates need to render
-    # the headline tamper-detection lesson honestly.
+    # the headline tamper-detection lesson honestly. When proof_found
+    # is False, every sub-check returns ok=None and these mappings just
+    # propagate the pending state.
     sig = full_result.get("signature", {}) or {}
     anchored = full_result.get("anchored_bytes", {}) or {}
     sot = full_result.get("source_of_truth", {}) or {}
@@ -150,7 +142,6 @@ def _verify_envelope(app, envelope):
     result["report_url"] = ario.get("report_url")
     result["attested_by"] = ario.get("attested_by")
     result["attested_at"] = ario.get("attested_at")
-    result["plugin_full_verify"] = full_result
 
     return result
 

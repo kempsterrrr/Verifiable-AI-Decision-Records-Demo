@@ -2,6 +2,15 @@
 
 Tamper-evident verifiable record for the full MLflow lifecycle, anchored to ar.io.
 
+## What's in this repo
+
+This repository contains two parts:
+
+- **`ario_mlflow/`** — the **product**. A standalone MLflow plugin that anchors training, registration, and inference events to ar.io / Arweave. Any MLflow user can adopt it with `pip install -e .` (and eventually `pip install ario-mlflow`). See [Plugin section](#mlflow-plugin-ario-mlflow) below or `ario_mlflow/README.md` for usage.
+- **`app/`** — a **sales-facing demonstration**. A FastAPI + Jinja2 web app that uses the plugin to make the verification flow tangible. Hosted on Railway at [verifiable-ai-demo-production.up.railway.app](https://verifiable-ai-demo-production.up.railway.app). The demo is not the product — it's a working showcase used by sales / pre-sales.
+
+For deeper context: [`docs/architecture.md`](docs/architecture.md) covers the system design; [`docs/deployment.md`](docs/deployment.md) covers the demo's production deployment; [`ROADMAP.md`](ROADMAP.md) tracks what's next.
+
 ## What This Demonstrates
 
 This project provides **verifiable provenance for the entire ML lifecycle** — from training through to production predictions. Every lifecycle event creates a signed proof record anchored to ar.io:
@@ -175,6 +184,10 @@ The three core checks apply uniformly to predictions, training, and registration
 
 The detail and lineage pages expose tamper buttons paired to the real checks — modify the proof envelope, overwrite `ario/payload.json` in MLflow, mutate MLflow params/metrics, swap in a fake TX ID. Each tamper triggers exactly one row to fail, teaching what that row actually proves.
 
+### 7. Reset for the next session
+
+Sales / pre-sales workflow: pre-seed the demo with example data before a customer call, then wipe everything afterward so the next session starts clean. Open `/demo/admin` to access the reset page. Anchored proofs on Arweave aren't deleted — they remain permanent on the network.
+
 ## Pages
 
 | Page | URL | Description |
@@ -231,6 +244,10 @@ Environment variables (prefix: `VAIDR_`):
 ### Demo administration (sales workflow)
 
 Sales / pre-sales users can pre-seed the demo with example data before a customer call, then wipe everything afterward so the next call starts clean. Open `/demo/admin` to access the reset page. Resetting wipes all decisions, training runs, and model versions; a fresh v1 is auto-trained on the next request. Anchored proofs on Arweave are not deleted (they remain permanent on the network). The `/demo/admin` page and `/demo/reset` endpoint are only registered when `VAIDR_DEMO_MODE=true` (the default for the public demo on Railway). Production deployments should set `VAIDR_DEMO_MODE=false` to disable.
+
+### Production deployment
+
+The demo is deployed on Railway with a mounted volume at `/app/persistent`. All path-based `VAIDR_*` env vars must point under that path, otherwise data lives on the ephemeral container filesystem and gets wiped on every deploy. See [`docs/deployment.md`](docs/deployment.md) for the full env-var configuration and operational guidance.
 
 ---
 

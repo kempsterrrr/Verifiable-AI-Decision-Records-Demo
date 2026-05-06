@@ -367,12 +367,12 @@
             <div class="tamper-header-inner">
               <span class="tamper-summary-icon"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1 L7 5 L3 9" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
               <span class="tamper-summary-title">Click to tamper</span>
-              <span class="tamper-summary-hint">simulate two attacks</span>
+              <span class="tamper-summary-hint">simulate three attacks</span>
             </div>
           </summary>
           <div class="tamper-body">
             <div class="tamper-intro">
-              Two ways someone could try to alter this training run after the fact — both hit MLflow data, both get caught by the same verification check. Click to see how. Tampers auto-reverse after a short window, or click <em>Reset all</em>.
+              Three ways someone could try to alter this training run after the fact — all hit MLflow data, all get caught by the same verification check. Click to see how. Tampers auto-reverse after a short window, or click the matching Reset button.
             </div>
             <div class="tamper-row">
               <div class="tamper-row-info">
@@ -389,11 +389,21 @@
               </div>
               <button class="btn-tamper" data-tamper-kind="live" data-event-type="training" data-event-id="{{ envelope.record.run_id }}">Tamper</button>
             </div>
+            {% if envelope.record.get('dataset_inputs') %}
+            <div class="tamper-row">
+              <div class="tamper-row-info">
+                <div class="tamper-row-title"><span class="num">3</span>Tamper with the dataset metadata</div>
+                <div class="tamper-row-desc">Mutate the recorded dataset's digest in MLflow's dataset registry — for example, claim a different fingerprint for the same training data. <em style="font-family: 'JetBrains Mono', monospace; color: var(--muted); font-style: normal;">Overwrites the <code>digest</code> in the dataset's <code>meta.yaml</code>.</em> <strong>Breaks → Training Record Matches</strong> (training's signed payload inlines the dataset's identity, so the chain catches the change).</div>
+              </div>
+              <button class="btn-tamper" data-tamper-kind="live" data-event-type="dataset" data-event-id="{{ envelope.record.run_id }}">Tamper</button>
+            </div>
+            {% endif %}
             <div class="tamper-footer">
-              <div style="font-size: 0.74rem; color: var(--muted); line-height: 1.45; font-style: italic;">Both tampers hit different surfaces but the system catches each one — data tampering anywhere in MLflow shows up as the same broken check.</div>
-              <div style="display: flex; align-items: center; padding-top: 0.45rem; border-top: 1px solid var(--border);">
-                <span class="tamper-footer-text">Tampers auto-reverse after a short window. Reset clears all.</span>
-                <button class="btn-reset" data-event-type="training" data-event-id="{{ envelope.record.run_id }}">Reset all</button>
+              <div style="font-size: 0.74rem; color: var(--muted); line-height: 1.45; font-style: italic;">Each tamper hits a different surface but the system catches each one — data tampering anywhere in MLflow shows up as the same broken check.</div>
+              <div style="display: flex; align-items: center; gap: 0.4rem; padding-top: 0.45rem; border-top: 1px solid var(--border); flex-wrap: wrap;">
+                <span class="tamper-footer-text">Tampers auto-reverse after a short window. Reset clears each.</span>
+                <button class="btn-reset" data-event-type="training" data-event-id="{{ envelope.record.run_id }}">Reset training</button>
+                {% if envelope.record.get('dataset_inputs') %}<button class="btn-reset" data-event-type="dataset" data-event-id="{{ envelope.record.run_id }}">Reset dataset</button>{% endif %}
               </div>
             </div>
           </div>

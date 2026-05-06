@@ -370,6 +370,55 @@ def test_tamper_live_training_breaks_source_of_truth_check(client):
     )
 
 
+def test_tamper_dataset_metadata_breaks_training_source_of_truth(client):
+    """Audit / standalone-dataset-anchoring Piece C: the
+    "Tamper with the dataset metadata" button mutates the dataset's
+    digest in MLflow's dataset registry (mlruns/<exp>/datasets/<id>/
+    meta.yaml). Training's source-of-truth re-derives dataset_inputs
+    from MLflow at verify time, so a mutated digest makes the rebuilt
+    canonical bytes diverge from what was anchored — training's
+    Record Matches row flips PASS→FAIL.
+    """
+    import mlflow
+    from app.tamper import tamper_live
+    from ario_mlflow.verify import verify_source_of_truth
+
+    app = client.app
+    settings = app.state.settings
+    mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+    mlflow_client = mlflow.tracking.MlflowClient()
+
+    training, run_id = _wait_for_training_run(app)
+    canonical_bytes = _wait_for_artifact(mlflow_client, run_id, "ario/payload.json")
+
+    envelope = {
+        "event_type": "training_complete",
+        "subject": {"type": "mlflow_run", "run_id": run_id},
+    }
+
+    # BEFORE tamper: SoT passes (training's inlined dataset_inputs
+    # match what's in MLflow's dataset registry).
+    before = verify_source_of_truth(envelope, canonical_bytes, mlflow_client)
+    assert before["ok"] is True, f"baseline should pass: {before}"
+
+    # Apply dataset-metadata tamper directly (avoids the FastAPI route's
+    # auto-revert race, same pattern as the other regression tests).
+    tamper_live(
+        event_type="dataset", event_id=run_id,
+        lifecycle_store=app.state.lifecycle_store,
+        record_store=app.state.store,
+        tracking_uri=settings.mlflow_tracking_uri,
+    )
+
+    # AFTER tamper: rebuilt dataset_inputs has a different digest;
+    # canonical bytes diverge; SoT must FAIL.
+    after = verify_source_of_truth(envelope, canonical_bytes, mlflow_client)
+    assert after["ok"] is False, (
+        "tamper_live(event_type='dataset') did not flip training's "
+        f"source_of_truth; got {after}"
+    )
+
+
 def test_swap_artifact_tamper_breaks_registration_source_of_truth(client):
     """Regression test for the swap-deployed-model-artifact tamper.
 

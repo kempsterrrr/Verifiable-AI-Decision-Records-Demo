@@ -767,7 +767,7 @@ if get_settings().demo_mode:
     @app.post("/tamper/saved/{event_type}/{event_id}")
     def tamper_saved_route(request: Request, event_type: str, event_id: str,
                            background_tasks: BackgroundTasks):
-        if event_type not in ("decision", "training", "registration"):
+        if event_type not in ("decision", "training", "registration", "dataset"):
             return JSONResponse({"error": "unknown event_type"}, status_code=400)
         settings = request.app.state.settings
         try:
@@ -786,7 +786,7 @@ if get_settings().demo_mode:
     @app.post("/tamper/live/{event_type}/{event_id}")
     def tamper_live_route(request: Request, event_type: str, event_id: str,
                           background_tasks: BackgroundTasks):
-        if event_type not in ("decision", "training", "registration"):
+        if event_type not in ("decision", "training", "registration", "dataset"):
             return JSONResponse({"error": "unknown event_type"}, status_code=400)
         settings = request.app.state.settings
         try:
@@ -804,7 +804,7 @@ if get_settings().demo_mode:
 
     @app.post("/tamper/reset/{event_type}/{event_id}")
     def tamper_reset_route(request: Request, event_type: str, event_id: str):
-        if event_type not in ("decision", "training", "registration"):
+        if event_type not in ("decision", "training", "registration", "dataset"):
             return JSONResponse({"error": "unknown event_type"}, status_code=400)
         settings = request.app.state.settings
         reverted = tamper_mod.reset(

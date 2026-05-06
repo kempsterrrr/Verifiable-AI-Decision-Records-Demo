@@ -265,6 +265,82 @@ def tamper_live(event_type, event_id, *, lifecycle_store, record_store, tracking
                 live_field_name=f"artifact_swap_path:{model_pkl_path}",
                 saved_artifact_bytes=original_bytes,
             )
+
+        elif event_type == "dataset":
+            # Dataset-metadata tamper: mutate the digest field in
+            # MLflow's dataset registry entry
+            # (mlruns/<exp>/datasets/<dataset_id>/meta.yaml). Training's
+            # source-of-truth re-derives dataset_inputs from this file at
+            # verify time, so a digest change makes the rebuilt canonical
+            # bytes diverge — Training Record Matches flips PASS→FAIL.
+            #
+            # The dataset event itself doesn't have a separate SoT check
+            # in v1 (deferred — see standalone-dataset-anchoring plan).
+            # The chain integrity comes from training's inlined dataset
+            # metadata catching the change.
+            #
+            # event_id here is the run_id whose dataset_input we want to
+            # mutate. The demo logs a single dataset per training run, so
+            # we tamper the first one. Customers with multiple datasets
+            # per run would need a more specific API; deferred.
+            run = client.get_run(event_id)
+            if not run.inputs.dataset_inputs:
+                raise KeyError(
+                    f"run {event_id} has no logged dataset inputs to tamper"
+                )
+            di = run.inputs.dataset_inputs[0]
+            target_name = di.dataset.name
+            target_digest = di.dataset.digest
+
+            tracking_root = tracking_uri.replace("file://", "").rstrip("/")
+            datasets_dir = os.path.join(
+                tracking_root, run.info.experiment_id, "datasets",
+            )
+            if not os.path.isdir(datasets_dir):
+                raise KeyError(
+                    f"datasets directory not found at {datasets_dir} — "
+                    f"this tamper requires the file:// MLflow backend"
+                )
+
+            import yaml
+            meta_path = None
+            for entry in os.listdir(datasets_dir):
+                candidate = os.path.join(datasets_dir, entry, "meta.yaml")
+                if not os.path.isfile(candidate):
+                    continue
+                try:
+                    with open(candidate) as f:
+                        meta = yaml.safe_load(f) or {}
+                except Exception:  # noqa: BLE001
+                    continue
+                if meta.get("name") == target_name and meta.get("digest") == target_digest:
+                    meta_path = candidate
+                    break
+
+            if not meta_path:
+                raise KeyError(
+                    f"could not locate dataset meta.yaml for "
+                    f"name={target_name!r} digest={target_digest!r} under "
+                    f"{datasets_dir}"
+                )
+
+            with open(meta_path, "rb") as f:
+                original_bytes = f.read()
+
+            # Mutate digest. Re-emit YAML so the file remains parseable
+            # by both MLflow's API and the verifier's refetcher.
+            with open(meta_path) as f:
+                meta = yaml.safe_load(f) or {}
+            meta["digest"] = "TAMPERED-DIGEST-DEADBEEF"
+            with open(meta_path, "w") as f:
+                yaml.safe_dump(meta, f)
+
+            snapshot = TamperSnapshot(
+                event_type=event_type, event_id=event_id, kind="live",
+                live_field_name=f"dataset_meta_path:{meta_path}",
+                saved_artifact_bytes=original_bytes,
+            )
+
         else:
             raise ValueError(f"unknown event_type: {event_type}")
 
@@ -325,6 +401,19 @@ def reset(event_type, event_id, *, lifecycle_store, record_store, tracking_uri):
                                 f.write(snap.saved_artifact_bytes)
                         except Exception as e:
                             logger.warning(f"Could not restore artifact at {target_path}: {e}")
+                    elif kind_prefix == "dataset_meta_path" and snap.saved_artifact_bytes is not None:
+                        # Same restore pattern as artifact_swap_path: the
+                        # live_field_name is the absolute path of the dataset's
+                        # meta.yaml in MLflow's dataset registry; write the
+                        # snapshot bytes back verbatim.
+                        _, target_path = snap.live_field_name.split(":", 1)
+                        try:
+                            with open(target_path, "wb") as f:
+                                f.write(snap.saved_artifact_bytes)
+                        except Exception as e:
+                            logger.warning(
+                                f"Could not restore dataset meta.yaml at {target_path}: {e}"
+                            )
                     elif kind_prefix == "artifact_swap" and snap.saved_artifact_bytes is not None:
                         # Legacy log_artifact-based variant (pre-fix); kept so
                         # any in-flight snapshot from before the upgrade restores.

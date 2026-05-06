@@ -589,6 +589,15 @@
       el.innerHTML = highlighted.join('\n');
     })();
 
+    // After tamper or reset, navigate to the same URL with ?verify=true
+    // so the verification rows on the reloaded page reflect the new
+    // state instead of the cached pre-action snapshot.
+    function reloadWithVerify() {
+      const url = new URL(window.location.href);
+      url.searchParams.set('verify', 'true');
+      window.location.href = url.toString();
+    }
+
     // Tamper button wiring
     document.querySelectorAll('.btn-tamper').forEach(btn => {
       btn.addEventListener('click', async () => {
@@ -601,14 +610,12 @@
           const r = await fetch(`/tamper/${kind}/${eventType}/${eventId}`, { method: 'POST' });
           const data = await r.json();
           if (data.tampered) {
-            btn.textContent = 'Tampered';
+            btn.textContent = 'Tampered — verifying...';
             const sec = document.getElementById('tamper-section');
             if (sec) sec.style.boxShadow = '0 0 0 2px var(--yellow)';
-            setTimeout(() => {
-              if (sec) sec.style.boxShadow = '';
-              btn.textContent = 'Tamper';
-              btn.disabled = false;
-            }, 4000);
+            // Brief pause so the user sees the "Tampered" feedback,
+            // then reload with verification triggered.
+            setTimeout(reloadWithVerify, 600);
           } else {
             btn.textContent = 'Failed';
             btn.disabled = false;
@@ -624,7 +631,6 @@
       btn.addEventListener('click', async () => {
         const eventType = btn.dataset.eventType;
         const eventId = btn.dataset.eventId;
-        const originalText = btn.textContent;
         btn.disabled = true;
         btn.textContent = 'Resetting...';
         try {
@@ -636,11 +642,8 @@
             btn.disabled = false;
             return;
           }
-          btn.textContent = 'Reset — re-verify';
-          setTimeout(() => {
-            btn.textContent = originalText;
-            btn.disabled = false;
-          }, 2500);
+          btn.textContent = 'Reset — verifying...';
+          setTimeout(reloadWithVerify, 600);
         } catch (e) {
           btn.textContent = 'Error';
           btn.disabled = false;

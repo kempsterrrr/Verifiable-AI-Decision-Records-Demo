@@ -174,34 +174,25 @@
                                     <span class="kv-value mono mono-sm">{{ di.schema_hash }}</span>
                                 </div>
                                 {% endif %}
-                                {% if di.anchor_tx %}
-                                <div class="kv-row">
-                                    <span class="kv-key">Anchor TX</span>
-                                    <span class="kv-value mono mono-sm" title="The dataset's own signed proof, anchored on Arweave as a standalone event. Independently verifiable.">
-                                        {% if di.anchor_url %}<a href="{{ di.anchor_url }}" target="_blank" rel="noopener">{{ di.anchor_tx }} ↗</a>{% else %}{{ di.anchor_tx }}{% endif %}
-                                    </span>
-                                </div>
-                                {% endif %}
                             </div>
                             {% if not loop.last %}<div style="height: 0.85rem; border-top: 1px solid var(--border); margin-top: 0.85rem;"></div>{% endif %}
                             {% endfor %}
                         </div>
                     </div>
                     {% endif %}
-                    {# Footer prefers the dataset's own anchor TX when available
-                       (post-Piece A standalone dataset anchoring); falls back to
-                       training's TX with the "committed inside training" framing
-                       for legacy proofs that didn't auto-anchor inputs. #}
+                    {# Footer matches the training / registration card pattern:
+                       just the TX link. Prefers the dataset's own anchor TX
+                       when available (post-Piece A standalone dataset
+                       anchoring); falls back to training's TX for legacy
+                       proofs that didn't auto-anchor inputs. #}
                     {% set first_di_anchor_tx = (training_dataset_inputs[0].anchor_tx if training_dataset_inputs else None) %}
                     {% set first_di_anchor_url = (training_dataset_inputs[0].anchor_url if training_dataset_inputs else None) %}
                     {% if first_di_anchor_tx %}
                     <div class="chain-card-footer">
-                        <span style="color: var(--muted); font-size: 0.78rem;">Anchored on Arweave as a standalone dataset proof</span>
                         {% if first_di_anchor_url %}<a href="{{ first_di_anchor_url }}" target="_blank" rel="noopener" class="mono mono-sm">TX: {{ first_di_anchor_tx[:16] }}...</a>{% else %}<span class="mono mono-sm">TX: {{ first_di_anchor_tx[:16] }}...</span>{% endif %}
                     </div>
                     {% elif training and training.arweave_tx_id and training_dataset_inputs %}
                     <div class="chain-card-footer">
-                        <span style="color: var(--muted); font-size: 0.78rem;">Committed inside the training run's canonical bytes</span>
                         <a href="{{ training.arweave_url }}" target="_blank" rel="noopener" class="mono mono-sm">TX: {{ training.arweave_tx_id[:16] }}...</a>
                     </div>
                     {% endif %}

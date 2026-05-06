@@ -667,6 +667,7 @@ def full_verify(
     proof_engine: ProofEngine,
     mlflow_client=None,
     ario_client: "ArioVerifyClient | None" = None,
+    min_attestation_level: int = DEFAULT_MIN_ATTESTATION_LEVEL,
 ) -> dict:
     """Run all four checks and return a combined result.
 
@@ -686,7 +687,10 @@ def full_verify(
         if mlflow_client and bytes_check.get("payload_bytes")
         else {"ok": None, "reason": "no_payload_to_compare"}
     )
-    ario = verify_ario_attestation(envelope, ario_client) if ario_client else {"ok": None, "reason": "no_ario_client"}
+    ario = (
+        verify_ario_attestation(envelope, ario_client, min_attestation_level=min_attestation_level)
+        if ario_client else {"ok": None, "reason": "no_ario_client"}
+    )
 
     overall = _compute_overall_ok(envelope, sig, bytes_check, sot, ario)
 
@@ -697,6 +701,196 @@ def full_verify(
         "ario_attestation": ario,
         "overall": overall,
     }
+
+
+# ---------------------------------------------------------------------------
+# Auditor-shaped primitive: verify_record + verify_proof_by_tx wrapper
+# ---------------------------------------------------------------------------
+#
+# verify_record is the foundation for the auditor flow. Given an envelope
+# plus the canonical bytes that hash to its payload_hash, it runs:
+#   - signature check (envelope-internal, offline)
+#   - anchored-bytes check (re-hash provided canonical bytes vs payload_hash)
+#   - optional ar.io attestation (network call to ar.io Verify gateway)
+#
+# It deliberately does NOT do check 3 (source-of-truth re-derivation from
+# live MLflow). For an auditor working from a portable bundle, the bundle
+# IS the source of truth — there is no operator-side MLflow to reach for.
+# Operator-side flows that DO have MLflow access call verify_proof_by_tx,
+# which composes verify_record with the additional SoT step + the
+# Arweave-fetch step.
+
+def _verify_canonical_bytes_match(envelope: dict, canonical_bytes: bytes) -> dict:
+    """Re-hash provided canonical bytes against the envelope's payload_hash.
+
+    Auditor-shaped variant of :func:`verify_anchored_bytes` — same logical
+    check but takes bytes already in hand instead of downloading them
+    from MLflow. Returns the same shape (``ok``, ``computed_hash``,
+    ``stored_hash``) so callers can treat both paths uniformly.
+    """
+    stored = envelope.get("payload_hash")
+    if not canonical_bytes:
+        return {
+            "ok": False,
+            "reason": "no_canonical_bytes_provided",
+            "computed_hash": None,
+            "stored_hash": stored,
+        }
+    computed = hash_data(canonical_bytes)
+    return {
+        "ok": computed == stored,
+        "computed_hash": computed,
+        "stored_hash": stored,
+    }
+
+
+def verify_record(
+    envelope: dict,
+    canonical_bytes: bytes,
+    *,
+    proof_engine: ProofEngine,
+    ario_client: "ArioVerifyClient | None" = None,
+    min_attestation_level: int = DEFAULT_MIN_ATTESTATION_LEVEL,
+) -> dict:
+    """Verify a record from a portable bundle (auditor-shaped primitive).
+
+    Runs the three checks an auditor can perform without MLflow access:
+
+    1. Signature on the envelope (offline; envelope-internal).
+    2. Anchored-bytes match: hash ``canonical_bytes`` and compare to
+       ``envelope["payload_hash"]``.
+    3. (Optional) ar.io attestation that the proof exists on Arweave —
+       requires the envelope to carry ``_tx_id`` and a live ``ario_client``.
+
+    The "live MLflow re-derivation" check (check 3 in the operator flow)
+    is intentionally omitted: an auditor working from a portable bundle
+    treats the bundle itself as the source of truth. Operator-side flows
+    use :func:`verify_proof_by_tx` to add that check.
+
+    Trusted-issuer enforcement (require the embedded signing key to
+    belong to a known set) is a follow-up task and not yet wired —
+    when it lands it'll be added as a ``trusted_issuer_keys`` keyword
+    parameter at the same time as the underlying ``verify_signature``
+    plumbing. Adding the parameter here today would create a no-op
+    security knob, so it's deferred.
+
+    Args:
+        envelope: Signed envelope dict (the proof itself).
+        canonical_bytes: The exact canonical-JSON bytes that were hashed
+            to produce ``envelope["payload_hash"]``. Must be the original
+            bytes — re-canonicalizing parsed JSON could produce drift.
+        proof_engine: A ``ProofEngine`` for signature verification.
+        ario_client: Optional ``ArioVerifyClient``. When ``None`` or
+            disabled, the ar.io attestation check returns ``ok=None``
+            ("not checked") rather than ``ok=False``.
+        min_attestation_level: Threshold below which ar.io attestation
+            returns ``ok=False``. See :data:`DEFAULT_MIN_ATTESTATION_LEVEL`.
+
+    Returns:
+        Dict with ``signature``, ``anchored_bytes``, ``ario_attestation``,
+        and ``overall``. ``overall`` is True when sig and bytes are both
+        True and ar.io is not False (None counts as "not checked, not
+        failed" because the auditor explicitly chose to skip).
+    """
+    sig = verify_signature(envelope, proof_engine)
+
+    bytes_check = _verify_canonical_bytes_match(envelope, canonical_bytes)
+
+    ario = (
+        verify_ario_attestation(envelope, ario_client, min_attestation_level=min_attestation_level)
+        if ario_client else {"ok": None, "reason": "no_ario_client"}
+    )
+
+    # Auditor-flow overall semantics:
+    # - sig and bytes must both be True.
+    # - ar.io is True (verified) or None (not checked) — both acceptable.
+    # - Any explicit False fails overall.
+    if any(c.get("ok") is False for c in (sig, bytes_check, ario)):
+        overall: bool | None = False
+    elif sig.get("ok") is True and bytes_check.get("ok") is True:
+        overall = True
+    else:
+        overall = None
+
+    return {
+        "signature": sig,
+        "anchored_bytes": bytes_check,
+        "ario_attestation": ario,
+        "overall": overall,
+    }
+
+
+def verify_proof_by_tx(
+    tx_id: str,
+    *,
+    anchor: ArweaveAnchor,
+    proof_engine: ProofEngine,
+    mlflow_client=None,
+    ario_client: "ArioVerifyClient | None" = None,
+    min_attestation_level: int = DEFAULT_MIN_ATTESTATION_LEVEL,
+) -> dict:
+    """Fetch envelope from Arweave by TX, then run all four operator-side checks.
+
+    The operator-side counterpart to :func:`verify_record`. When the
+    caller has only a TX ID (typical in the demo: the UI knows the TX
+    from MLflow tags but doesn't have the envelope in memory), this
+    helper handles the fetch and assembles the full four-check result.
+
+    Adds a top-level ``proof_found`` flag so consumers can distinguish
+    "envelope retrieved from Arweave" from "envelope was missing" — what
+    the demo's "Proof Found" verification row is supposed to express.
+
+    When the fetch fails, every sub-check returns ``ok=None`` (the
+    checks weren't actually run). When the fetch succeeds, the four
+    checks run in the same shape as :func:`full_verify`.
+
+    Trusted-issuer enforcement is a follow-up task; see
+    :func:`verify_record` for the rationale on why a no-op
+    ``trusted_issuer_keys`` parameter isn't accepted today.
+
+    Args:
+        tx_id: Arweave transaction ID for the proof.
+        anchor: An ``ArweaveAnchor`` (or compatible object exposing
+            ``fetch_proof(tx_id)``) for retrieval.
+        proof_engine: A ``ProofEngine`` for signature verification.
+        mlflow_client: Optional ``MlflowClient``. Required for checks 2
+            and 3; when omitted those return ``ok=None``.
+        ario_client: Optional ``ArioVerifyClient``. When omitted, ar.io
+            attestation returns ``ok=None``.
+        min_attestation_level: Threshold for ar.io attestation. See
+            :data:`DEFAULT_MIN_ATTESTATION_LEVEL`.
+
+    Returns:
+        Dict with ``proof_found``, ``signature``, ``anchored_bytes``,
+        ``source_of_truth``, ``ario_attestation``, and ``overall``.
+    """
+    plugin_envelope = anchor.fetch_proof(tx_id)
+    if plugin_envelope is None:
+        return {
+            "proof_found": False,
+            "signature": {"ok": None, "reason": "no_envelope"},
+            "anchored_bytes": {"ok": None, "reason": "no_envelope"},
+            "source_of_truth": {"ok": None, "reason": "no_envelope"},
+            "ario_attestation": {"ok": None, "reason": "no_envelope"},
+            "overall": None,
+        }
+
+    # Caller-attached metadata. _tx_id flows through to the ar.io
+    # attestation check; underscore-prefixed keys are stripped before
+    # signature canonicalization (see test_verify_commitment_ignores_
+    # underscore_prefixed_caller_annotations) so this doesn't break
+    # check 1.
+    plugin_envelope["_tx_id"] = tx_id
+
+    result = full_verify(
+        plugin_envelope,
+        proof_engine=proof_engine,
+        mlflow_client=mlflow_client,
+        ario_client=ario_client,
+        min_attestation_level=min_attestation_level,
+    )
+    result["proof_found"] = True
+    return result
 
 
 class ArioVerifyClient:

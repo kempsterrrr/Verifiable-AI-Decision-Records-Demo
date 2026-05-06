@@ -142,12 +142,12 @@
                         Independent verification of MLflow data integrity. These verify this training run matches the original proof anchored with ar.io at training time — they do <strong>not</strong> speak to whether the model itself is good.
                     </div>
 
-                    <div class="verify-row" title="The proof exists on Arweave and ar.io can locate it. FAIL means the on-chain anchor is missing or unreachable.">
+                    <div class="verify-row" title="The proof envelope was successfully retrieved from the ar.io gateway at its anchored TX. FAIL means the on-chain proof is missing or unreachable.">
                         <span>Proof Found</span>
                         {% if v %}
-                            {% if v.signature_valid is sameas true and envelope.arweave_tx_id %}
+                            {% if v.proof_found is sameas true %}
                                 <span class="check">PASS</span>
-                            {% elif v.signature_valid is sameas false %}
+                            {% elif v.proof_found is sameas false %}
                                 <span class="cross">FAIL</span>
                             {% else %}
                                 <span class="badge badge-yellow">Pending</span>
@@ -628,6 +628,14 @@
     {% endif %}
 
     <script>
+    // After tamper or reset, navigate to the same URL with ?verify=true
+    // so the verification rows reflect the new state on reload.
+    function reloadWithVerify() {
+      const url = new URL(window.location.href);
+      url.searchParams.set('verify', 'true');
+      window.location.href = url.toString();
+    }
+
     // Tamper button wiring — same contract as decision_detail.html.
     document.querySelectorAll('.btn-tamper').forEach(btn => {
       btn.addEventListener('click', async () => {
@@ -640,14 +648,10 @@
           const r = await fetch(`/tamper/${kind}/${eventType}/${eventId}`, { method: 'POST' });
           const data = await r.json();
           if (data.tampered) {
-            btn.textContent = 'Tampered';
+            btn.textContent = 'Tampered — verifying...';
             const sec = document.getElementById('tamper-section');
             if (sec) sec.style.boxShadow = '0 0 0 2px var(--yellow)';
-            setTimeout(() => {
-              if (sec) sec.style.boxShadow = '';
-              btn.textContent = 'Tamper';
-              btn.disabled = false;
-            }, 4000);
+            setTimeout(reloadWithVerify, 600);
           } else {
             btn.textContent = 'Failed';
             btn.disabled = false;
@@ -674,11 +678,8 @@
             btn.disabled = false;
             return;
           }
-          btn.textContent = 'Reset — re-verify';
-          setTimeout(() => {
-            btn.textContent = 'Reset all';
-            btn.disabled = false;
-          }, 2500);
+          btn.textContent = 'Reset — verifying...';
+          setTimeout(reloadWithVerify, 600);
         } catch (e) {
           btn.textContent = 'Error';
           btn.disabled = false;

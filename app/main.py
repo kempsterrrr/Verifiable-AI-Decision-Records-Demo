@@ -598,19 +598,20 @@ def get_decision(request: Request, decision_id: str):
 
 @app.post("/verify/{decision_id}")
 def verify_decision(request: Request, decision_id: str):
-    """Phase 2.C: verify a prediction via the plugin's full_verify.
+    """Verify a prediction via the plugin's verify_proof_by_tx.
 
     Looks up the prediction's Arweave TX from the demo's RecordStore
     entry (hydrated by Phase 2.B's background task with the plugin's
-    actual prediction TX), fetches the pure-commitment envelope from
-    Arweave, and runs the four-check verification flow.
+    actual prediction TX) and calls ``verify_proof_by_tx`` which fetches
+    the pure-commitment envelope from Arweave and runs the four-check
+    verification flow in one call.
 
     Returns the four-check result alongside the legacy-shape fields so
     callers reading either format keep working. The browser path still
     redirects to the decision detail page.
     """
     import mlflow
-    from ario_mlflow.verify import full_verify
+    from ario_mlflow.verify import verify_proof_by_tx
 
     envelope = request.app.state.store.get_by_id(decision_id)
     if not envelope:
@@ -622,22 +623,19 @@ def verify_decision(request: Request, decision_id: str):
     ario_result = None
 
     if tx_id:
-        plugin_envelope = request.app.state.anchor.fetch_proof(tx_id)
-        if plugin_envelope:
-            # Inject TX so verify_ario_attestation can route the call.
-            plugin_envelope["_tx_id"] = tx_id
+        settings = request.app.state.settings
+        mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+        mlflow_client = mlflow.tracking.MlflowClient()
 
-            settings = request.app.state.settings
-            mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
-            mlflow_client = mlflow.tracking.MlflowClient()
+        plugin_result = verify_proof_by_tx(
+            tx_id,
+            anchor=request.app.state.anchor,
+            proof_engine=request.app.state.proof_engine,
+            mlflow_client=mlflow_client,
+            ario_client=request.app.state.ario_verify,
+        )
 
-            plugin_result = full_verify(
-                plugin_envelope,
-                proof_engine=request.app.state.proof_engine,
-                mlflow_client=mlflow_client,
-                ario_client=request.app.state.ario_verify,
-            )
-
+        if plugin_result.get("proof_found"):
             # Legacy-shape mappings for back-compat with existing API
             # consumers. The four-check structure is the canonical
             # result; these are derived projections.
@@ -663,7 +661,8 @@ def verify_decision(request: Request, decision_id: str):
         # Legacy projection fields for back-compat
         "external_verification": external_result,
         "ario_verification": ario_result,
-        # New four-check structure (Phase 3 UI consumes this)
+        # New four-check structure (Phase 3 UI consumes this) — now also
+        # carries proof_found at the top level.
         "plugin_full_verify": plugin_result,
     }
 

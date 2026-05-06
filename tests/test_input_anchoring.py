@@ -553,6 +553,74 @@ def test_anchor_training_canonical_bytes_unchanged_by_auto_anchor(tmp_path, monk
 
 
 # --------------------------------------------------------------------------- #
+# Dataset event verification (Piece A Task A4)                                 #
+# v1 scope: signature + ar.io attestation. SoT (live re-derivation against    #
+# MLflow's dataset registry) deferred — training's existing SoT catches       #
+# dataset metadata mutations via the inlined dataset_inputs entries.          #
+# --------------------------------------------------------------------------- #
+
+
+def test_full_verify_dataset_event_with_valid_signature_passes(tmp_path):
+    """A dataset event with a valid signature and no MLflow / ar.io
+    available verifies cleanly. Signature is the ground-truth proof
+    of "this dataset was anchored by holder of pubkey X at time T";
+    that's the v1 value prop for standalone dataset anchoring."""
+    import ario_mlflow.anchoring as anchoring
+    from ario_mlflow.verify import full_verify
+
+    ds = _make_mlflow_dataset_stub(name="train_q1", digest="abc")
+    result = anchoring.anchor(
+        proof_engine=ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=_FakeAnchor(),
+        dataset=ds,
+    )
+    envelope = result["envelope"]
+
+    out = full_verify(
+        envelope,
+        proof_engine=ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        mlflow_client=None,
+        ario_client=None,
+    )
+
+    assert out["signature"]["ok"] is True
+    # Dataset events skip MLflow-side checks in v1; ok=None is the
+    # honest "not run" state, not a failure.
+    assert out["anchored_bytes"]["ok"] is None
+    assert out["source_of_truth"]["ok"] is None
+    assert out["ario_attestation"]["ok"] is None
+    # Overall: True because signature passed and nothing was False.
+    # Dataset events aren't in _REQUIRES_FULL_MLFLOW_VERIFICATION, so
+    # the strict-None-fails rule doesn't apply.
+    assert out["overall"] is True, out
+
+
+def test_full_verify_dataset_event_with_tampered_envelope_fails(tmp_path):
+    """Mutating any signed field on a dataset envelope invalidates the
+    signature. Confirms the existing verify_signature path handles
+    dataset event_type cleanly (no special casing needed)."""
+    import ario_mlflow.anchoring as anchoring
+    from ario_mlflow.verify import full_verify
+
+    result = anchoring.anchor(
+        proof_engine=ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=_FakeAnchor(),
+        dataset=_make_mlflow_dataset_stub(name="ds", digest="abc"),
+    )
+    envelope = dict(result["envelope"])
+    # Tamper: claim a different dataset.
+    envelope["subject"] = {"type": "mlflow_dataset", "name": "OTHER", "digest": "xyz"}
+
+    out = full_verify(
+        envelope,
+        proof_engine=ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+    )
+
+    assert out["signature"]["ok"] is False
+    assert out["overall"] is False
+
+
+# --------------------------------------------------------------------------- #
 # Verify-side re-derivation (Piece A Task A2)                                  #
 # --------------------------------------------------------------------------- #
 

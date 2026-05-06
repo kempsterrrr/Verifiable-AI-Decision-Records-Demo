@@ -304,6 +304,18 @@ _LEGACY_PREDICTION_SUBJECT_TYPES = frozenset({
     "mlflow_decision",
 })
 
+# Subject types whose v1 design intentionally skips MLflow-side checks.
+# The proof's value lives in the signature + Arweave attestation; live
+# re-derivation against MLflow's registry is deferred to a follow-up
+# (see standalone-dataset-anchoring plan, "Out of scope: cross-run
+# dataset reuse / dedup" and SoT for dataset events).
+#
+# These return ok=None without a warning log — they're known and
+# handled, not unknown subject types.
+_DEFERRED_MLFLOW_CHECK_SUBJECT_TYPES = frozenset({
+    "mlflow_dataset",
+})
+
 
 def _download_payload_for_envelope(
     envelope: dict, mlflow_client
@@ -371,6 +383,11 @@ def _download_payload_for_envelope(
         # v1 predictions had no payload artifact. Caller should treat
         # this as "not applicable", not "failure."
         return None, False, "legacy_subject_type_no_artifact"
+    elif subject_type in _DEFERRED_MLFLOW_CHECK_SUBJECT_TYPES:
+        # Standalone dataset events (and similar) skip MLflow-side
+        # checks in v1. Their value comes from signature + ar.io
+        # attestation; live re-derivation is a follow-up.
+        return None, False, "mlflow_check_deferred_for_subject"
     else:
         logger.warning(f"Unknown subject type for download: {subject_type!r}")
         return None, expected, f"unknown_subject_type: {subject_type!r}"

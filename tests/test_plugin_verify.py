@@ -197,10 +197,16 @@ def test_verify_proof_by_tx_includes_source_of_truth_check(tmp_path, monkeypatch
 
     class _Run:
         class _Data:
-            params = {}
-            metrics = {}
-            tags = {"mlflow.source.name": "", "mlflow.source.git.commit": ""}
-        data = _Data()
+            def __init__(self):
+                self.params = {}
+                self.metrics = {}
+                self.tags = {
+                    "mlflow.source.name": "",
+                    "mlflow.source.git.commit": "",
+                }
+
+        def __init__(self):
+            self.data = self._Data()
 
     class _StubMlflowClient:
         def get_run(self, run_id):

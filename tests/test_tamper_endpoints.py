@@ -101,7 +101,8 @@ def _wait_for_registration(app, timeout=30.0):
     fail while the local artifact write still succeeds, and that's
     enough to exercise the verifier's source-of-truth path.
     """
-    import os, time, mlflow
+    import time, mlflow
+    from mlflow.exceptions import MlflowException
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         records = app.state.lifecycle_store.list_all()
@@ -112,17 +113,20 @@ def _wait_for_registration(app, timeout=30.0):
         if registration:
             source_run_id = registration["record"].get("source_run_id")
             if source_run_id:
-                # Check the canonical artifact actually landed on disk.
-                tracking_root = app.state.settings.mlflow_tracking_uri.removeprefix("file://")
-                # MLflow file backend: <root>/<exp>/<run_id>/artifacts/...
-                # We don't know experiment_id from here; query MLflow.
+                # The artifact lands when the registration daemon thread
+                # completes its log_artifacts call. We poll by attempting
+                # the download itself — any expected "not yet" failure
+                # mode is one of MlflowException / FileNotFoundError /
+                # OSError (the local file backend's surface). Any other
+                # exception is a real misconfiguration we want to fail
+                # fast on, not silently absorb into a polling timeout.
                 try:
                     mlflow.set_tracking_uri(app.state.settings.mlflow_tracking_uri)
                     mlflow.tracking.MlflowClient().download_artifacts(
                         source_run_id, "ario/registration_payload.json"
                     )
                     return registration
-                except Exception:
+                except (MlflowException, FileNotFoundError, OSError):
                     pass
         time.sleep(0.1)
     raise AssertionError(
@@ -141,13 +145,18 @@ def _wait_for_artifact(mlflow_client, run_id, artifact_path, timeout=30.0):
     cycle this audit is checking).
     """
     import time
+    from mlflow.exceptions import MlflowException
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        # Expected "not yet" failure modes: MlflowException for missing
+        # artifacts on the local file backend, FileNotFoundError / OSError
+        # for the open() that follows. Anything else is a real error we
+        # want to surface immediately, not absorb into a polling timeout.
         try:
             local_path = mlflow_client.download_artifacts(run_id, artifact_path)
             with open(local_path, "rb") as f:
                 return f.read()
-        except Exception:
+        except (MlflowException, FileNotFoundError, OSError):
             time.sleep(0.1)
     raise AssertionError(
         f"artifact {artifact_path!r} on run {run_id} never appeared within {timeout}s"

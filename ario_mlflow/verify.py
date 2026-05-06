@@ -750,7 +750,6 @@ def verify_record(
     *,
     proof_engine: ProofEngine,
     ario_client: "ArioVerifyClient | None" = None,
-    trusted_issuer_keys: set[str] | None = None,
     min_attestation_level: int = DEFAULT_MIN_ATTESTATION_LEVEL,
 ) -> dict:
     """Verify a record from a portable bundle (auditor-shaped primitive).
@@ -768,6 +767,13 @@ def verify_record(
     treats the bundle itself as the source of truth. Operator-side flows
     use :func:`verify_proof_by_tx` to add that check.
 
+    Trusted-issuer enforcement (require the embedded signing key to
+    belong to a known set) is a follow-up task and not yet wired —
+    when it lands it'll be added as a ``trusted_issuer_keys`` keyword
+    parameter at the same time as the underlying ``verify_signature``
+    plumbing. Adding the parameter here today would create a no-op
+    security knob, so it's deferred.
+
     Args:
         envelope: Signed envelope dict (the proof itself).
         canonical_bytes: The exact canonical-JSON bytes that were hashed
@@ -777,11 +783,6 @@ def verify_record(
         ario_client: Optional ``ArioVerifyClient``. When ``None`` or
             disabled, the ar.io attestation check returns ``ok=None``
             ("not checked") rather than ``ok=False``.
-        trusted_issuer_keys: Optional set of hex Ed25519 public keys to
-            require the embedded signing key to belong to. Threaded
-            through :func:`verify_signature` (enforcement is added in a
-            follow-up task — accepted here so callers don't need to
-            change later).
         min_attestation_level: Threshold below which ar.io attestation
             returns ``ok=False``. See :data:`DEFAULT_MIN_ATTESTATION_LEVEL`.
 
@@ -791,9 +792,6 @@ def verify_record(
         True and ar.io is not False (None counts as "not checked, not
         failed" because the auditor explicitly chose to skip).
     """
-    # trusted_issuer_keys: accepted for forward-compat; verify_signature
-    # gains the parameter in a follow-up task. Until then, verify_signature
-    # ignores it and the trusted-issuer check is a no-op.
     sig = verify_signature(envelope, proof_engine)
 
     bytes_check = _verify_canonical_bytes_match(envelope, canonical_bytes)
@@ -829,7 +827,6 @@ def verify_proof_by_tx(
     proof_engine: ProofEngine,
     mlflow_client=None,
     ario_client: "ArioVerifyClient | None" = None,
-    trusted_issuer_keys: set[str] | None = None,
     min_attestation_level: int = DEFAULT_MIN_ATTESTATION_LEVEL,
 ) -> dict:
     """Fetch envelope from Arweave by TX, then run all four operator-side checks.
@@ -847,6 +844,10 @@ def verify_proof_by_tx(
     checks weren't actually run). When the fetch succeeds, the four
     checks run in the same shape as :func:`full_verify`.
 
+    Trusted-issuer enforcement is a follow-up task; see
+    :func:`verify_record` for the rationale on why a no-op
+    ``trusted_issuer_keys`` parameter isn't accepted today.
+
     Args:
         tx_id: Arweave transaction ID for the proof.
         anchor: An ``ArweaveAnchor`` (or compatible object exposing
@@ -856,9 +857,6 @@ def verify_proof_by_tx(
             and 3; when omitted those return ``ok=None``.
         ario_client: Optional ``ArioVerifyClient``. When omitted, ar.io
             attestation returns ``ok=None``.
-        trusted_issuer_keys: Optional set of hex Ed25519 public keys for
-            the trusted-issuer check (enforcement added in a follow-up
-            task).
         min_attestation_level: Threshold for ar.io attestation. See
             :data:`DEFAULT_MIN_ATTESTATION_LEVEL`.
 

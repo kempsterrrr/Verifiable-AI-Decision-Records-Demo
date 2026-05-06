@@ -227,7 +227,7 @@
                     Independent verification of MLflow data integrity. These verify this decision record matches the original proof anchored with ar.io at runtime — they do <strong>not</strong> speak to whether the decision itself was correct.
                   </div>
 
-                  <div class="verify-row" title="The proof envelope was successfully retrieved from Arweave at its anchored TX. FAIL means the on-chain proof is missing or unreachable.">
+                  <div class="verify-row" title="The proof envelope was successfully retrieved from the ar.io gateway at its anchored TX. FAIL means the on-chain proof is missing or unreachable.">
                     <span>Proof Found</span>
                     {% if v %}
                       {% if v.proof_found is sameas true %}

@@ -219,7 +219,7 @@ def tamper_live(event_type, event_id, *, lifecycle_store, record_store, tracking
             except Exception as e:
                 raise KeyError(
                     f"could not search logged models for run {source_run_id}: {e}"
-                )
+                ) from e
             if not logged_models:
                 raise KeyError(
                     f"no LoggedModel found for source run {source_run_id}; "

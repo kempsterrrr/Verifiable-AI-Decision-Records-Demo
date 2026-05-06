@@ -272,6 +272,150 @@ def test_anchor_dataset_inputs_serialization_is_deterministic(tmp_path, monkeypa
 
 
 # --------------------------------------------------------------------------- #
+# Standalone dataset anchoring — Piece A Task A1+A2                            #
+# (anchor(dataset=ds) anchors a standalone dataset event)                      #
+# --------------------------------------------------------------------------- #
+
+
+def _make_mlflow_dataset_stub(*, name="ds", source="s.csv", source_type="local",
+                              digest="abc123",
+                              schema='{"mlflow_colspec":[{"type":"long","name":"a"}]}'):
+    """Minimal stand-in for an mlflow.data.Dataset object suitable for
+    passing to anchor(dataset=...)."""
+    return _FakeDataset(
+        name=name, source=source, source_type=source_type,
+        digest=digest, schema=schema,
+    )
+
+
+def test_anchor_dataset_mode_returns_signed_envelope(tmp_path, monkeypatch):
+    """anchor(dataset=ds) returns the same shape anchor() does for
+    training (envelope/payload/payload_bytes/payload_hash), with a
+    signed envelope ready to ship."""
+    import ario_mlflow.anchoring as anchoring
+
+    ds = _make_mlflow_dataset_stub()
+    fake_anchor = _FakeAnchor()  # disabled — no Arweave upload required
+
+    result = anchoring.anchor(
+        proof_engine=ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=fake_anchor,
+        dataset=ds,
+    )
+
+    assert "envelope" in result
+    assert "payload" in result
+    assert "payload_bytes" in result
+    assert "payload_hash" in result
+    # The envelope is the small signed thing — keys match what create_commitment produces.
+    env = result["envelope"]
+    assert {"event_id", "event_type", "subject", "payload_hash",
+            "previous_hash", "signed_at", "public_key",
+            "signature"}.issubset(env.keys())
+
+
+def test_anchor_dataset_payload_has_event_type_dataset(tmp_path, monkeypatch):
+    """Dataset events use a new event_type so verifiers can dispatch
+    correctly."""
+    import ario_mlflow.anchoring as anchoring
+
+    result = anchoring.anchor(
+        proof_engine=ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=_FakeAnchor(),
+        dataset=_make_mlflow_dataset_stub(),
+    )
+    assert result["payload"]["event_type"] == "dataset"
+    assert result["envelope"]["event_type"] == "dataset"
+
+
+def test_anchor_dataset_payload_contains_identity_fields(tmp_path, monkeypatch):
+    """The signed payload commits to the dataset's name, source,
+    source_type, digest, and schema_hash. context is NOT in the dataset
+    event — context is a runtime relationship between a dataset and a
+    specific use case, set on the per-run dataset_input by mlflow.log_input."""
+    import ario_mlflow.anchoring as anchoring
+    from ario_mlflow.proof import canonical_json, hash_data
+
+    ds = _make_mlflow_dataset_stub(
+        name="train_q1", source='{"uri":"s3://b/train.csv"}',
+        source_type="s3", digest="0xabc",
+        schema='{"mlflow_colspec":[{"type":"long","name":"a"}]}',
+    )
+    result = anchoring.anchor(
+        proof_engine=ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=_FakeAnchor(),
+        dataset=ds,
+    )
+
+    payload = result["payload"]
+    assert payload["name"] == "train_q1"
+    assert payload["source"] == '{"uri":"s3://b/train.csv"}'
+    assert payload["source_type"] == "s3"
+    assert payload["digest"] == "0xabc"
+    # schema_hash via canonical_json + hash_data, same fingerprinting
+    # rule the rest of the codebase uses.
+    expected = hash_data(canonical_json({"mlflow_colspec": [{"type": "long", "name": "a"}]}))
+    assert payload["schema_hash"] == expected
+    # context is NOT a dataset-level field
+    assert "context" not in payload
+
+
+def test_anchor_dataset_omits_schema_plaintext_for_privacy(tmp_path, monkeypatch):
+    """Schema column names must not appear in the canonical payload
+    bytes — only the JCS-hashed fingerprint, mirroring the same privacy
+    rule we apply for inlined dataset_inputs in training events."""
+    import ario_mlflow.anchoring as anchoring
+
+    ds = _make_mlflow_dataset_stub(
+        schema='{"mlflow_colspec":[{"type":"long","name":"sensitive_column_name"}]}',
+    )
+    result = anchoring.anchor(
+        proof_engine=ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=_FakeAnchor(),
+        dataset=ds,
+    )
+    assert b"sensitive_column_name" not in result["payload_bytes"]
+    # And no plaintext schema field on the payload either.
+    assert "schema" not in result["payload"]
+
+
+def test_anchor_dataset_does_not_require_active_run(tmp_path, monkeypatch):
+    """Standalone dataset anchoring is meant to be callable WITHOUT an
+    active MLflow run (publisher pattern, pre-train anchoring, etc.).
+    anchor(dataset=ds) must not raise when there's no active run."""
+    import ario_mlflow.anchoring as anchoring
+
+    # Make active_run() return None — no run is active.
+    monkeypatch.setattr(anchoring.mlflow, "active_run", lambda: None)
+
+    # Should NOT raise — this is the standalone path.
+    result = anchoring.anchor(
+        proof_engine=ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=_FakeAnchor(),
+        dataset=_make_mlflow_dataset_stub(),
+    )
+    assert result["payload"]["event_type"] == "dataset"
+
+
+def test_anchor_dataset_subject_uses_mlflow_dataset_type(tmp_path, monkeypatch):
+    """Subject identifies WHERE the canonical bytes come from. For a
+    dataset event, the subject type is 'mlflow_dataset' (mirrors the
+    convention of mlflow_run / mlflow_model_version / mlflow_prediction)."""
+    import ario_mlflow.anchoring as anchoring
+
+    result = anchoring.anchor(
+        proof_engine=ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=_FakeAnchor(),
+        dataset=_make_mlflow_dataset_stub(name="train_q1", digest="0xabc"),
+    )
+
+    subject = result["envelope"]["subject"]
+    assert subject["type"] == "mlflow_dataset"
+    assert subject["name"] == "train_q1"
+    assert subject["digest"] == "0xabc"
+
+
+# --------------------------------------------------------------------------- #
 # Verify-side re-derivation (Piece A Task A2)                                  #
 # --------------------------------------------------------------------------- #
 

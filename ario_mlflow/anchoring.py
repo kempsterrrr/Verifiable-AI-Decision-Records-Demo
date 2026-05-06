@@ -319,6 +319,99 @@ def _build_training_payload(
     return payload
 
 
+def _anchor_dataset_event(
+    dataset,
+    *,
+    proof_engine: ProofEngine,
+    arweave: ArweaveAnchor,
+) -> dict:
+    """Anchor a standalone dataset event.
+
+    Internal helper for ``anchor(dataset=...)``. Builds the canonical
+    payload from the dataset's identity fields, signs the envelope,
+    and uploads to Arweave (best-effort, same "signed-only on upload
+    failure" semantics as the training-mode path).
+
+    The dataset event commits to:
+
+    - ``name``, ``source``, ``source_type``, ``digest`` — auditor-readable
+      identifiers (plaintext).
+    - ``schema_hash`` — SHA-256 of the JCS-canonicalized schema JSON.
+      Column names are NOT in the proof for privacy; the hash is
+      sufficient for tamper-detection.
+
+    Notably absent: the per-run ``context`` tag (training / validation /
+    test). Context is a relationship between a dataset and a specific
+    *use* of it (set by ``mlflow.log_input(ds, context=...)``); it
+    belongs on the per-run dataset_input reference, not on the dataset
+    itself. The training event's payload still carries context per
+    referenced input.
+
+    Returns the same dict shape ``anchor()``'s training mode returns
+    (envelope, payload, payload_bytes, payload_hash, anchor_result).
+    Caller can read ``envelope["payload_hash"]`` or
+    ``anchor_result["tx_id"]`` to chain or reference.
+    """
+    schema_str = getattr(dataset, "schema", None) or ""
+    if schema_str:
+        try:
+            schema_canonical = canonical_json(json.loads(schema_str))
+        except (ValueError, TypeError):
+            schema_canonical = schema_str.encode("utf-8")
+        schema_hash = hash_data(schema_canonical)
+    else:
+        schema_hash = ""
+
+    payload: dict = {
+        "event_type": "dataset",
+        "name": dataset.name,
+        "source": dataset.source,
+        "source_type": dataset.source_type,
+        "digest": dataset.digest,
+        "schema_hash": schema_hash,
+    }
+    payload_bytes = canonical_json(payload)
+    payload_hash = hash_data(payload_bytes)
+
+    envelope = proof_engine.create_commitment(
+        event_type="dataset",
+        subject={
+            "type": "mlflow_dataset",
+            "name": dataset.name,
+            "digest": dataset.digest,
+        },
+        payload_bytes=payload_bytes,
+        # Dataset events don't have a chain-head concept yet — every
+        # dataset is its own GENESIS. Dataset versioning chain
+        # (`previous_hash` linking older versions of the same dataset)
+        # is a deferred follow-up; see ROADMAP.
+        previous_hash="GENESIS",
+    )
+
+    # Upload best-effort. Same signed-only-on-failure pattern as
+    # training-mode anchor() so a transient gateway error doesn't
+    # abort the caller's workflow.
+    anchor_result = None
+    if arweave is not None and getattr(arweave, "enabled", False):
+        try:
+            anchor_result = arweave.upload_proof(envelope)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"Dataset upload raised for {dataset.name!r}; "
+                f"keeping signed-only proof: {e}"
+            )
+            anchor_result = None
+
+    return {
+        "envelope": envelope,
+        "payload": payload,
+        "payload_bytes": payload_bytes,
+        "payload_hash": payload_hash,
+        "previous_hash": "GENESIS",
+        "anchor_result": anchor_result,
+    }
+
+
 def anchor(
     proof_engine: ProofEngine | None = None,
     arweave: ArweaveAnchor | None = None,
@@ -326,6 +419,8 @@ def anchor(
     metadata: dict | None = None,
     capture_otel: bool = True,
     allow_empty_dataset_inputs: bool = False,
+    *,
+    dataset=None,
 ) -> dict:
     """Create a verifiable commitment for the current training run.
 
@@ -379,14 +474,6 @@ def anchor(
         - ``artifact_error`` — error message when
           ``artifact_status == "hash_failed"``, else ``None``
     """
-    active = mlflow.active_run()
-    if active is None:
-        raise RuntimeError("anchor() must be called inside an active MLflow run")
-
-    run_id = active.info.run_id
-    client = mlflow.tracking.MlflowClient()
-    run_data = client.get_run(run_id)
-
     if proof_engine is None:
         proof_engine = ProofEngine()
     if arweave is None:
@@ -394,6 +481,23 @@ def anchor(
             os.environ.get("ARIO_MLFLOW_ARWEAVE_WALLET", ""),
             os.environ.get("ARIO_MLFLOW_GATEWAY_HOST", "turbo-gateway.com"),
         )
+
+    # Dataset mode: dispatch to the standalone-dataset helper. No
+    # active MLflow run required; caller is anchoring a Dataset object
+    # standalone (publisher pattern, pre-train anchoring, etc.).
+    if dataset is not None:
+        return _anchor_dataset_event(
+            dataset, proof_engine=proof_engine, arweave=arweave,
+        )
+
+    # Training mode (default): must be inside an active run.
+    active = mlflow.active_run()
+    if active is None:
+        raise RuntimeError("anchor() must be called inside an active MLflow run")
+
+    run_id = active.info.run_id
+    client = mlflow.tracking.MlflowClient()
+    run_data = client.get_run(run_id)
 
     # Auto-resolve the artifact path from the run's logged-model history when
     # the caller did not specify one. This replaces the old hardcoded default

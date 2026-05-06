@@ -1,5 +1,7 @@
 # Verification Correctness — Pieces B + C Implementation Plan
 
+> **STATUS (2026-05-06):** Piece B (Tasks 1–3) shipped in PR #12. Piece C (Tasks 4–8) is **paused** while input-side anchoring takes priority — see `2026-05-06-input-side-anchoring.md` in this same folder. Resume Tasks 4–8 here once input-side anchoring ships.
+>
 > **For agentic workers:** Execute this plan directly with the main agent using opus 4.7 (highest thinking mode). Skip `superpowers:subagent-driven-development` — tasks are sequential, modestly scoped, and have natural pause-for-review points (after Task 3 / Piece B, after Task 7 / Piece C) that already provide quality gates. If a specific task ends up larger than expected, pull in subagent dispatch ad-hoc. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **Pause checkpoints:** stop and surface evidence to the user (1) after Task 3 completes Piece B, (2) after Task 7 completes Piece C. Don't continue past either checkpoint without explicit approval.

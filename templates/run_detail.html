@@ -155,6 +155,14 @@
                                 <span class="kv-value" style="font-family: 'JetBrains Mono', 'SF Mono', monospace; font-size: 0.78rem;" title="SHA-256 of the JCS-canonicalized schema. The schema's column names are not stored in the proof for privacy — only this fingerprint, so post-anchor schema mutations are still tamper-detectable.">{{ di.schema_hash }}</span>
                             </div>
                             {% endif %}
+                            {% if di.anchor_tx %}
+                            <div class="kv-row">
+                                <span class="kv-key">Anchor TX</span>
+                                <span class="kv-value" style="font-family: 'JetBrains Mono', 'SF Mono', monospace; font-size: 0.78rem;" title="The dataset's own signed proof, anchored on Arweave separately from the training proof. Independently verifiable — auditors can fetch this TX without needing access to any model that used the dataset.">
+                                    {% if di.anchor_url %}<a href="{{ di.anchor_url }}" target="_blank" rel="noopener">{{ di.anchor_tx }} ↗</a>{% else %}{{ di.anchor_tx }}{% endif %}
+                                </span>
+                            </div>
+                            {% endif %}
                         </div>
                         {% if not loop.last %}<div style="height: 0.5rem;"></div>{% endif %}
                         {% endfor %}

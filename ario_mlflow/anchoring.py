@@ -584,6 +584,7 @@ def anchor(
     # chain integrity is provided by the inlined digest +
     # schema_hash that _serialize_dataset_inputs already includes.
     raw_inputs = list(getattr(run_data.inputs, "dataset_inputs", None) or [])
+    dataset_anchors: list[dict] = []
     for di in raw_inputs:
         ds = di.dataset
         try:
@@ -602,6 +603,10 @@ def anchor(
                 f"chain integrity: {e}"
             )
             continue
+        # Annotate the result with the dataset's name so callers can
+        # match dataset_anchors entries back to dataset_inputs by name.
+        ds_result["dataset_name"] = ds.name
+        dataset_anchors.append(ds_result)
         ds_tx = (ds_result.get("anchor_result") or {}).get("tx_id")
         if ds_tx:
             try:
@@ -775,4 +780,10 @@ def anchor(
         "artifact_path": resolved_path,
         "artifact_status": artifact_status,
         "artifact_error": artifact_error,
+        # One entry per auto-anchored dataset_input, in the order the
+        # caller logged them. Each entry is the dict returned by
+        # _anchor_dataset_event, plus a ``dataset_name`` key so callers
+        # can match against dataset_inputs (the inlined-in-training
+        # version) by name.
+        "dataset_anchors": dataset_anchors,
     }

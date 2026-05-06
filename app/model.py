@@ -245,6 +245,12 @@ def train_and_register_with_params(
         "training_payload": training_anchor["payload"],
         "training_payload_hash": training_anchor["payload_hash"],
         "training_anchor_result": training_anchor.get("anchor_result"),
+        # Per-dataset standalone-anchor results from training-mode
+        # auto-anchor. Each entry has dataset_name + the dict returned
+        # by the plugin's _anchor_dataset_event (envelope, payload,
+        # anchor_result with tx_id, etc.). The demo uses these to show
+        # each dataset's own Arweave TX in the lineage / run-detail UI.
+        "training_dataset_anchors": training_anchor.get("dataset_anchors") or [],
         "ario_client": ario_client,
     }
 

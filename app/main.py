@@ -43,6 +43,31 @@ def _build_training_cache_record(model_info: dict) -> dict:
     """
     payload = model_info.get("training_payload") or {}
     artifact_checksums = payload.get("artifact_checksums", {}) or {}
+
+    # Merge each auto-anchored dataset's TX (and Arweave URL) into the
+    # corresponding dataset_inputs entry by name. Templates render the
+    # TX as a "View on ar.io" link without needing a separate lookup.
+    # The TX is navigation only — chain integrity comes from the
+    # inlined digest + schema_hash that are part of the signed
+    # canonical payload (see standalone-dataset-anchoring plan).
+    anchors_by_name: dict[str, dict] = {}
+    for da in (model_info.get("training_dataset_anchors") or []):
+        name = da.get("dataset_name")
+        if not name:
+            continue
+        ar = da.get("anchor_result") or {}
+        anchors_by_name[name] = {
+            "anchor_tx": ar.get("tx_id"),
+            "anchor_url": ar.get("url"),
+        }
+    enriched_dataset_inputs = []
+    for di in payload.get("dataset_inputs", []) or []:
+        name = di.get("name")
+        merged = dict(di)
+        if name and name in anchors_by_name:
+            merged.update(anchors_by_name[name])
+        enriched_dataset_inputs.append(merged)
+
     return {
         "event_id": str(uuid.uuid4()),
         "event_type": "training_complete",
@@ -56,11 +81,11 @@ def _build_training_cache_record(model_info: dict) -> dict:
         "artifact_hash": hash_data(canonical_json(artifact_checksums)),
         "source_name": payload.get("source_name", ""),
         "git_commit": payload.get("git_commit", ""),
-        # Surfaced from the canonical anchored payload so templates can
-        # render the dataset reference(s) without re-querying MLflow.
-        # Empty list when proof was anchored under the legacy escape
-        # hatch (allow_empty_dataset_inputs=True).
-        "dataset_inputs": payload.get("dataset_inputs", []),
+        # Surfaced from the canonical anchored payload (inlined
+        # metadata) plus per-dataset anchor_tx / anchor_url merged in
+        # from training_dataset_anchors. Empty list when proof was
+        # anchored under the legacy escape hatch.
+        "dataset_inputs": enriched_dataset_inputs,
     }
 
 

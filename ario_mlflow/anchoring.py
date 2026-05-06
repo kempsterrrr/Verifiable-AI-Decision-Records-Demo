@@ -213,6 +213,62 @@ def _find_registered_model_for_run(client, run_id: str) -> str | None:
     return results[0].name
 
 
+def _serialize_dataset_inputs(run_data) -> list[dict]:
+    """Read ``run_data.inputs.dataset_inputs`` and produce a
+    deterministic list suitable for inclusion in canonical bytes.
+
+    Schema is fingerprinted (``schema_hash``) rather than included
+    verbatim — column names can be sensitive in regulated domains
+    (medical, financial). The hash is computed over the JCS-canonicalized
+    parsed schema so the same logical schema produces the same hash
+    regardless of MLflow's whitespace or key-ordering choices.
+
+    Identifier fields (``name``, ``source``, ``source_type``, ``digest``,
+    ``context``) are plaintext — they're the auditor-readable
+    identification of the dataset and don't carry the same privacy risk
+    as the column-level schema.
+
+    Returns an empty list when the run has no logged inputs. Sorted by
+    ``(name, source, context, digest)`` for determinism even when
+    multiple inputs share a name.
+    """
+    inputs = getattr(getattr(run_data, "inputs", None), "dataset_inputs", None) or []
+    out = []
+    for di in inputs:
+        ds = di.dataset
+        context = next(
+            (t.value for t in (di.tags or []) if t.key == "mlflow.data.context"),
+            None,
+        )
+        schema_str = getattr(ds, "schema", None) or ""
+        if schema_str:
+            try:
+                schema_canonical = canonical_json(json.loads(schema_str))
+            except (ValueError, TypeError):
+                # Schema isn't valid JSON — fall back to hashing the
+                # raw bytes so a malformed schema can't break anchor().
+                # Surface in tests if this ever fires.
+                schema_canonical = schema_str.encode("utf-8")
+            schema_hash = hash_data(schema_canonical)
+        else:
+            schema_hash = ""
+        out.append({
+            "name":        ds.name,
+            "source":      ds.source,
+            "source_type": ds.source_type,
+            "digest":      ds.digest,
+            "schema_hash": schema_hash,
+            "context":     context,
+        })
+    out.sort(key=lambda d: (
+        d.get("name") or "",
+        d.get("source") or "",
+        d.get("context") or "",
+        d.get("digest") or "",
+    ))
+    return out
+
+
 def _build_training_payload(
     *,
     run_id: str,
@@ -225,6 +281,7 @@ def _build_training_payload(
     metadata: dict | None,
     include_tracking_uri: bool,
     tracking_uri: str | None,
+    dataset_inputs: list[dict],
 ) -> dict:
     """Assemble the canonical-payload dict for a training proof.
 
@@ -241,6 +298,7 @@ def _build_training_payload(
         "artifact_checksums": artifact_checksums_map,
         "source_name": source_name,
         "git_commit": git_commit,
+        "dataset_inputs": dataset_inputs,
     }
     if mlflow_trace_id:
         payload["mlflow_trace_id"] = mlflow_trace_id
@@ -267,6 +325,7 @@ def anchor(
     artifact_path: str | None = None,
     metadata: dict | None = None,
     capture_otel: bool = True,
+    allow_empty_dataset_inputs: bool = False,
 ) -> dict:
     """Create a verifiable commitment for the current training run.
 
@@ -396,6 +455,22 @@ def anchor(
         k: v for k, v in (metadata or {}).items() if k != "include_tracking_uri"
     }}
 
+    # Read MLflow's dataset_inputs (set by mlflow.log_input). Strict-
+    # by-default — anchor() refuses to mint a training proof with no
+    # dataset reference, since that breaks the verifiable chain at the
+    # head. allow_empty_dataset_inputs=True is the documented escape
+    # hatch for the rare legitimate case (research, GPAI workflows with
+    # no single dataset).
+    dataset_inputs = _serialize_dataset_inputs(run_data)
+    if not dataset_inputs and not allow_empty_dataset_inputs:
+        raise ValueError(
+            "anchor(): training run has no logged dataset inputs. "
+            "Call mlflow.log_input(dataset, context=...) before training, "
+            "or pass allow_empty_dataset_inputs=True to override (only "
+            "do this for workflows that genuinely have no single dataset; "
+            "see README on input-side anchoring)."
+        )
+
     # Build canonical payload (what's hashed and committed to).
     payload = _build_training_payload(
         run_id=run_id,
@@ -408,6 +483,7 @@ def anchor(
         metadata=merged_metadata,
         include_tracking_uri=include_tracking_uri,
         tracking_uri=tracking_uri,
+        dataset_inputs=dataset_inputs,
     )
     payload_bytes = canonical_json(payload)
     payload_hash = hash_data(payload_bytes)

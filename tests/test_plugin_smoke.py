@@ -1315,8 +1315,22 @@ def test_anchor_omits_artifact_hash_when_artifacts_unavailable(monkeypatch, tmp_
     class _ActiveRun:
         info = _RunInfo()
 
+    # Default fake dataset input so anchor()'s fail-closed input-side
+    # check passes — this test is about artifact-availability, not
+    # input-side anchoring.
+    class _DefaultDataset:
+        name = "ds"; source = "s.csv"; source_type = "local"
+        digest = "d"; schema = '{"mlflow_colspec":[]}'
+    class _DefaultInputTag:
+        key = "mlflow.data.context"; value = "training"
+    class _DefaultDatasetInput:
+        dataset = _DefaultDataset(); tags = [_DefaultInputTag()]
+    class _DefaultRunInputs:
+        dataset_inputs = [_DefaultDatasetInput()]
+
     class _FakeRun:
         data = _RunData()
+        inputs = _DefaultRunInputs()
 
     class _FakeMlflowClient:
         def get_run(self, run_id): return _FakeRun()
@@ -1378,8 +1392,21 @@ def test_anchor_accepts_custom_artifact_path(monkeypatch, tmp_path):
     class _ActiveRun:
         info = _RunInfo()
 
+    # Default fake dataset input for anchor()'s fail-closed input check
+    # (this test is about artifact path resolution, not input-side anchoring).
+    class _DefaultDataset:
+        name = "ds"; source = "s.csv"; source_type = "local"
+        digest = "d"; schema = '{"mlflow_colspec":[]}'
+    class _DefaultInputTag:
+        key = "mlflow.data.context"; value = "training"
+    class _DefaultDatasetInput:
+        dataset = _DefaultDataset(); tags = [_DefaultInputTag()]
+    class _DefaultRunInputs:
+        dataset_inputs = [_DefaultDatasetInput()]
+
     class _FakeRun:
         data = _RunData()
+        inputs = _DefaultRunInputs()
 
     class _FakeMlflowClient:
         def get_run(self, run_id): return _FakeRun()
@@ -1545,8 +1572,31 @@ def _make_anchor_stubs(monkeypatch, *, run_id="run-test", run_tags=None,
     class _ActiveRun:
         info = _RunInfo()
 
+    # Default fake dataset input so anchor()'s fail-closed check passes
+    # in tests that aren't specifically about input-side anchoring.
+    # Tests for input-side anchoring live in tests/test_input_anchoring.py
+    # and use their own stubs.
+    class _DefaultDataset:
+        name = "smoke_test_dataset"
+        source = "smoke.csv"
+        source_type = "local"
+        digest = "smoke-digest"
+        schema = '{"mlflow_colspec":[]}'
+
+    class _DefaultInputTag:
+        key = "mlflow.data.context"
+        value = "training"
+
+    class _DefaultDatasetInput:
+        dataset = _DefaultDataset()
+        tags = [_DefaultInputTag()]
+
+    class _DefaultRunInputs:
+        dataset_inputs = [_DefaultDatasetInput()]
+
     class _FakeRun:
         data = _RunData()
+        inputs = _DefaultRunInputs()
 
     class _FakeRegisteredModel:
         def __init__(self, name):

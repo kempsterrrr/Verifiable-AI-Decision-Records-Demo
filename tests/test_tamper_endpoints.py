@@ -131,6 +131,236 @@ def _wait_for_registration(app, timeout=30.0):
     )
 
 
+def _wait_for_artifact(mlflow_client, run_id, artifact_path, timeout=30.0):
+    """Poll until ``artifact_path`` is downloadable from ``run_id``.
+
+    Used by the per-button regression tests to ride out the prediction /
+    registration daemon thread's artifact-write step without depending
+    on ``arweave_tx_id`` (which won't appear if Arweave upload fails —
+    flaky under suite pollution but not relevant to the tamper-verify
+    cycle this audit is checking).
+    """
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            local_path = mlflow_client.download_artifacts(run_id, artifact_path)
+            with open(local_path, "rb") as f:
+                return f.read()
+        except Exception:
+            time.sleep(0.1)
+    raise AssertionError(
+        f"artifact {artifact_path!r} on run {run_id} never appeared within {timeout}s"
+    )
+
+
+def test_tamper_saved_decision_breaks_anchored_bytes_check(client):
+    """Audit B1: the 'Tamper with the saved record' button on
+    decision_detail.html overwrites ario/predictions/<id>/payload.json
+    in MLflow. The verifier's anchored-bytes check (the 'hash_match'
+    component of the 'Decision Record Matches' UI row) should flip
+    from PASS to FAIL.
+    """
+    import mlflow
+    from app.tamper import tamper_saved
+    from ario_mlflow.verify import verify_anchored_bytes
+    from ario_mlflow.proof import hash_data
+
+    decision_id = _make_decision(client)
+    app = client.app
+    settings = app.state.settings
+    mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+    mlflow_client = mlflow.tracking.MlflowClient()
+
+    envelope_record = app.state.store.get_by_id(decision_id)
+    assert envelope_record, f"decision {decision_id} not in RecordStore"
+    run_id = envelope_record["record"]["mlflow_run_id"]
+
+    # Wait for the prediction daemon to log the canonical artifact, then
+    # capture the bytes so we can compute the anchored payload_hash
+    # without going to Arweave.
+    artifact_path = f"ario/predictions/{decision_id}/payload.json"
+    canonical_bytes = _wait_for_artifact(mlflow_client, run_id, artifact_path)
+    anchored_hash = hash_data(canonical_bytes)
+
+    envelope = {
+        "event_type": "prediction",
+        "subject": {
+            "type": "mlflow_prediction",
+            "decision_id": decision_id,
+            "model_run_id": run_id,
+        },
+        "payload_hash": anchored_hash,
+    }
+
+    # BEFORE tamper: anchored bytes still hash to the recorded value.
+    before = verify_anchored_bytes(envelope, mlflow_client)
+    assert before["ok"] is True, f"baseline should pass: {before}"
+
+    # Apply the same backend the tamper button calls.
+    tamper_saved(
+        event_type="decision", event_id=decision_id,
+        lifecycle_store=app.state.lifecycle_store,
+        record_store=app.state.store,
+        tracking_uri=settings.mlflow_tracking_uri,
+    )
+
+    # AFTER tamper: garbage bytes have a different hash → check must FAIL.
+    after = verify_anchored_bytes(envelope, mlflow_client)
+    assert after["ok"] is False, (
+        "tamper_saved on a decision did not flip verify_anchored_bytes; "
+        f"got {after}"
+    )
+
+
+def test_tamper_live_decision_breaks_source_of_truth_check(client):
+    """Audit B2: the 'Tamper with the live data' button on
+    decision_detail.html overwrites the MLflow trace's
+    ``ario.payload_json`` tag. The verifier's source-of-truth refetcher
+    re-reads that tag, rebuilds canonical bytes against it, and the
+    'Decision Record Matches' SoT check should flip from PASS to FAIL.
+    """
+    import mlflow
+    from app.tamper import tamper_live
+    from ario_mlflow.verify import verify_source_of_truth
+
+    decision_id = _make_decision(client)
+    app = client.app
+    settings = app.state.settings
+    mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+    mlflow_client = mlflow.tracking.MlflowClient()
+
+    envelope_record = app.state.store.get_by_id(decision_id)
+    assert envelope_record
+    run_id = envelope_record["record"]["mlflow_run_id"]
+
+    artifact_path = f"ario/predictions/{decision_id}/payload.json"
+    canonical_bytes = _wait_for_artifact(mlflow_client, run_id, artifact_path)
+
+    envelope = {"event_type": "prediction"}
+
+    # BEFORE tamper: the trace tag was set by VerifiedModel.predict to
+    # mirror the canonical bytes, so SoT passes.
+    before = verify_source_of_truth(envelope, canonical_bytes, mlflow_client)
+    assert before["ok"] is True, f"baseline should pass: {before}"
+
+    tamper_live(
+        event_type="decision", event_id=decision_id,
+        lifecycle_store=app.state.lifecycle_store,
+        record_store=app.state.store,
+        tracking_uri=settings.mlflow_tracking_uri,
+    )
+
+    # AFTER tamper: trace tag carries garbage; rebuilt bytes diverge → FAIL.
+    after = verify_source_of_truth(envelope, canonical_bytes, mlflow_client)
+    assert after["ok"] is False, (
+        "tamper_live on a decision did not flip source_of_truth; "
+        f"got {after}"
+    )
+
+
+def _wait_for_training_run(app, timeout=30.0):
+    """Find the training_complete entry in the lifecycle_store once the
+    background hydrator has populated it. Returns (training_envelope,
+    run_id)."""
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        records = app.state.lifecycle_store.list_all()
+        training = next(
+            (r for r in records if r["record"]["event_type"] == "training_complete"),
+            None,
+        )
+        if training:
+            return training, training["record"]["run_id"]
+        time.sleep(0.1)
+    raise AssertionError("training entry never appeared in lifecycle_store")
+
+
+def test_tamper_saved_training_breaks_anchored_bytes_check(client):
+    """Audit B3: the 'Tamper with the saved record' button on
+    run_detail.html overwrites ``ario/payload.json`` on the training run.
+    The verifier's anchored-bytes check (the hash_match component of
+    'Training Record Matches') should flip from PASS to FAIL.
+    """
+    import mlflow
+    from app.tamper import tamper_saved
+    from ario_mlflow.verify import verify_anchored_bytes
+    from ario_mlflow.proof import hash_data
+
+    app = client.app
+    settings = app.state.settings
+    mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+    mlflow_client = mlflow.tracking.MlflowClient()
+
+    training, run_id = _wait_for_training_run(app)
+    canonical_bytes = _wait_for_artifact(mlflow_client, run_id, "ario/payload.json")
+    anchored_hash = hash_data(canonical_bytes)
+
+    envelope = {
+        "event_type": "training_complete",
+        "subject": {"type": "mlflow_run", "run_id": run_id},
+        "payload_hash": anchored_hash,
+    }
+
+    before = verify_anchored_bytes(envelope, mlflow_client)
+    assert before["ok"] is True, f"baseline should pass: {before}"
+
+    tamper_saved(
+        event_type="training", event_id=run_id,
+        lifecycle_store=app.state.lifecycle_store,
+        record_store=app.state.store,
+        tracking_uri=settings.mlflow_tracking_uri,
+    )
+
+    after = verify_anchored_bytes(envelope, mlflow_client)
+    assert after["ok"] is False, (
+        "tamper_saved on a training run did not flip verify_anchored_bytes; "
+        f"got {after}"
+    )
+
+
+def test_tamper_live_training_breaks_source_of_truth_check(client):
+    """Audit B4: the 'Tamper with the live data' button on
+    run_detail.html (and the matching button on model_chain.html) writes
+    ``log_metric(run_id, "accuracy", 0.999)``. The verifier's source-of-
+    truth refetcher re-reads run.data.metrics, rebuilds canonical bytes,
+    and the 'Training Record Matches' SoT check should flip PASS→FAIL.
+    """
+    import mlflow
+    from app.tamper import tamper_live
+    from ario_mlflow.verify import verify_source_of_truth
+
+    app = client.app
+    settings = app.state.settings
+    mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+    mlflow_client = mlflow.tracking.MlflowClient()
+
+    training, run_id = _wait_for_training_run(app)
+    canonical_bytes = _wait_for_artifact(mlflow_client, run_id, "ario/payload.json")
+
+    envelope = {
+        "event_type": "training_complete",
+        "subject": {"type": "mlflow_run", "run_id": run_id},
+    }
+
+    before = verify_source_of_truth(envelope, canonical_bytes, mlflow_client)
+    assert before["ok"] is True, f"baseline should pass: {before}"
+
+    tamper_live(
+        event_type="training", event_id=run_id,
+        lifecycle_store=app.state.lifecycle_store,
+        record_store=app.state.store,
+        tracking_uri=settings.mlflow_tracking_uri,
+    )
+
+    after = verify_source_of_truth(envelope, canonical_bytes, mlflow_client)
+    assert after["ok"] is False, (
+        "tamper_live on a training run did not flip source_of_truth; "
+        f"got {after}"
+    )
+
+
 def test_swap_artifact_tamper_breaks_registration_source_of_truth(client):
     """Regression test for the swap-deployed-model-artifact tamper.
 
@@ -212,4 +442,25 @@ def test_swap_artifact_tamper_breaks_registration_source_of_truth(client):
     assert sot_after["ok"] is False, (
         "source-of-truth should FAIL after model.pkl was swapped on the "
         f"canonical LoggedModel store, but got {sot_after}"
+    )
+
+    # Also assert the *transitive* chain failure: the training event's
+    # canonical bytes commit to artifact_checksums too, so swapping the
+    # model artifact must also flip the training-side source-of-truth.
+    # This is what makes the chain valuable — tampering one shared
+    # dependency cascades to every link that references it (the button
+    # description on model_chain.html promises exactly this).
+    training_canonical = mlflow.artifacts.download_artifacts(
+        run_id=source_run_id, artifact_path="ario/payload.json",
+    )
+    with open(training_canonical, "rb") as f:
+        training_bytes = f.read()
+    training_envelope = {
+        "event_type": "training_complete",
+        "subject": {"type": "mlflow_run", "run_id": source_run_id},
+    }
+    training_sot = verify_source_of_truth(training_envelope, training_bytes, mlflow_client)
+    assert training_sot["ok"] is False, (
+        "swap-artifact tamper should also flip the training-side "
+        f"source-of-truth (transitive chain failure), but got {training_sot}"
     )

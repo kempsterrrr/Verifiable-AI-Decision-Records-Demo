@@ -120,7 +120,8 @@ def tamper_live(event_type, event_id, *, lifecycle_store, record_store, tracking
 
     - decision: overwrite the trace's ario.payload_json tag.
     - training: overwrite logged accuracy metric to 0.999.
-    - registration: overwrite the model version's source_run_id tag.
+    - registration: swap the bytes of model.pkl on the canonical
+      LoggedModel store (the "model swap" demo).
     """
     key = (event_type, event_id, "live")
     with _lock:

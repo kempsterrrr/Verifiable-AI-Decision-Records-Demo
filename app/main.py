@@ -56,6 +56,11 @@ def _build_training_cache_record(model_info: dict) -> dict:
         "artifact_hash": hash_data(canonical_json(artifact_checksums)),
         "source_name": payload.get("source_name", ""),
         "git_commit": payload.get("git_commit", ""),
+        # Surfaced from the canonical anchored payload so templates can
+        # render the dataset reference(s) without re-querying MLflow.
+        # Empty list when proof was anchored under the legacy escape
+        # hatch (allow_empty_dataset_inputs=True).
+        "dataset_inputs": payload.get("dataset_inputs", []),
     }
 
 

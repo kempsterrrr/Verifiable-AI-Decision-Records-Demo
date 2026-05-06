@@ -131,6 +131,38 @@
                         {% endfor %}
                     </div>
                     {% endif %}
+
+                    {% set dataset_inputs = envelope.record.get('dataset_inputs') or [] %}
+                    <div style="font-size: 0.65rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; margin: 0.85rem 0 0.3rem;">Training Inputs</div>
+                    {% if dataset_inputs %}
+                        {% for di in dataset_inputs %}
+                        <div class="kv">
+                            <div class="kv-row">
+                                <span class="kv-key">Name</span>
+                                <span class="kv-value">{{ di.name }}{% if di.context %} <span style="color: var(--muted);">({{ di.context }})</span>{% endif %}</span>
+                            </div>
+                            <div class="kv-row">
+                                <span class="kv-key">Source</span>
+                                <span class="kv-value" style="font-family: 'JetBrains Mono', 'SF Mono', monospace; font-size: 0.78rem;">{{ di.source }}</span>
+                            </div>
+                            <div class="kv-row">
+                                <span class="kv-key">Digest</span>
+                                <span class="kv-value" style="font-family: 'JetBrains Mono', 'SF Mono', monospace; font-size: 0.78rem;" title="MLflow's dataset digest. The plugin commits this to the signed canonical payload alongside name and source.">{{ di.digest }}</span>
+                            </div>
+                            {% if di.schema_hash %}
+                            <div class="kv-row">
+                                <span class="kv-key">Schema fingerprint</span>
+                                <span class="kv-value" style="font-family: 'JetBrains Mono', 'SF Mono', monospace; font-size: 0.78rem;" title="SHA-256 of the JCS-canonicalized schema. The schema's column names are not stored in the proof for privacy — only this fingerprint, so post-anchor schema mutations are still tamper-detectable.">{{ di.schema_hash[:16] }}…</span>
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% if not loop.last %}<div style="height: 0.5rem;"></div>{% endif %}
+                        {% endfor %}
+                    {% else %}
+                    <div style="font-size: 0.78rem; color: var(--muted); padding: 0.5rem 0;">
+                        No dataset inputs recorded for this run. New training runs require <code>mlflow.log_input(...)</code> before <code>anchor()</code> — this is likely a legacy proof or one anchored with the <code>allow_empty_dataset_inputs=True</code> escape hatch.
+                    </div>
+                    {% endif %}
                 </div>
             </div>
 

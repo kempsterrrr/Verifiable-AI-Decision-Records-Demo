@@ -271,6 +271,113 @@ def test_anchor_dataset_inputs_serialization_is_deterministic(tmp_path, monkeypa
     assert bytes_1 == bytes_2, "dataset_inputs ordering must be canonical"
 
 
+# --------------------------------------------------------------------------- #
+# Verify-side re-derivation (Piece A Task A2)                                  #
+# --------------------------------------------------------------------------- #
+
+def _build_anchored_training_payload(dataset_inputs):
+    """Build a canonical training payload as if anchor() produced it,
+    using the same _serialize_dataset_inputs helper. Returns
+    (payload_dict, payload_bytes)."""
+    from ario_mlflow.anchoring import _serialize_dataset_inputs
+    fresh = _serialize_dataset_inputs(_FakeRun(dataset_inputs=dataset_inputs))
+    payload = {
+        "event_type": "training_complete",
+        "run_id": "run-x",
+        "params": {},
+        "metrics": {},
+        "artifact_checksums": {},
+        "source_name": "",
+        "git_commit": "",
+        "dataset_inputs": fresh,
+    }
+    return payload, canonical_json(payload)
+
+
+def _patch_verify_env(monkeypatch):
+    """Stub the artifact_checksums + _logged_model_paths the refetcher
+    pulls in via the anchoring module."""
+    monkeypatch.setattr(
+        "ario_mlflow.anchoring.artifact_checksums",
+        lambda run_id, artifact_path="model": {},
+    )
+    monkeypatch.setattr(
+        "ario_mlflow.anchoring._logged_model_paths",
+        lambda run: [],
+    )
+
+
+def test_verify_source_of_truth_passes_when_dataset_inputs_match(monkeypatch):
+    """Anchor a training proof with dataset inputs; verifier re-fetches
+    the same inputs from MLflow → rebuilt canonical bytes equal anchored
+    bytes → SoT passes."""
+    from ario_mlflow.verify import verify_source_of_truth
+
+    di = _make_dataset_input(name="ds", source="s.csv", digest="abc")
+    payload, payload_bytes = _build_anchored_training_payload([di])
+
+    # Live MLflow returns the SAME inputs.
+    fake_client = _FakeMlflowClient(_FakeRun(dataset_inputs=[di]))
+    _patch_verify_env(monkeypatch)
+
+    envelope = {"event_type": "training_complete"}
+    result = verify_source_of_truth(envelope, payload_bytes, fake_client)
+    assert result["ok"] is True, result
+
+
+def test_verify_source_of_truth_fails_when_dataset_input_digest_mutated(monkeypatch):
+    """Mutate the dataset's digest in MLflow after anchoring → rebuilt
+    canonical bytes diverge → SoT correctly flips to FAIL.
+
+    This is the core tamper-detection path for input-side anchoring.
+    The C-piece tamper button writes to the on-disk dataset meta.yaml;
+    this unit test exercises the same outcome by stubbing different
+    digests at anchor time vs verify time."""
+    from ario_mlflow.verify import verify_source_of_truth
+
+    anchored_di = _make_dataset_input(name="ds", source="s.csv", digest="ORIGINAL")
+    payload, payload_bytes = _build_anchored_training_payload([anchored_di])
+
+    # Live MLflow now returns a different digest (tamper occurred).
+    tampered_di = _make_dataset_input(name="ds", source="s.csv", digest="TAMPERED")
+    fake_client = _FakeMlflowClient(_FakeRun(dataset_inputs=[tampered_di]))
+    _patch_verify_env(monkeypatch)
+
+    envelope = {"event_type": "training_complete"}
+    result = verify_source_of_truth(envelope, payload_bytes, fake_client)
+    assert result["ok"] is False, (
+        "source-of-truth must FAIL when a dataset's digest changes in "
+        f"MLflow after anchoring; got {result}"
+    )
+
+
+def test_verify_source_of_truth_fails_when_dataset_input_added_after_anchor(monkeypatch):
+    """Add a fraudulent extra dataset input to MLflow after anchoring →
+    rebuilt canonical bytes have an extra entry → SoT FAILs."""
+    from ario_mlflow.verify import verify_source_of_truth
+
+    original = _make_dataset_input(name="train", source="t.csv", digest="t1")
+    payload, payload_bytes = _build_anchored_training_payload([original])
+
+    # Live MLflow now has an additional fraudulent input.
+    fraud = _make_dataset_input(name="forged", source="f.csv", digest="ff")
+    fake_client = _FakeMlflowClient(
+        _FakeRun(dataset_inputs=[original, fraud])
+    )
+    _patch_verify_env(monkeypatch)
+
+    envelope = {"event_type": "training_complete"}
+    result = verify_source_of_truth(envelope, payload_bytes, fake_client)
+    assert result["ok"] is False, (
+        "source-of-truth must FAIL when a dataset_input is added after "
+        f"anchoring; got {result}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# (Original Task A1 tests continue below)                                     #
+# --------------------------------------------------------------------------- #
+
 def test_anchor_schema_hash_stable_across_calls(tmp_path, monkeypatch):
     """Same logical schema → same schema_hash. Belt-and-braces test
     against any future change to MLflow's schema serialization (ours is

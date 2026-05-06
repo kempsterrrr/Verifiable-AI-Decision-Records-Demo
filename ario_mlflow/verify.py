@@ -70,6 +70,10 @@ class LiveRefetchError(Exception):
 _TRAINING_REQUIRED_LIVE_FIELDS = frozenset({
     "params", "metrics", "artifact_checksums", "source_name", "git_commit",
 })
+# dataset_inputs is required only when the anchored payload commits to it
+# (i.e. proofs anchored under v1+ of input-side anchoring). Legacy proofs
+# from before input-side anchoring shipped have no dataset_inputs field
+# and are still valid; the refetcher conditionally adds the field below.
 _REGISTRATION_REQUIRED_LIVE_FIELDS = frozenset({
     "artifact_hash", "artifact_verified",
 })
@@ -81,7 +85,10 @@ def _refetch_training_live_fields(payload: dict, mlflow_client) -> dict:
     Raises ``LiveRefetchError`` if any required field can't be obtained.
     Required fields are listed in ``_TRAINING_REQUIRED_LIVE_FIELDS``.
     """
-    from ario_mlflow.anchoring import artifact_checksums, ArtifactAccessError, _logged_model_paths
+    from ario_mlflow.anchoring import (
+        artifact_checksums, ArtifactAccessError, _logged_model_paths,
+        _serialize_dataset_inputs,
+    )
 
     run_id = payload.get("run_id")
     if not run_id:
@@ -112,6 +119,19 @@ def _refetch_training_live_fields(payload: dict, mlflow_client) -> dict:
         "source_name": run.data.tags.get("mlflow.source.name", ""),
         "git_commit": run.data.tags.get("mlflow.source.git.commit", ""),
     }
+    # Re-derive dataset_inputs only when the anchored payload commits to
+    # it. Proofs anchored under v1+ of input-side anchoring have the
+    # field; legacy proofs (anchored before input-side shipped) don't,
+    # and unconditionally adding it on the refetch side would cause
+    # rebuilt canonical bytes to diverge from the anchored bytes,
+    # spuriously failing verification of legacy proofs.
+    #
+    # For v1+ proofs, any post-anchor mutation in MLflow (changed
+    # digest, added fraudulent extra input, removed input) makes the
+    # rebuilt canonical bytes diverge from the anchored bytes,
+    # flipping source_of_truth to FAIL.
+    if "dataset_inputs" in payload:
+        fresh["dataset_inputs"] = _serialize_dataset_inputs(run)
     try:
         fresh["artifact_checksums"] = artifact_checksums(run_id, artifact_path=artifact_path)
     except ArtifactAccessError as e:

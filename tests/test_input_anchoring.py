@@ -416,6 +416,143 @@ def test_anchor_dataset_subject_uses_mlflow_dataset_type(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# Training-mode auto-anchor (Piece A Task A3)                                  #
+# When anchor() is called from training context, each dataset_input is        #
+# auto-anchored as a standalone dataset event. The resulting TX is written    #
+# to a run-level tag for navigation; canonical training bytes are unchanged. #
+# --------------------------------------------------------------------------- #
+
+
+def _patch_anchor_env_with_set_tag(monkeypatch, run, *, captured_tags=None):
+    """Like _patch_anchor_env but uses a real-ish set_tag stub that
+    captures (run_id, key, value) tuples for assertion."""
+    import ario_mlflow.anchoring as anchoring
+
+    captured_tags = captured_tags if captured_tags is not None else []
+
+    class _CapturingMlflowClient:
+        def __init__(self, run):
+            self._run = run
+        def get_run(self, rid):
+            return self._run
+        def set_tag(self, run_id, key, value):
+            captured_tags.append((run_id, key, value))
+        def search_model_versions(self, query):
+            return []
+        def get_registered_model(self, name):
+            return None
+        def set_registered_model_tag(self, name, key, value):
+            pass
+
+    monkeypatch.setattr(
+        anchoring.mlflow, "active_run",
+        lambda: _FakeActiveRun("run-test"),
+    )
+    monkeypatch.setattr(
+        anchoring.mlflow.tracking, "MlflowClient",
+        lambda: _CapturingMlflowClient(run),
+    )
+    monkeypatch.setattr(anchoring.mlflow, "log_artifacts", lambda *a, **kw: None)
+    monkeypatch.setattr(anchoring.mlflow, "get_active_trace_id", lambda: None)
+    monkeypatch.setattr(anchoring.mlflow, "get_tracking_uri", lambda: "file:./mlruns")
+    monkeypatch.setattr(
+        anchoring, "artifact_checksums",
+        lambda run_id, artifact_path="model": {},
+    )
+    return captured_tags
+
+
+class _UploadingFakeAnchor:
+    """Like _FakeAnchor but enabled, so upload_proof returns a fake TX
+    each call. Tracks every upload for assertion."""
+    def __init__(self):
+        self.enabled = True
+        self.wallet_mode = "user-configured"
+        self.uploads = []
+
+    def upload_proof(self, env, *a, **kw):
+        self.uploads.append(env)
+        return {"tx_id": f"TX-{len(self.uploads):03d}", "url": "u", "receipt": {}}
+
+
+def test_anchor_training_auto_anchors_each_dataset_input(tmp_path, monkeypatch):
+    """When anchor() runs in training mode, each dataset_input on the
+    run is auto-anchored as a standalone dataset event (one upload per
+    input) BEFORE the training event is anchored."""
+    import ario_mlflow.anchoring as anchoring
+
+    di_a = _make_dataset_input(name="train", source="t.csv", digest="t1")
+    di_b = _make_dataset_input(name="val",   source="v.csv", digest="v1")
+    run = _FakeRun(dataset_inputs=[di_a, di_b])
+    _patch_anchor_env_with_set_tag(monkeypatch, run)
+
+    fake_anchor = _UploadingFakeAnchor()
+    anchoring.anchor(
+        proof_engine=ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=fake_anchor,
+    )
+
+    # Two dataset uploads + one training upload = 3 total. The dataset
+    # uploads each have event_type="dataset"; the training upload has
+    # event_type="training_complete".
+    event_types = [env["event_type"] for env in fake_anchor.uploads]
+    assert event_types.count("dataset") == 2
+    assert event_types.count("training_complete") == 1
+
+
+def test_anchor_training_writes_dataset_anchor_tx_run_tags(tmp_path, monkeypatch):
+    """For each dataset_input, the resulting anchor TX is written to a
+    run-level tag named ario.dataset_anchor_tx.<dataset_name>. This
+    is navigation metadata for the demo and chain-walking auditors —
+    NOT part of the training event's canonical bytes."""
+    import ario_mlflow.anchoring as anchoring
+
+    di = _make_dataset_input(name="train_q1", source="t.csv", digest="t1")
+    run = _FakeRun(dataset_inputs=[di])
+    captured = _patch_anchor_env_with_set_tag(monkeypatch, run)
+
+    fake_anchor = _UploadingFakeAnchor()
+    anchoring.anchor(
+        proof_engine=ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=fake_anchor,
+    )
+
+    # The dataset's anchor TX should be tagged on the run for navigation.
+    tag_keys = [k for (_rid, k, _v) in captured]
+    matching = [(k, v) for (_rid, k, v) in captured if k == "ario.dataset_anchor_tx.train_q1"]
+    assert len(matching) == 1, f"expected one ario.dataset_anchor_tx.train_q1 tag, got {tag_keys}"
+    _, tx_value = matching[0]
+    # The tag value should be one of the TXs the fake anchor returned.
+    assert tx_value.startswith("TX-"), tx_value
+
+
+def test_anchor_training_canonical_bytes_unchanged_by_auto_anchor(tmp_path, monkeypatch):
+    """The training payload's dataset_inputs entries remain free of any
+    anchor_tx field. anchor_tx is run-tag navigation; canonical bytes
+    stay v1-shape so verify-side SoT keeps working without changes."""
+    import ario_mlflow.anchoring as anchoring
+
+    di = _make_dataset_input(name="ds", source="s.csv", digest="d1")
+    run = _FakeRun(dataset_inputs=[di])
+    _patch_anchor_env_with_set_tag(monkeypatch, run)
+
+    result = anchoring.anchor(
+        proof_engine=ProofEngine(str(tmp_path / "priv"), str(tmp_path / "pub")),
+        arweave=_UploadingFakeAnchor(),
+    )
+
+    payload = result["payload"]
+    # dataset_inputs is in the canonical bytes (Task A1 work) but does
+    # NOT carry an anchor_tx field — that lives on run tags only.
+    assert payload["dataset_inputs"], "training payload must still inline dataset_inputs"
+    for entry in payload["dataset_inputs"]:
+        assert "anchor_tx" not in entry, (
+            "anchor_tx must NOT be in canonical bytes — it's run-tag "
+            "navigation, not part of the cryptographic chain integrity"
+        )
+
+
+# --------------------------------------------------------------------------- #
 # Verify-side re-derivation (Piece A Task A2)                                  #
 # --------------------------------------------------------------------------- #
 

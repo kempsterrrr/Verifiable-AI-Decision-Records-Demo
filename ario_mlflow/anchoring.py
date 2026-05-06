@@ -575,6 +575,45 @@ def anchor(
             "see README on input-side anchoring)."
         )
 
+    # Auto-anchor each dataset_input as a standalone dataset event
+    # (one signed envelope per dataset, its own Arweave TX). The TX
+    # is written to a run-level tag for navigation —
+    # ario.dataset_anchor_tx.<dataset_name> — so the demo and any
+    # chain-walking auditor can find the dataset proof from the run.
+    # The TX is NOT part of the training event's canonical bytes;
+    # chain integrity is provided by the inlined digest +
+    # schema_hash that _serialize_dataset_inputs already includes.
+    raw_inputs = list(getattr(run_data.inputs, "dataset_inputs", None) or [])
+    for di in raw_inputs:
+        ds = di.dataset
+        try:
+            ds_result = _anchor_dataset_event(
+                ds, proof_engine=proof_engine, arweave=arweave,
+            )
+        except Exception as e:  # noqa: BLE001
+            # Don't abort training-mode anchor() on dataset-anchor failure.
+            # Log and continue; the training proof still ships with
+            # inlined dataset metadata (cryptographic chain integrity
+            # is preserved). Best-effort matches the rest of the
+            # plugin's "signed-only on transient failure" pattern.
+            logger.warning(
+                f"Auto-anchor of dataset {ds.name!r} raised; continuing "
+                f"with training proof. Inlined metadata still ensures "
+                f"chain integrity: {e}"
+            )
+            continue
+        ds_tx = (ds_result.get("anchor_result") or {}).get("tx_id")
+        if ds_tx:
+            try:
+                client.set_tag(
+                    run_id, f"ario.dataset_anchor_tx.{ds.name}", ds_tx,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    f"Could not set ario.dataset_anchor_tx.{ds.name} "
+                    f"on run {run_id}: {e}"
+                )
+
     # Build canonical payload (what's hashed and committed to).
     payload = _build_training_payload(
         run_id=run_id,

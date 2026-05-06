@@ -152,7 +152,7 @@
                             {% if di.schema_hash %}
                             <div class="kv-row">
                                 <span class="kv-key">Schema fingerprint</span>
-                                <span class="kv-value" style="font-family: 'JetBrains Mono', 'SF Mono', monospace; font-size: 0.78rem;" title="SHA-256 of the JCS-canonicalized schema. The schema's column names are not stored in the proof for privacy — only this fingerprint, so post-anchor schema mutations are still tamper-detectable.">{{ di.schema_hash[:16] }}…</span>
+                                <span class="kv-value" style="font-family: 'JetBrains Mono', 'SF Mono', monospace; font-size: 0.78rem;" title="SHA-256 of the JCS-canonicalized schema. The schema's column names are not stored in the proof for privacy — only this fingerprint, so post-anchor schema mutations are still tamper-detectable.">{{ di.schema_hash }}</span>
                             </div>
                             {% endif %}
                         </div>

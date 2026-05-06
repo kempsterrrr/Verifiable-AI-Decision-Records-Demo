@@ -122,6 +122,73 @@
         </div>
 
         <div class="chain">
+            <!-- Dataset Node — head of the chain. The dataset's identity
+                 (name, source, digest, schema fingerprint) is committed
+                 INSIDE the training run's signed canonical payload, so
+                 there's no separate Arweave TX for it; its dot mirrors
+                 the training node's verification status because tampering
+                 dataset metadata flips Training Record Matches via SoT. -->
+            <div class="chain-node">
+                {% set training_dataset_inputs = (training.record.get('dataset_inputs') if training else []) or [] %}
+                {% set ds_tv = training.get('last_verification') if training else none %}
+                {% set ds_pending_attestation = ds_tv and ds_tv.overall is sameas false
+                    and ds_tv.signature_valid is sameas true
+                    and ds_tv.hash_match is sameas true
+                    and ds_tv.source_of_truth_ok is sameas true
+                    and ds_tv.attestation_level and ds_tv.attestation_level < 2 %}
+                {% set ds_real_fail = ds_tv and ds_tv.overall is sameas false and not ds_pending_attestation %}
+                {% if training and training_dataset_inputs %}
+                    <div class="chain-dot {% if ds_tv and ds_tv.overall is sameas true %}chain-dot-green{% elif ds_real_fail %}chain-dot-red{% elif training.arweave_tx_id %}chain-dot-yellow{% else %}chain-dot-gray{% endif %}"></div>
+                {% else %}
+                    <div class="chain-dot chain-dot-gray"></div>
+                {% endif %}
+                <div class="chain-card">
+                    <div class="chain-card-header">
+                        <h3>Training Dataset{% if training_dataset_inputs|length > 1 %}s{% endif %}</h3>
+                        {% if training_dataset_inputs %}
+                            <span class="badge badge-gray" title="Each dataset's name, source, digest, and schema fingerprint live inside the training run's signed canonical payload. Tampering any of these fields in MLflow flips Training Record Matches via the source-of-truth check on the run below.">Anchored inside training</span>
+                        {% else %}
+                            <span class="badge badge-gray"><span class="badge-dot"></span> Not recorded</span>
+                        {% endif %}
+                    </div>
+                    {% if training_dataset_inputs %}
+                    <div class="chain-card-body" style="grid-template-columns: 1fr;">
+                        <div>
+                            {% for di in training_dataset_inputs %}
+                            <div class="kv">
+                                <div class="kv-row">
+                                    <span class="kv-key">Name</span>
+                                    <span class="kv-value">{{ di.name }}{% if di.context %} <span style="color: var(--muted);">({{ di.context }})</span>{% endif %}</span>
+                                </div>
+                                <div class="kv-row">
+                                    <span class="kv-key">Source</span>
+                                    <span class="kv-value mono mono-sm">{{ di.source }}</span>
+                                </div>
+                                <div class="kv-row">
+                                    <span class="kv-key">Digest</span>
+                                    <span class="kv-value mono mono-sm">{{ di.digest }}</span>
+                                </div>
+                                {% if di.schema_hash %}
+                                <div class="kv-row">
+                                    <span class="kv-key">Schema fingerprint</span>
+                                    <span class="kv-value mono mono-sm">{{ di.schema_hash }}</span>
+                                </div>
+                                {% endif %}
+                            </div>
+                            {% if not loop.last %}<div style="height: 0.85rem; border-top: 1px solid var(--border); margin-top: 0.85rem;"></div>{% endif %}
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+                    {% if training and training.arweave_tx_id and training_dataset_inputs %}
+                    <div class="chain-card-footer">
+                        <span style="color: var(--muted); font-size: 0.78rem;">Committed inside the training run's canonical bytes</span>
+                        <a href="{{ training.arweave_url }}" target="_blank" rel="noopener" class="mono mono-sm">TX: {{ training.arweave_tx_id[:16] }}...</a>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+
             <!-- Training Node -->
             <div class="chain-node">
                 {% if training %}

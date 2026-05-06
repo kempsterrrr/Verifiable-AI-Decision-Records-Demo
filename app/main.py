@@ -89,6 +89,42 @@ def _build_training_cache_record(model_info: dict) -> dict:
     }
 
 
+def _build_dataset_anchored_records(model_info: dict) -> list[dict]:
+    """Build one lifecycle_store envelope per auto-anchored dataset.
+
+    Each entry mirrors the training/registration envelope shape so the
+    UI can render it as its own chain node with its own verification
+    badge: a ``record`` sub-dict with the dataset's identity, plus
+    ``arweave_tx_id`` / ``arweave_url`` / ``turbo_receipt`` from the
+    plugin's per-dataset anchor result. Returns one dict per dataset
+    with ``source_run_id`` set so the model_chain page can filter
+    these entries to the relevant training run.
+    """
+    out = []
+    for da in (model_info.get("training_dataset_anchors") or []):
+        ds_payload = da.get("payload") or {}
+        anchor_result = da.get("anchor_result") or {}
+        record = {
+            "event_id": str(uuid.uuid4()),
+            "event_type": "dataset_anchored",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "name":        ds_payload.get("name"),
+            "source":      ds_payload.get("source"),
+            "source_type": ds_payload.get("source_type"),
+            "digest":      ds_payload.get("digest"),
+            "schema_hash": ds_payload.get("schema_hash"),
+            "source_run_id": model_info["run_id"],
+            "payload_hash": da.get("payload_hash"),
+        }
+        out.append({
+            "record": record,
+            "arweave_tx_id": anchor_result.get("tx_id"),
+            "arweave_url": anchor_result.get("url"),
+            "turbo_receipt": anchor_result.get("receipt"),
+        })
+    return out
+
+
 def _build_registration_cache_record(
     model_name: str,
     model_version: str,
@@ -151,6 +187,16 @@ def _startup_anchor_lifecycle(settings, model_info, lifecycle_store):
         logger.info(
             f"Tracked training {run_id} in lifecycle_store: "
             f"tx={training_anchor.get('tx_id')}"
+        )
+
+        # Per-dataset standalone anchors as their own lifecycle entries.
+        # Each gets a chain-card on the model lineage page with its own
+        # verification badge — same shape as training/registration.
+        for ds_envelope in _build_dataset_anchored_records(model_info):
+            lifecycle_store.append(ds_envelope)
+        logger.info(
+            f"Tracked {len(model_info.get('training_dataset_anchors') or [])} "
+            f"dataset_anchored entries for run {run_id}."
         )
 
     # Registration cache entry — plugin's ArioMlflowClient kicked off the
@@ -477,6 +523,12 @@ def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
         "turbo_receipt": plugin_anchor.get("receipt"),
     }
     request.app.state.lifecycle_store.append(training_envelope)
+
+    # Per-dataset standalone-anchor lifecycle entries — one chain-card
+    # per logged dataset on the model lineage page, each with its own
+    # Arweave TX and verification status.
+    for ds_envelope in _build_dataset_anchored_records(info):
+        request.app.state.lifecycle_store.append(ds_envelope)
 
     # Registration cache entry. The plugin's ArioMlflowClient kicked off
     # the real registration anchor in a daemon thread; arweave_tx_id

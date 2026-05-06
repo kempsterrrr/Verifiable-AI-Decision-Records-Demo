@@ -481,6 +481,18 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
         elif r.get("event_type") == "model_registered" and r.get("model_name") == model_name and str(r.get("model_version")) == str(version):
             registration_env = rec
 
+    # Filter dataset_anchored entries to those that belong to this
+    # model's training run. Each becomes its own chain-card on the
+    # lineage page with its own Arweave TX and verification badge.
+    dataset_anchored_envs: list[dict] = []
+    if training_env:
+        target_run_id = training_env["record"]["run_id"]
+        for rec in lifecycle_records:
+            r = rec.get("record", {})
+            if (r.get("event_type") == "dataset_anchored"
+                    and r.get("source_run_id") == target_run_id):
+                dataset_anchored_envs.append(rec)
+
     # Full verification (on-demand)
     training_verify = None
     registration_verify = None
@@ -534,6 +546,18 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
             }
             app.state.lifecycle_store.update(registration_env["record"]["event_id"], registration_env)
 
+        # Verify each dataset_anchored entry. Same primitive as
+        # training/registration; for dataset events the four-check
+        # result is signature + ar.io attestation only (anchored_bytes
+        # and source_of_truth are ok=None in v1 — see standalone-
+        # dataset-anchoring plan).
+        for ds_env in dataset_anchored_envs:
+            ds_verify = _verify_envelope(app, ds_env)
+            ds_env["last_verification"] = {
+                k: v for k, v in ds_verify.items() if k != "plugin_full_verify"
+            }
+            app.state.lifecycle_store.update(ds_env["record"]["event_id"], ds_env)
+
     # Prediction summary
     predictions = app.state.store.list_all()
     model_predictions = [
@@ -566,6 +590,7 @@ def model_chain(request: Request, model_name: str, version: str, verify: bool = 
             "training_turbo": training_turbo,
             "registration": registration_env,
             "registration_turbo": registration_turbo,
+            "dataset_anchored": dataset_anchored_envs,
             "prediction_count": len(model_predictions),
             "anchored_count": anchored_count,
             "verified_count": verified_count,

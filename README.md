@@ -263,20 +263,67 @@ pip install -e .
 
 ### Usage
 
-**Training — one explicit `anchor()` call:**
+**Training — log a dataset, then call `anchor()`:**
 
 ```python
 import mlflow
+import mlflow.data
 from ario_mlflow import anchor
 
+dataset = mlflow.data.from_pandas(
+    train_df, source="s3://bucket/train.csv", name="train_q1_2026",
+)
+
 with mlflow.start_run() as run:
+    mlflow.log_input(dataset, context="training")    # required (see below)
     mlflow.log_param("lr", 0.01)
     mlflow.sklearn.log_model(model, "model")
     mlflow.log_metric("accuracy", 0.95)
-    anchor()  # signs a proof, uploads to Arweave, writes ario.* tags + artifacts
+    anchor()
+    # → Signs a proof for the dataset, uploads to Arweave (its own TX).
+    # → Signs a proof for the training run, uploads to Arweave (linked TX).
+    # → Writes ario.* tags + artifacts on the run.
 ```
 
 Just importing `ario_mlflow` auto-injects `ario.enabled` / `ario.version` tags on every run via the `RunContextProvider`. `anchor()` adds the rich proof layer and must be called inside the run.
+
+**Strict-by-default on dataset inputs.** As of input-side anchoring v1, `anchor()` raises `ValueError` when the run has no logged dataset inputs. The fail-closed default exists so a chain that claims to be auditable can't silently ship without a dataset reference at the head. For workflows that genuinely have no single dataset (research scripts, GPAI training on internet-scale corpora) pass `allow_empty_dataset_inputs=True` to override.
+
+**The dataset's default digest samples rows** (MLflow's `PandasDataset` default — fast for large frames, doesn't catch single-row poisoning). For airtight integrity, supply your own SHA-256:
+
+```python
+import hashlib
+true_digest = hashlib.sha256(open("train.csv", "rb").read()).hexdigest()
+dataset = mlflow.data.from_pandas(
+    train_df, source="s3://bucket/train.csv", name="train_q1_2026",
+    digest=true_digest,
+)
+```
+
+The plugin commits to whatever digest the Dataset reports — the strength of the integrity guarantee follows the strength of the digest the caller chose.
+
+**Schema is fingerprinted, not stored verbatim.** Each dataset's `schema_hash` in the canonical bytes is the SHA-256 of the JCS-canonicalized schema JSON — column names never enter the proof. Privacy-preserving for regulated domains where column names can be sensitive (medical, financial). Tamper-detectable: schema mutations in MLflow flip the verifier's source-of-truth check via training's inlined dataset metadata.
+
+**Standalone dataset anchoring (publisher / pre-train pattern).** `anchor()` accepts an optional `dataset=` keyword that anchors a Dataset object on its own — no active MLflow run required. Useful for dataset publishers (anchor once, hand the TX to downstream model trainers) or pre-train workflows where the dataset is finalized before training begins.
+
+```python
+from ario_mlflow import anchor
+import mlflow.data
+
+dataset = mlflow.data.from_pandas(df, source="...", name="train_q1_2026")
+result = anchor(dataset=dataset)
+print(result["envelope"]["payload_hash"])
+print(result["anchor_result"]["tx_id"])
+```
+
+Inside `mlflow.start_run()`, the default training-mode `anchor()` auto-anchors each `mlflow.log_input()` dataset as a standalone event before signing the training proof. Each gets its own Arweave TX, written to the run as a tag (`ario.dataset_anchor_tx.<dataset_name>`) for chain-walking navigation. Auditors fetch the dataset proof independently of the training proof.
+
+**Limits worth knowing.** Two v1 deferrals:
+
+- **Dataset SoT is deferred (v2).** Today the dataset event is verified via signature + ar.io attestation. Live re-derivation against MLflow's dataset registry — to catch post-anchor mutation of dataset metadata at the dataset proof's *own* SoT check — is the v2 follow-up. In v1, that mutation is still caught one link down: training's signed payload inlines the dataset's identity, so the verifier's training Record Matches check flips on tamper. The v2 work will tie the plugin's dataset events more deeply into MLflow's dataset registry API — when it lands, the dataset's own Record Matches check will fire on tamper.
+- **Cross-run dataset reuse re-anchors each time.** Two training runs against the same dataset both produce a fresh dataset proof. A registry of pre-anchored datasets (digest → TX) to dedupe is a v3 follow-up.
+
+Both are tracked in [ROADMAP.md](ROADMAP.md).
 
 **Registration / promotion — one client swap:**
 

@@ -197,42 +197,61 @@ def tamper_live(event_type, event_id, *, lifecycle_store, record_store, tracking
             # both Registration Record Matches AND Training Record Matches
             # (since both canonical bytes include artifact_checksums).
             #
-            # MLflow 3.x stores model artifacts in two places: the run's
-            # artifact directory (mlruns/{exp}/{run_id}/artifacts/model/)
-            # AND the LoggedModel store (mlruns/{exp}/models/m-{uuid}/
-            # artifacts/). The verifier's `artifact_checksums` resolves
-            # via `mlflow.artifacts.download_artifacts(run_id, "model")`,
-            # which returns the LoggedModel path. To actually break the
-            # hash, we have to write to that path — `client.log_artifact`
-            # only updates the run's directory, not the LoggedModel store.
+            # In MLflow 3.x, ``mlflow.artifacts.download_artifacts(run_id,
+            # "model")`` returns an *ephemeral temp copy* of the LoggedModel
+            # store on every call — writing to that path is a no-op
+            # (the temp dir gets cleaned up). We must resolve the real
+            # on-disk LoggedModel artifact_location and write there for
+            # the verifier's next ``download_artifacts`` to pick up the
+            # mutated bytes.
             envelope = lifecycle_store.get_by_event_id(event_id)
             if envelope is None:
                 raise KeyError(f"registration {event_id} not found")
             source_run_id = envelope["record"]["source_run_id"]
 
-            # Resolve the actual on-disk artifact directory the verifier
-            # will read from.
+            run = client.get_run(source_run_id)
             try:
-                resolved_dir = mlflow.artifacts.download_artifacts(
-                    run_id=source_run_id, artifact_path="model",
+                logged_models = client.search_logged_models(
+                    experiment_ids=[run.info.experiment_id],
+                    filter_string=f"source_run_id = '{source_run_id}'",
                 )
             except Exception as e:
                 raise KeyError(
-                    f"could not resolve model artifact dir for run {source_run_id}: {e}"
+                    f"could not search logged models for run {source_run_id}: {e}"
                 )
+            if not logged_models:
+                raise KeyError(
+                    f"no LoggedModel found for source run {source_run_id}; "
+                    "swap-artifact tamper requires a registered model"
+                )
+            # MLflow 3.x supports multiple models per run, but the demo logs
+            # exactly one (`name="model"`). Take the first match — if a
+            # future caller logs multiple, the tamper still demonstrates
+            # "swap one of the deployed artifacts."
+            canonical_dir = logged_models[0].artifact_location
+            # artifact_location is an absolute filesystem path for file://
+            # tracking stores ("/.../mlruns/<exp>/models/m-<uuid>/artifacts").
+            # Strip a possible "file://" scheme defensively for portability.
+            if canonical_dir.startswith("file://"):
+                canonical_dir = canonical_dir[len("file://"):]
 
-            model_pkl_path = os.path.join(resolved_dir, "model.pkl")
+            model_pkl_path = os.path.join(canonical_dir, "model.pkl")
             if not os.path.isfile(model_pkl_path):
                 raise KeyError(
-                    f"model.pkl not found at {model_pkl_path} for run {source_run_id}"
+                    f"model.pkl not found at canonical LoggedModel path "
+                    f"{model_pkl_path} for run {source_run_id}"
                 )
 
             with open(model_pkl_path, "rb") as f:
                 original_bytes = f.read()
 
-            # Direct filesystem overwrite — for the file:// MLflow backend,
-            # `download_artifacts` returns the canonical local path with
-            # no copy, so writing here mutates the actual store.
+            # Direct filesystem overwrite of the canonical LoggedModel
+            # artifact. The next ``download_artifacts`` call by the
+            # verifier copies these mutated bytes into a fresh temp dir
+            # and re-hashes them — the new hash diverges from the
+            # anchored one, flipping ``artifact_verified`` to False and
+            # breaking the source-of-truth check on both the registration
+            # and any training/registration that references the artifact.
             with open(model_pkl_path, "wb") as f:
                 f.write(
                     b"TAMPERED MODEL ARTIFACT - this is not the registered "

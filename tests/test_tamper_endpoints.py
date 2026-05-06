@@ -88,3 +88,128 @@ def test_tamper_unknown_event_type_returns_400(client):
     """Tampering an unknown event_type returns 400."""
     r = client.post("/tamper/saved/banana/some-id")
     assert r.status_code == 400
+
+
+def _wait_for_registration(app, timeout=30.0):
+    """Block until the registration daemon thread has finished writing
+    the canonical artifact to MLflow.
+
+    The post-condition we actually need for the swap-artifact regression
+    is that ``ario/registration_payload.json`` exists on the source run.
+    Don't wait for ``arweave_tx_id`` — under unfavorable conditions
+    (offline, gateway reject, bad wallet state) the Arweave upload may
+    fail while the local artifact write still succeeds, and that's
+    enough to exercise the verifier's source-of-truth path.
+    """
+    import os, time, mlflow
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        records = app.state.lifecycle_store.list_all()
+        registration = next(
+            (r for r in records if r["record"]["event_type"] == "model_registered"),
+            None,
+        )
+        if registration:
+            source_run_id = registration["record"].get("source_run_id")
+            if source_run_id:
+                # Check the canonical artifact actually landed on disk.
+                tracking_root = app.state.settings.mlflow_tracking_uri.removeprefix("file://")
+                # MLflow file backend: <root>/<exp>/<run_id>/artifacts/...
+                # We don't know experiment_id from here; query MLflow.
+                try:
+                    mlflow.set_tracking_uri(app.state.settings.mlflow_tracking_uri)
+                    mlflow.tracking.MlflowClient().download_artifacts(
+                        source_run_id, "ario/registration_payload.json"
+                    )
+                    return registration
+                except Exception:
+                    pass
+        time.sleep(0.1)
+    raise AssertionError(
+        "ario/registration_payload.json never appeared on the source run "
+        "within timeout"
+    )
+
+
+def test_swap_artifact_tamper_breaks_registration_source_of_truth(client):
+    """Regression test for the swap-deployed-model-artifact tamper.
+
+    The ``tamper_live(event_type="registration", ...)`` call swaps the
+    bytes of ``model.pkl`` in MLflow, which should make the verifier's
+    source-of-truth check FAIL when it re-derives ``artifact_verified``
+    against the new on-disk hash. Pre-fix bug: the tamper resolved the
+    target path via ``mlflow.artifacts.download_artifacts(run_id, "model")``
+    which in MLflow 3.x returns an ephemeral *temp copy* — writing there
+    doesn't mutate the canonical LoggedModel store, so the verifier's
+    next ``download_artifacts`` call read the still-untouched bytes and
+    the tamper went undetected.
+    """
+    import mlflow
+    from ario_mlflow.verify import verify_source_of_truth
+
+    app = client.app
+    registration = _wait_for_registration(app)
+    event_id = registration["record"]["event_id"]
+    rec = registration["record"]
+    source_run_id = rec["source_run_id"]
+
+    settings = app.state.settings
+    mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+    mlflow_client = mlflow.tracking.MlflowClient()
+
+    # The anchored canonical bytes for a registration live on the source
+    # training run as ario/registration_payload.json (operator side of
+    # the chain — registration happens by tagging an existing run, not
+    # creating a new one). Download directly using source_run_id.
+    local_path = mlflow.artifacts.download_artifacts(
+        run_id=source_run_id, artifact_path="ario/registration_payload.json",
+    )
+    with open(local_path, "rb") as f:
+        canonical_bytes = f.read()
+
+    envelope = {
+        "event_type": "model_registered",
+        "subject": {
+            "type": "mlflow_model_version",
+            "name": rec["model_name"],
+            "version": str(rec["model_version"]),
+        },
+    }
+
+    # BEFORE tamper: source-of-truth must PASS — the LoggedModel store
+    # still holds the artifact bytes that were anchored.
+    sot_before = verify_source_of_truth(envelope, canonical_bytes, mlflow_client)
+    assert sot_before["ok"] is True, f"baseline source-of-truth should pass: {sot_before}"
+
+    # Apply swap-artifact tamper by calling the tamper_live function
+    # directly, bypassing the FastAPI route. This avoids the route's
+    # auto-revert BackgroundTask, which can race with the post-tamper
+    # source-of-truth check we're trying to observe. (The auto-revert
+    # itself is exercised separately by reset-related tests.)
+    from app.tamper import tamper_live
+    snap = tamper_live(
+        event_type="registration", event_id=event_id,
+        lifecycle_store=app.state.lifecycle_store,
+        record_store=app.state.store,
+        tracking_uri=settings.mlflow_tracking_uri,
+    )
+    assert snap is not None, "tamper_live returned no snapshot"
+    # The snapshot's live_field_name encodes the on-disk path the
+    # tamper wrote to — sanity check that file is now non-original.
+    assert snap.live_field_name and snap.live_field_name.startswith("artifact_swap_path:"), snap.live_field_name
+    target_path = snap.live_field_name.split(":", 1)[1]
+    with open(target_path, "rb") as f:
+        post_tamper = f.read()
+    assert post_tamper.startswith(b"TAMPERED"), (
+        f"tamper_live did not write the expected bytes to {target_path}"
+    )
+
+    # AFTER tamper: source-of-truth MUST FAIL. The artifact_checksums
+    # re-derived from the canonical store must differ from what was
+    # anchored, flipping artifact_verified to False, which makes the
+    # rebuilt canonical bytes diverge.
+    sot_after = verify_source_of_truth(envelope, canonical_bytes, mlflow_client)
+    assert sot_after["ok"] is False, (
+        "source-of-truth should FAIL after model.pkl was swapped on the "
+        f"canonical LoggedModel store, but got {sot_after}"
+    )

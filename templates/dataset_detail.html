@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% from "_verify_card.html" import verify_card %}
+{% from "_status_badge.html" import status_badge %}
+{% from "_active_badge.html" import active_badge %}
+
+{% block title %}Dataset {{ dataset.name }} — Verifiable AI{% endblock %}
+{% block max_width %}1400px{% endblock %}
+{% block nav_datasets %}active{% endblock %}
+
+{% block styles %}
+        /* Detail-layout, detail-card, field-row, anchor-link styles
+           moved to base.html (shared by every detail page). #}
+{% endblock %}
+
+{% block content %}
+        <div style="margin-bottom: 1rem;">
+            <a href="/ui/datasets" style="font-size: 0.82rem; color: var(--muted);">← Datasets</a>
+        </div>
+
+        <div class="editorial-header">
+            <div class="editorial-header-text">
+                <span class="eyebrow">
+                    Dataset
+                    <span class="eyebrow-id">· {{ dataset.digest[:10] }}…</span>
+                </span>
+                <h1 class="editorial-title">{{ dataset.name }}</h1>
+                {% if dataset.source %}
+                <p class="editorial-lede">{{ dataset.source }}</p>
+                {% endif %}
+            </div>
+            <div class="editorial-header-meta">
+                {{ status_badge(dataset.status) }}
+                {# Pre-select the chain for the most recent run that
+                   used this dataset. Used by N runs is sorted recent-
+                   first by the handler, so the first entry's model
+                   version becomes the default chain. #}
+                {% if used_by_runs and used_by_runs[0].model_name and used_by_runs[0].model_version %}
+                <a href="/ui/lineage?chain={{ used_by_runs[0].model_name }}/{{ used_by_runs[0].model_version }}" class="btn btn-outline">View chain in Lineage →</a>
+                {% endif %}
+                {% if dataset.arweave_tx_id %}
+                <a href="/ui/datasets/{{ dataset.digest }}?verify=true" class="btn btn-primary" data-loading-text="Verifying...">Verify now</a>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Context strip: dataset is the head of the chain, so only "leads to" is populated. -->
+        <div class="context-strip">
+            <div class="context-strip-current">
+                <div class="context-strip-eyebrow">Current · Dataset</div>
+                <div class="context-strip-current-name">{{ dataset.name }}</div>
+            </div>
+            <div class="context-strip-half">
+                <div class="context-strip-eyebrow">Leads to <span class="context-strip-eyebrow-arrow">→</span> training runs</div>
+                <div class="context-strip-chips">
+                    {% if used_by_runs %}
+                        {% for r in used_by_runs %}
+                        <a class="context-strip-chip" href="/ui/runs/{{ r.run_id }}">
+                            <span class="context-strip-chip-kind">Run</span>
+                            <span class="context-strip-chip-name">
+                                {% if r.model_name %}{{ r.model_name }} <span class="tabular">v{{ r.model_version }}</span>{% else %}{{ r.run_id[:10] }}…{% endif %}
+                            </span>
+                        </a>
+                        {% endfor %}
+                    {% else %}
+                        <span class="context-strip-empty">No runs have used this dataset yet.</span>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="detail-layout">
+            <!-- Left rail: identity + anchor -->
+            <div>
+                <div class="detail-card">
+                    <div class="detail-card-title">Identity</div>
+                    <div class="field-row">
+                        <span class="field-label">Name</span>
+                        <span class="field-value">{{ dataset.name }}</span>
+                    </div>
+                    {% if dataset.source_type %}
+                    <div class="field-row">
+                        <span class="field-label">Source type</span>
+                        <span class="field-value">{{ dataset.source_type }}</span>
+                    </div>
+                    {% endif %}
+                    {% if dataset.source %}
+                    <div class="field-row">
+                        <span class="field-label">Source</span>
+                        <span class="field-value">{{ dataset.source }}</span>
+                    </div>
+                    {% endif %}
+                    <div class="field-row">
+                        <span class="field-label">Digest</span>
+                        <span class="field-value mono">{{ dataset.digest }}</span>
+                    </div>
+                    {% if dataset.schema_hash %}
+                    <div class="field-row">
+                        <span class="field-label">Schema hash</span>
+                        <span class="field-value mono">{{ dataset.schema_hash }}</span>
+                    </div>
+                    {% endif %}
+                </div>
+
+                <div class="detail-card">
+                    <div class="detail-card-title">ar.io anchor</div>
+                    {% if dataset.arweave_tx_id %}
+                    <div class="field-row">
+                        <span class="field-label">Transaction</span>
+                        <span class="field-value mono">{{ dataset.arweave_tx_id }}</span>
+                    </div>
+                    <a href="{{ dataset.arweave_url }}" target="_blank" rel="noopener" class="anchor-link">View on ar.io →</a>
+                    {% else %}
+                    <p style="font-size: 0.85rem; color: var(--muted);">Not anchored — this dataset hasn't been signed and uploaded yet.</p>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Main column: ar.io verification + relationships -->
+            <div>
+                {{ verify_card(
+                    v=envelope.last_verification,
+                    arweave_tx_id=envelope.arweave_tx_id,
+                    entity_label="Dataset Record",
+                    intro="Independent verification of MLflow data integrity. These verify the signed proof for this dataset's identity (digest + schema_hash) is anchored to ar.io and reachable via the gateway. Hash-match for dataset records is queued for a future plugin release.",
+                    cli=None,
+                ) }}
+                <div class="detail-card">
+                    <div class="detail-card-title">
+                        Used by
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--muted); text-transform: none;">
+                            {{ used_by_runs|length }} run{{ "s" if used_by_runs|length != 1 else "" }}
+                        </span>
+                    </div>
+                    {% if used_by_runs %}
+                    <div class="table-wrap" style="margin-top: 0.5rem;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Run</th>
+                                <th>Model produced</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for r in used_by_runs %}
+                            <tr style="cursor: pointer;" onclick="window.location='/ui/runs/{{ r.run_id }}'">
+                                <td>
+                                    <a class="mono" href="/ui/runs/{{ r.run_id }}" style="white-space: nowrap;" title="{{ r.run_id }}">
+                                        {{ r.run_id[:14] }}…
+                                    </a>
+                                </td>
+                                <td>
+                                    {% if r.model_name and r.model_version %}
+                                    <a href="/ui/models/{{ r.model_name }}/{{ r.model_version }}" onclick="event.stopPropagation();">
+                                        {{ r.model_name }} <span class="tabular">v{{ r.model_version }}</span>
+                                    </a>{{ active_badge(r.model_name, r.model_version, active_model_name, active_model_version) }}
+                                    {% else %}
+                                    <span style="color: var(--muted);">—</span>
+                                    {% endif %}
+                                </td>
+                                <td>{{ status_badge(r.status) }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                    </div>
+                    {% else %}
+                    <p style="font-size: 0.85rem; color: var(--muted);">No runs are currently linked to this dataset.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+{% endblock %}

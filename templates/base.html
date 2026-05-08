@@ -181,6 +181,460 @@
         a { color: var(--primary); text-decoration: none; }
         a:hover { text-decoration: underline; }
 
+        /* Editorial eyebrow — small mono label sitting above a page or
+           card title, anchoring it in the verification chain. Uppercase,
+           letter-spaced, muted. */
+        .eyebrow {
+            font-family: 'JetBrains Mono', 'SF Mono', monospace;
+            font-size: 0.68rem;
+            font-weight: 500;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .eyebrow .eyebrow-id {
+            color: var(--primary);
+            text-transform: none;
+            letter-spacing: 0.04em;
+        }
+
+        /* Entity ID — mono with a subtle truncation fade on the trailing
+           characters so long hashes read as "trimmed for display" without
+           hiding their tail completely. Pairs with the eyebrow. */
+        .entity-id {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.78rem;
+            color: var(--primary);
+            white-space: nowrap;
+        }
+        .entity-id-tail { opacity: 0.55; }
+
+        /* Tabular numerics — line up counts and metrics in tables and
+           stat rows. Apply on cells/spans where alignment matters. */
+        .tabular { font-variant-numeric: tabular-nums; }
+
+        /* Editorial page title used by the new list pages. Sits below
+           the eyebrow. Larger and weightier than .page-header h1. */
+        .editorial-title {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 2.1rem;
+            color: var(--black);
+            letter-spacing: -0.02em;
+            line-height: 1.15;
+            margin-top: 0.35rem;
+        }
+        .editorial-lede {
+            color: var(--muted);
+            font-size: 0.92rem;
+            max-width: 620px;
+            line-height: 1.55;
+            margin-top: 0.6rem;
+        }
+        .editorial-header {
+            margin-bottom: 2.25rem;
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            gap: 1.5rem;
+            flex-wrap: wrap;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 1.5rem;
+        }
+        .editorial-header-text { flex: 1; min-width: 280px; }
+        .editorial-header-meta {
+            display: flex;
+            gap: 1.25rem;
+            align-items: baseline;
+        }
+        .editorial-stat {
+            display: flex;
+            flex-direction: column;
+            gap: 0.15rem;
+            font-variant-numeric: tabular-nums;
+        }
+        .editorial-stat-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.62rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+        .editorial-stat-value {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 1.5rem;
+            color: var(--black);
+            line-height: 1;
+        }
+
+        /* Staggered fade on table rows for first paint. Cap at 10 so a
+           busy table doesn't take a whole second to settle. */
+        @keyframes rowFade {
+            from { opacity: 0; transform: translateY(3px); }
+            to { opacity: 1; transform: none; }
+        }
+        .table-wrap tbody tr {
+            animation: rowFade 0.32s ease-out both;
+        }
+        .table-wrap tbody tr:nth-child(1) { animation-delay: 0.00s; }
+        .table-wrap tbody tr:nth-child(2) { animation-delay: 0.03s; }
+        .table-wrap tbody tr:nth-child(3) { animation-delay: 0.06s; }
+        .table-wrap tbody tr:nth-child(4) { animation-delay: 0.09s; }
+        .table-wrap tbody tr:nth-child(5) { animation-delay: 0.12s; }
+        .table-wrap tbody tr:nth-child(6) { animation-delay: 0.15s; }
+        .table-wrap tbody tr:nth-child(7) { animation-delay: 0.18s; }
+        .table-wrap tbody tr:nth-child(8) { animation-delay: 0.21s; }
+        .table-wrap tbody tr:nth-child(9) { animation-delay: 0.24s; }
+        .table-wrap tbody tr:nth-child(n+10) { animation-delay: 0.27s; }
+
+        /* Empty-state card — neutral, generous padding, slightly
+           sub-canvas color so it reads as "intentional empty" rather
+           than "broken page". */
+        .empty-state {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 3rem 2rem;
+            text-align: center;
+            background: var(--code-bg);
+            color: var(--muted);
+        }
+        .empty-state-title {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 1.05rem;
+            color: var(--black);
+            margin-bottom: 0.4rem;
+        }
+        .empty-state-body {
+            font-size: 0.88rem;
+            line-height: 1.55;
+            max-width: 460px;
+            margin: 0 auto;
+        }
+        .empty-state a { font-weight: 600; }
+
+        /* ── Detail-page layout system (shared by every detail page).
+              Two-column editorial layout with a left rail of identity /
+              anchor cards and a main column of verify card + sections.
+              Pages opt in by using `.detail-layout` and the card classes
+              below; pages with a wide hero (Decision) keep one column. ── */
+        .detail-layout {
+            display: grid;
+            grid-template-columns: minmax(280px, 30%) 1fr;
+            gap: 2rem;
+            align-items: flex-start;
+        }
+        @media (max-width: 960px) {
+            .detail-layout { grid-template-columns: 1fr; }
+        }
+
+        .detail-card {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1.25rem 1.4rem;
+            background: var(--white);
+            margin-bottom: 1.1rem;
+        }
+        .detail-card-title {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 0.92rem;
+            color: var(--black);
+            margin-bottom: 0.85rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.5rem;
+        }
+        .detail-card-title-meta {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.7rem;
+            color: var(--muted);
+            text-transform: none;
+            font-weight: 500;
+            letter-spacing: 0;
+        }
+
+        .field-row {
+            display: flex;
+            flex-direction: column;
+            gap: 0.18rem;
+            padding: 0.55rem 0;
+            border-top: 1px solid var(--border);
+        }
+        .field-row:first-of-type { border-top: none; padding-top: 0; }
+        .field-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.62rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+        .field-value {
+            font-size: 0.88rem;
+            color: var(--black);
+            word-break: break-all;
+        }
+        .field-value.mono {
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--primary);
+            font-size: 0.8rem;
+        }
+        .field-value a { color: var(--primary); }
+
+        .anchor-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            margin-top: 0.4rem;
+            font-size: 0.82rem;
+            font-weight: 600;
+            color: var(--primary);
+        }
+
+        /* ── Key-value rows (used inside detail-card and section bodies).
+              Centralized here so partials and the JS-built rows in
+              run_detail render consistently regardless of host page. ── */
+        .kv { display: flex; flex-direction: column; gap: 0; }
+        .kv-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            padding: 0.5rem 0;
+            gap: 1rem;
+            font-size: 0.85rem;
+        }
+        .kv-row + .kv-row { border-top: 1px solid var(--border); }
+        .kv-key {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            white-space: nowrap;
+            min-width: 100px;
+            padding-top: 0.1rem;
+        }
+        .kv-value { text-align: right; word-break: break-all; flex: 1; }
+
+        /* "View chain in Lineage" CTA — used in detail-page headers. */
+        .lineage-cta {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.55rem 1rem;
+            background: var(--lavender);
+            color: var(--primary);
+            border: 1px solid var(--primary);
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            text-decoration: none;
+            white-space: nowrap;
+        }
+        .lineage-cta:hover {
+            background: var(--primary);
+            color: var(--white);
+            text-decoration: none;
+        }
+
+        /* ── Active-version badge (used next to every model version
+              reference via templates/_active_badge.html) ── */
+        .active-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            padding: 0.12rem 0.45rem;
+            border-radius: 3px;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-size: 0.62rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            line-height: 1.4;
+            margin-left: 0.4rem;
+            vertical-align: middle;
+            white-space: nowrap;
+        }
+        .active-badge--current {
+            background: var(--lavender);
+            color: var(--primary);
+        }
+        .active-badge--replaced {
+            background: var(--surface);
+            color: var(--muted);
+            text-decoration: none;
+            border: 1px solid var(--border);
+        }
+        .active-badge--replaced:hover {
+            text-decoration: none;
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        /* ── Section cards (shared by detail pages and the verify-card
+              macro). Moved out of decision_detail.html / run_detail.html
+              when _verify_card.html was extracted. ── */
+        .section {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .section-header {
+            padding: 0.75rem 1rem;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .section-body { padding: 1rem; }
+        .section-danger { border-color: var(--red); }
+        .section-danger .section-header { background: var(--red-bg); color: var(--red); }
+
+        /* ── Context strip: small "comes from → current → leads to"
+              card placed near the top of every detail page. Single-step
+              only — the full chain lives on Lineage in Phase C. ── */
+        .context-strip {
+            display: flex;
+            align-items: stretch;
+            gap: 0;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin: 1rem 0 1.5rem;
+            background: var(--code-bg);
+            overflow: hidden;
+            font-size: 0.82rem;
+        }
+        .context-strip-half {
+            flex: 1;
+            padding: 0.75rem 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+            min-width: 0;
+        }
+        .context-strip-half + .context-strip-half {
+            border-left: 1px solid var(--border);
+        }
+        .context-strip-current {
+            padding: 0.75rem 1rem;
+            background: var(--lavender);
+            border-left: 1px solid var(--border);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+            min-width: 0;
+            flex: 0 0 auto;
+        }
+        .context-strip-eyebrow {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.62rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+        .context-strip-current .context-strip-eyebrow { color: var(--primary); opacity: 0.75; }
+        .context-strip-eyebrow-arrow {
+            font-family: monospace;
+            color: var(--muted);
+            font-size: 0.85rem;
+        }
+        .context-strip-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem;
+        }
+        .context-strip-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            padding: 0.3rem 0.55rem;
+            background: var(--white);
+            border: 1px solid var(--border);
+            border-radius: 5px;
+            font-size: 0.78rem;
+            color: var(--black);
+            text-decoration: none;
+            transition: border-color 0.12s, transform 0.12s;
+        }
+        .context-strip-chip:hover {
+            border-color: var(--primary);
+            text-decoration: none;
+            transform: translateY(-1px);
+        }
+        .context-strip-chip-kind {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.6rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+        .context-strip-chip-name {
+            font-weight: 600;
+        }
+        .context-strip-chip-name .tabular { font-weight: 500; color: var(--muted); }
+        .context-strip-current-name {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 0.92rem;
+            color: var(--black);
+            line-height: 1.2;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .context-strip-empty {
+            font-size: 0.78rem;
+            color: var(--muted);
+            font-style: italic;
+        }
+        @media (max-width: 800px) {
+            .context-strip { flex-direction: column; }
+            .context-strip-half + .context-strip-half,
+            .context-strip-current {
+                border-left: none;
+                border-right: none;
+                border-top: 1px solid var(--border);
+            }
+        }
+
+        /* ── Verify card primitives (used by templates/_verify_card.html
+              macro on every detail page) ── */
+        .verify-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 0;
+            font-size: 0.85rem;
+        }
+        .verify-row + .verify-row { border-top: 1px solid var(--border); }
+        .check { color: var(--green); font-weight: 600; }
+        .cross { color: var(--red); font-weight: 600; }
+        .unchecked { color: var(--muted); font-size: 0.8rem; }
+        .verify-actions {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 0.75rem;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .verify-meta {
+            font-size: 0.75rem;
+            color: var(--muted);
+            margin-top: 0.5rem;
+        }
+
         /* ── Badges ── */
         .badge {
             display: inline-flex;
@@ -192,6 +646,7 @@
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.03em;
+            white-space: nowrap;
         }
         .badge-green { background: var(--green-bg); color: var(--green); }
         .badge-yellow { background: var(--yellow-bg); color: var(--yellow); }
@@ -499,12 +954,14 @@
 <body>
     <div class="topbar">
         <div class="topbar-left">
-            <a href="/"><img src="https://ar.io/brand/ario-full-black.svg" alt="ar.io"></a>
-            <a href="/" class="topbar-title">Verifiable AI</a>
+            <a href="/ui/datasets"><img src="https://ar.io/brand/ario-full-black.svg" alt="ar.io"></a>
+            <a href="/ui/datasets" class="topbar-title">Verifiable AI</a>
             <div class="topbar-nav">
-                <a href="/" class="{% block nav_models %}{% endblock %}">Models</a>
+                <a href="/ui/datasets" class="{% block nav_datasets %}{% endblock %}">Datasets</a>
+                <a href="/ui/runs" class="{% block nav_runs %}{% endblock %}">Training Runs</a>
+                <a href="/ui/models" class="{% block nav_models %}{% endblock %}">Models</a>
                 <a href="/ui/decisions" class="{% block nav_decisions %}{% endblock %}">Decisions</a>
-                <a href="{% block lineage_url %}/{% endblock %}" class="{% block nav_lineage %}{% endblock %}">Model Lineage</a>
+                <a href="/ui/lineage" class="{% block nav_lineage %}{% endblock %}">Lineage</a>
                 <a href="/ui/who-this-is-for" class="{% block nav_wtif %}{% endblock %}">Who this is for</a>
                 {% if demo_mode %}
                 <a href="/demo/admin" class="topbar-nav-admin {% block nav_admin %}{% endblock %}" title="Sales / pre-sales: reset demo data">admin</a>

@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% from "_status_badge.html" import status_badge %}
+
+{% block title %}Datasets — Verifiable AI{% endblock %}
+{% block max_width %}1400px{% endblock %}
+{% block nav_datasets %}active{% endblock %}
+
+{% block styles %}
+        /* Dataset list specifics — most visual rules live in base.html
+           (.editorial-header, .table-wrap, badges). Local rules below
+           are scoped to anything specific to this view. */
+        .dataset-name {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 0.95rem;
+            color: var(--black);
+            letter-spacing: -0.005em;
+        }
+        .dataset-source {
+            font-size: 0.78rem;
+            color: var(--muted);
+            margin-top: 0.15rem;
+            display: block;
+        }
+        .col-name { min-width: 220px; }
+        .col-digest, .col-schema { width: 180px; }
+        .col-used-by { width: 110px; }
+        .col-anchor { width: 130px; }
+        .col-status { width: 170px; }
+        .col-actions { width: 150px; }
+{% endblock %}
+
+{% block content %}
+        <div class="editorial-header">
+            <div class="editorial-header-text">
+                <span class="eyebrow">Step 1 · Inputs</span>
+                <h1 class="editorial-title">Datasets</h1>
+                <p class="editorial-lede">
+                    Every training dataset signed and anchored to ar.io before it
+                    enters a model. The first link in the chain — without these,
+                    nothing downstream is verifiable.
+                </p>
+            </div>
+            <div class="editorial-header-meta">
+                <div class="editorial-stat">
+                    <span class="editorial-stat-label">Anchored</span>
+                    <span class="editorial-stat-value tabular">{{ datasets|length }}</span>
+                </div>
+            </div>
+        </div>
+
+        {% if datasets %}
+        <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th class="col-name">Dataset</th>
+                    <th>Source type</th>
+                    <th class="col-digest">Digest</th>
+                    <th class="col-schema">Schema hash</th>
+                    <th class="col-used-by">Used by</th>
+                    <th class="col-anchor">Anchor</th>
+                    <th class="col-status">Status</th>
+                    <th class="col-actions">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for d in datasets %}
+                <tr style="cursor: pointer;" onclick="window.location='/ui/datasets/{{ d.digest }}'">
+                    <td class="col-name">
+                        <a href="/ui/datasets/{{ d.digest }}" style="text-decoration: none;">
+                            <span class="dataset-name">{{ d.name }}</span>
+                            {% if d.source %}
+                            <span class="dataset-source">{{ d.source }}</span>
+                            {% endif %}
+                        </a>
+                    </td>
+                    <td>
+                        <span class="badge badge-gray" style="text-transform: lowercase; letter-spacing: 0;">{{ d.source_type or "—" }}</span>
+                    </td>
+                    <td class="col-digest">
+                        <span class="entity-id" title="{{ d.digest }}">
+                            {{ d.digest[:14] }}<span class="entity-id-tail">{{ d.digest[14:22] }}</span>
+                        </span>
+                    </td>
+                    <td class="col-schema">
+                        {% if d.schema_hash %}
+                        <span class="entity-id" title="{{ d.schema_hash }}">
+                            {{ d.schema_hash[:14] }}<span class="entity-id-tail">{{ d.schema_hash[14:22] }}</span>
+                        </span>
+                        {% else %}
+                        <span style="color: var(--muted);">—</span>
+                        {% endif %}
+                    </td>
+                    <td class="col-used-by tabular">
+                        {{ d.used_by_count }} run{{ "s" if d.used_by_count != 1 else "" }}
+                    </td>
+                    <td class="col-anchor">
+                        {% if d.arweave_tx_id %}
+                        <a class="mono mono-sm" href="{{ d.arweave_url }}" target="_blank" rel="noopener" onclick="event.stopPropagation();">
+                            {{ d.arweave_tx_id[:8] }}…
+                        </a>
+                        {% else %}
+                        <span style="color: var(--muted);">—</span>
+                        {% endif %}
+                    </td>
+                    <td class="col-status">{{ status_badge(d.status) }}</td>
+                    <td class="col-actions">
+                        <div class="actions">
+                            <a href="/ui/datasets/{{ d.digest }}" class="btn btn-outline btn-sm" onclick="event.stopPropagation();">View</a>
+                            {% if d.arweave_tx_id %}
+                            <a href="/ui/datasets/{{ d.digest }}?verify=true" class="btn btn-primary btn-sm" data-loading-text="Verifying..." onclick="event.stopPropagation();">Verify</a>
+                            {% endif %}
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <div class="empty-state-title">No datasets anchored yet</div>
+            <p class="empty-state-body">
+                Datasets appear here when a training run logs them as inputs.
+                Start a run on the <a href="/ui/runs">Training Runs</a> page
+                to populate the chain.
+            </p>
+        </div>
+        {% endif %}
+{% endblock %}

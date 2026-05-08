@@ -1,0 +1,672 @@
+{% extends "base.html" %}
+
+{% block title %}Lineage — Verifiable AI{% endblock %}
+{% block max_width %}1400px{% endblock %}
+{% block nav_lineage %}active{% endblock %}
+
+{% block styles %}
+        /* ── System stats strip ── */
+        .lineage-stats {
+            display: flex;
+            gap: 0;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            margin-bottom: 1.75rem;
+            overflow: hidden;
+            background: var(--code-bg);
+        }
+        .lineage-stat {
+            flex: 1;
+            padding: 1rem 1.1rem;
+            text-decoration: none;
+            color: inherit;
+            transition: background 0.12s;
+            display: flex;
+            flex-direction: column;
+            gap: 0.2rem;
+            min-width: 0;
+        }
+        .lineage-stat + .lineage-stat { border-left: 1px solid var(--border); }
+        .lineage-stat:hover { background: var(--white); text-decoration: none; }
+        .lineage-stat-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.62rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+        .lineage-stat-value {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 1.65rem;
+            color: var(--black);
+            line-height: 1.05;
+            font-variant-numeric: tabular-nums;
+        }
+        .lineage-stat-suffix {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-weight: 600;
+            font-size: 0.7rem;
+            color: var(--muted);
+            margin-left: 0.3rem;
+        }
+        @media (max-width: 800px) {
+            .lineage-stats { flex-wrap: wrap; }
+            .lineage-stat { flex: 1 1 33%; }
+            .lineage-stat + .lineage-stat { border-left-width: 0; }
+        }
+
+        /* ── Chain picker ── */
+        .chain-picker {
+            display: flex;
+            align-items: center;
+            gap: 0.85rem;
+            padding: 0.85rem 1rem;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--white);
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+        }
+        .chain-picker-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.65rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            white-space: nowrap;
+        }
+        .chain-picker-chips {
+            display: flex;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+            flex: 1;
+        }
+        .chain-picker-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.4rem 0.75rem;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--white);
+            color: var(--black);
+            font-size: 0.82rem;
+            font-weight: 500;
+            text-decoration: none;
+            transition: all 0.12s;
+        }
+        .chain-picker-chip:hover {
+            border-color: var(--primary);
+            text-decoration: none;
+        }
+        .chain-picker-chip.selected {
+            background: var(--primary);
+            color: var(--white);
+            border-color: var(--primary);
+        }
+        .chain-picker-chip-version {
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+        }
+        .chain-picker-chip-active {
+            background: var(--lavender);
+            color: var(--primary);
+            font-size: 0.62rem;
+            font-weight: 700;
+            padding: 0.1rem 0.35rem;
+            border-radius: 3px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+        .chain-picker-chip.selected .chain-picker-chip-active {
+            background: rgba(255, 255, 255, 0.25);
+            color: var(--white);
+        }
+        .chain-picker-actions {
+            margin-left: auto;
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        /* ── Chain layout (preserved from model_chain.html — this is
+              the chain visual the user said works) ── */
+        .chain {
+            position: relative;
+            padding-left: 2rem;
+        }
+        .chain::before {
+            content: '';
+            position: absolute;
+            left: 11px;
+            top: 24px;
+            bottom: 24px;
+            width: 2px;
+            background: var(--border);
+        }
+
+        .chain-node { position: relative; margin-bottom: 2rem; }
+        .chain-node:last-child { margin-bottom: 0; }
+
+        .chain-dot {
+            position: absolute;
+            left: -2rem;
+            top: 1.1rem;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            border: 2px solid var(--border);
+            background: var(--white);
+            z-index: 1;
+        }
+        .chain-dot-green { border-color: var(--green); background: var(--green-bg); }
+        .chain-dot-yellow { border-color: var(--yellow); background: var(--yellow-bg); }
+        .chain-dot-red { border-color: var(--red); background: var(--red-bg); }
+        .chain-dot-gray { border-color: var(--muted); background: var(--gray-bg); }
+
+        .chain-card {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .chain-card-header {
+            padding: 1rem 1.25rem;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+        }
+        .chain-card-header h3 {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 1rem;
+        }
+        .chain-card-body {
+            padding: 1.25rem;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+        @media (max-width: 760px) {
+            .chain-card-body { grid-template-columns: 1fr; }
+        }
+        .chain-card-footer {
+            padding: 0.75rem 1.25rem;
+            border-top: 1px solid var(--border);
+            background: var(--surface);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.8rem;
+        }
+        .chain-card-footer a { font-weight: 500; }
+
+        .kv { display: flex; flex-direction: column; gap: 0; }
+        .kv-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 1rem;
+            font-size: 0.85rem;
+            padding: 0.5rem 0;
+        }
+        .kv-row + .kv-row { border-top: 1px solid var(--border); }
+        .kv-key {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            white-space: nowrap;
+            min-width: 120px;
+        }
+        .kv-value { text-align: right; word-break: break-all; }
+
+        .check { color: var(--green); font-weight: 600; }
+        .cross { color: var(--red); font-weight: 600; }
+        .unchecked { color: var(--muted); }
+{% endblock %}
+
+{% block content %}
+        <div class="editorial-header">
+            <div class="editorial-header-text">
+                <span class="eyebrow">Step 5 · Audit</span>
+                <h1 class="editorial-title">Lineage</h1>
+                <p class="editorial-lede">
+                    The full verification chain in one connected view —
+                    Dataset → Run → Model → Decisions. Pick any chain
+                    below, verify it end-to-end, see exactly which link
+                    of the proof breaks if anyone alters the data.
+                </p>
+            </div>
+        </div>
+
+        {# System-wide stats strip — each card links to the relevant list page. #}
+        <div class="lineage-stats">
+            <a href="/ui/datasets" class="lineage-stat">
+                <span class="lineage-stat-label">Datasets</span>
+                <span class="lineage-stat-value">{{ stats.dataset_total }}</span>
+            </a>
+            <a href="/ui/runs" class="lineage-stat">
+                <span class="lineage-stat-label">Training runs</span>
+                <span class="lineage-stat-value">{{ stats.run_total }}</span>
+            </a>
+            <a href="/ui/models" class="lineage-stat">
+                <span class="lineage-stat-label">Models</span>
+                <span class="lineage-stat-value">{{ stats.model_total }}</span>
+            </a>
+            <a href="/ui/decisions" class="lineage-stat">
+                <span class="lineage-stat-label">Decisions</span>
+                <span class="lineage-stat-value">{{ stats.decision_total }}</span>
+            </a>
+            <a href="/ui/decisions" class="lineage-stat">
+                <span class="lineage-stat-label">Verified</span>
+                <span class="lineage-stat-value">
+                    {{ stats.verified_pct }}<span class="lineage-stat-suffix">%</span>
+                </span>
+            </a>
+        </div>
+
+        {% if available_chains %}
+        {# Chain picker — one chip per registered model version. The
+           selected chain is highlighted; URL query ?chain=<name>/<version>
+           keeps the selection linkable. #}
+        <div class="chain-picker">
+            <span class="chain-picker-label">Chain</span>
+            <div class="chain-picker-chips">
+                {% for c in available_chains %}
+                <a class="chain-picker-chip {% if selected_chain and c.key == selected_chain.key %}selected{% endif %}" href="/ui/lineage?chain={{ c.key }}">
+                    {{ c.model_name }} <span class="chain-picker-chip-version">v{{ c.model_version }}</span>
+                    {% if c.is_active %}<span class="chain-picker-chip-active">Active</span>{% endif %}
+                </a>
+                {% endfor %}
+            </div>
+            <div class="chain-picker-actions">
+                {% if selected_chain %}
+                <a href="/ui/lineage?chain={{ selected_chain.key }}&verify=true" class="btn btn-primary btn-sm" data-loading-text="Verifying...">Verify chain</a>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="chain">
+            {# ── Dataset nodes — head of the chain ── #}
+            {% set training_dataset_inputs = (training.record.get('dataset_inputs') if training else []) or [] %}
+            {% if dataset_anchored %}
+                {% for ds_env in dataset_anchored %}
+                {% set dv = ds_env.get('last_verification') %}
+                {% set d_pending_attestation = dv and dv.overall is sameas false
+                    and dv.signature_valid is sameas true
+                    and dv.attestation_level and dv.attestation_level < 2 %}
+                {% set d_real_fail = dv and dv.overall is sameas false and not d_pending_attestation %}
+                <div class="chain-node">
+                    <div class="chain-dot {% if dv and dv.overall is sameas true %}chain-dot-green{% elif d_real_fail %}chain-dot-red{% elif ds_env.arweave_tx_id %}chain-dot-yellow{% else %}chain-dot-gray{% endif %}"></div>
+                    <div class="chain-card">
+                        <div class="chain-card-header">
+                            <h3><a href="/ui/datasets/{{ ds_env.record.digest }}" style="color: inherit;">Training Dataset</a></h3>
+                            {% if dv and dv.overall is sameas true %}
+                                <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
+                            {% elif d_pending_attestation %}
+                                <span class="badge badge-yellow" title="Cryptographic checks passed. ar.io's attestation is still propagating from Level 1 → 2-3 (typically 2-5 minutes after upload). Re-verify in a few minutes.">Pending ar.io confirmation</span>
+                            {% elif dv and dv.overall is sameas false %}
+                                <span class="badge badge-red"><span class="badge-dot"></span> Failed</span>
+                            {% elif ds_env.arweave_tx_id %}
+                                <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
+                            {% elif arweave_enabled %}
+                                <span class="badge badge-yellow"><span class="badge-dot badge-dot-pulse"></span> Anchoring</span>
+                            {% else %}
+                                <span class="badge badge-gray"><span class="badge-dot"></span> Not anchored</span>
+                            {% endif %}
+                        </div>
+                        <div class="chain-card-body">
+                            <div>
+                                <div class="kv">
+                                    <div class="kv-row"><span class="kv-key">Name</span><span class="kv-value"><a href="/ui/datasets/{{ ds_env.record.digest }}">{{ ds_env.record.name }}</a></span></div>
+                                    <div class="kv-row"><span class="kv-key">Source</span><span class="kv-value mono mono-sm">{{ ds_env.record.source }}</span></div>
+                                    <div class="kv-row"><span class="kv-key">Digest</span><span class="kv-value mono mono-sm">{{ ds_env.record.digest }}</span></div>
+                                    {% if ds_env.record.schema_hash %}
+                                    <div class="kv-row"><span class="kv-key">Schema fingerprint</span><span class="kv-value mono mono-sm">{{ ds_env.record.schema_hash }}</span></div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            <div class="mini-verify">
+                                <div class="mini-verify-row">
+                                    <span>Proof Found</span>
+                                    {% if dv %}
+                                        {% if dv.proof_found is sameas true %}<span class="check">PASS</span>
+                                        {% elif dv.proof_found is sameas false %}<span class="cross">FAIL</span>
+                                        {% else %}<span class="badge badge-yellow">Pending</span>{% endif %}
+                                    {% else %}<span class="unchecked">Not checked</span>{% endif %}
+                                </div>
+                                <div class="mini-verify-row">
+                                    <span>Signature Confirmed</span>
+                                    {% if dv %}
+                                        {% if dv.signature_valid is sameas true %}<span class="check">PASS</span>
+                                        {% elif dv.signature_valid is sameas false %}<span class="cross">FAIL</span>
+                                        {% else %}<span class="badge badge-yellow">Pending</span>{% endif %}
+                                    {% else %}<span class="unchecked">Not checked</span>{% endif %}
+                                </div>
+                                <div class="mini-verify-row" title="Live re-derivation of the dataset's metadata against MLflow's dataset registry is deferred to v2.">
+                                    <span>Dataset Record Matches</span>
+                                    <span class="unchecked">Deferred (v2)</span>
+                                </div>
+                                <div class="mini-verify-meta">
+                                    {% if dv and dv.attested_by %}<span>Attested by <strong>{{ dv.attested_by }}</strong></span>{% endif %}
+                                    <span style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.2rem;">
+                                        <strong>Overall</strong>
+                                        {% if dv %}
+                                            {% if dv.overall is sameas true %}<strong class="check">PASS</strong>
+                                            {% elif d_pending_attestation %}<span class="badge badge-yellow">Pending ar.io</span>
+                                            {% elif dv.overall is sameas false %}<strong class="cross">FAIL</strong>
+                                            {% else %}<span class="badge badge-yellow">Pending</span>{% endif %}
+                                        {% else %}<span class="unchecked">Not verified</span>{% endif %}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                        {% if ds_env.arweave_tx_id %}
+                        <div class="chain-card-footer">
+                            <a href="{{ ds_env.arweave_url }}" target="_blank" rel="noopener" class="mono mono-sm">TX: {{ ds_env.arweave_tx_id[:16] }}...</a>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            {% elif training_dataset_inputs %}
+                {# Legacy fallback: dataset references inlined in training but
+                   no standalone dataset_anchored entries. #}
+                <div class="chain-node">
+                    <div class="chain-dot chain-dot-gray"></div>
+                    <div class="chain-card">
+                        <div class="chain-card-header">
+                            <h3>Training Dataset</h3>
+                            <span class="badge badge-gray" title="Anchored inside training event — predates standalone dataset anchoring.">Anchored inside training</span>
+                        </div>
+                        <div class="chain-card-body" style="grid-template-columns: 1fr;">
+                            <div>
+                                {% for di in training_dataset_inputs %}
+                                <div class="kv">
+                                    <div class="kv-row"><span class="kv-key">Name</span><span class="kv-value">{{ di.name }}</span></div>
+                                    <div class="kv-row"><span class="kv-key">Digest</span><span class="kv-value mono mono-sm">{{ di.digest }}</span></div>
+                                </div>
+                                {% if not loop.last %}<div style="height: 0.85rem; border-top: 1px solid var(--border); margin-top: 0.85rem;"></div>{% endif %}
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            {% endif %}
+
+            {# ── Training node ── #}
+            <div class="chain-node">
+                {% if training %}
+                    {% set tv = training.get('last_verification') %}
+                    {% set t_pending_attestation = tv and tv.overall is sameas false
+                        and tv.signature_valid is sameas true
+                        and tv.hash_match is sameas true
+                        and tv.source_of_truth_ok is sameas true
+                        and tv.attestation_level and tv.attestation_level < 2 %}
+                    {% set t_real_fail = tv and tv.overall is sameas false and not t_pending_attestation %}
+                    <div class="chain-dot {% if tv and tv.overall is sameas true %}chain-dot-green{% elif t_real_fail %}chain-dot-red{% elif training.arweave_tx_id %}chain-dot-yellow{% else %}chain-dot-gray{% endif %}"></div>
+                {% else %}
+                    <div class="chain-dot chain-dot-gray"></div>
+                {% endif %}
+                <div class="chain-card">
+                    <div class="chain-card-header">
+                        <h3>{% if training %}<a href="/ui/runs/{{ training.record.run_id }}" style="color: inherit;">Training Run</a>{% else %}Training Run{% endif %}</h3>
+                        {% if training %}
+                            {% if tv and tv.overall is sameas true %}
+                                <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
+                            {% elif t_pending_attestation %}
+                                <span class="badge badge-yellow">Pending ar.io confirmation</span>
+                            {% elif tv and tv.overall is sameas false %}
+                                <span class="badge badge-red"><span class="badge-dot"></span> Failed</span>
+                            {% elif training.arweave_tx_id %}
+                                <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
+                            {% elif arweave_enabled %}
+                                <span class="badge badge-yellow"><span class="badge-dot badge-dot-pulse"></span> Anchoring</span>
+                            {% else %}
+                                <span class="badge badge-gray"><span class="badge-dot"></span> Not anchored</span>
+                            {% endif %}
+                        {% else %}
+                            <span class="badge badge-gray"><span class="badge-dot"></span> Not recorded</span>
+                        {% endif %}
+                    </div>
+                    {% if training %}
+                    <div class="chain-card-body">
+                        <div>
+                            <div class="kv">
+                                <div class="kv-row"><span class="kv-key">Run ID</span><a class="mono mono-sm" href="/ui/runs/{{ training.record.run_id }}" style="word-break: break-all; text-decoration: none;">{{ training.record.run_id }}</a></div>
+                                {% if training.record.metrics %}
+                                {% for k, val in training.record.metrics.items() %}
+                                <div class="kv-row"><span class="kv-key">{{ k }}</span><span class="kv-value">{{ val }}</span></div>
+                                {% endfor %}
+                                {% endif %}
+                                {% if training.record.artifact_hash %}
+                                <div class="kv-row"><span class="kv-key">Artifact Hash</span><span class="kv-value mono mono-sm">{% if training.record.artifact_hash.startswith('sha256:') %}{{ training.record.artifact_hash }}{% else %}sha256:{{ training.record.artifact_hash }}{% endif %}</span></div>
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="mini-verify">
+                            <div class="mini-verify-row">
+                                <span>Proof Found</span>
+                                {% if tv %}
+                                    {% if tv.proof_found is sameas true %}<span class="check">PASS</span>
+                                    {% elif tv.proof_found is sameas false %}<span class="cross">FAIL</span>
+                                    {% else %}<span class="badge badge-yellow">Pending</span>{% endif %}
+                                {% else %}<span class="unchecked">Not checked</span>{% endif %}
+                            </div>
+                            <div class="mini-verify-row">
+                                <span>Training Record Matches</span>
+                                {% if tv %}
+                                    {% if tv.hash_match is sameas false or tv.source_of_truth_ok is sameas false %}<span class="cross">FAIL</span>
+                                    {% elif tv.permanent_copy_found and tv.hash_match is sameas true and (tv.source_of_truth_ok is sameas true or tv.source_of_truth_reason in ('no_live_fields_for_event_type', 'no_payload_to_compare')) %}<span class="check">PASS</span>
+                                    {% else %}<span class="badge badge-yellow">Pending</span>{% endif %}
+                                {% else %}<span class="unchecked">Not checked</span>{% endif %}
+                            </div>
+                            <div class="mini-verify-row">
+                                <span>Signature Confirmed</span>
+                                {% if tv %}
+                                    {% if tv.signature_valid is sameas true %}<span class="check">PASS</span>
+                                    {% elif tv.signature_valid is sameas false %}<span class="cross">FAIL</span>
+                                    {% else %}<span class="badge badge-yellow">Pending</span>{% endif %}
+                                {% else %}<span class="unchecked">Not checked</span>{% endif %}
+                            </div>
+                            <div class="mini-verify-meta">
+                                {% if tv and tv.attested_by %}<span>Attested by <strong>{{ tv.attested_by }}</strong></span>{% endif %}
+                                <span style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.2rem;">
+                                    <strong>Overall</strong>
+                                    {% if tv %}
+                                        {% if tv.overall is sameas true %}<strong class="check">PASS</strong>
+                                        {% elif t_pending_attestation %}<span class="badge badge-yellow">Pending ar.io</span>
+                                        {% elif tv.overall is sameas false %}<strong class="cross">FAIL</strong>
+                                        {% else %}<span class="badge badge-yellow">Pending</span>{% endif %}
+                                    {% else %}<span class="unchecked">Not verified</span>{% endif %}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    {% if training.arweave_tx_id %}
+                    <div class="chain-card-footer">
+                        <a href="{{ training.arweave_url }}" target="_blank" rel="noopener" class="mono mono-sm">TX: {{ training.arweave_tx_id[:16] }}...</a>
+                        {% if training_turbo %}
+                            {% if training_turbo.status in ('FINALIZED', 'CONFIRMED') %}
+                                <span class="badge badge-green"><span class="badge-dot"></span> Confirmed</span>
+                            {% elif training_turbo.status == 'NOT_FOUND' %}
+                                <span class="badge badge-yellow"><span class="badge-dot badge-dot-pulse"></span> Anchoring</span>
+                            {% else %}
+                                <span class="badge badge-yellow"><span class="badge-dot"></span> Anchoring</span>
+                            {% endif %}
+                        {% endif %}
+                    </div>
+                    {% endif %}
+                    {% endif %}
+                </div>
+            </div>
+
+            {# ── Registration / Model node ── #}
+            <div class="chain-node">
+                {% if registration %}
+                    {% set rv = registration.get('last_verification') %}
+                    {% set r_pending_attestation = rv and rv.overall is sameas false
+                        and rv.signature_valid is sameas true
+                        and rv.hash_match is sameas true
+                        and rv.source_of_truth_ok is sameas true
+                        and rv.attestation_level and rv.attestation_level < 2 %}
+                    {% set r_real_fail = rv and rv.overall is sameas false and not r_pending_attestation %}
+                    <div class="chain-dot {% if rv and rv.overall is sameas true %}chain-dot-green{% elif r_real_fail %}chain-dot-red{% elif registration.arweave_tx_id %}chain-dot-yellow{% else %}chain-dot-gray{% endif %}"></div>
+                {% else %}
+                    <div class="chain-dot chain-dot-gray"></div>
+                {% endif %}
+                <div class="chain-card">
+                    <div class="chain-card-header">
+                        <h3>{% if selected_chain %}<a href="/ui/models/{{ selected_chain.model_name }}/{{ selected_chain.model_version }}" style="color: inherit;">Model Registration</a>{% else %}Model Registration{% endif %}</h3>
+                        {% if registration %}
+                            {% if rv and rv.overall is sameas true %}
+                                <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
+                            {% elif r_pending_attestation %}
+                                <span class="badge badge-yellow">Pending ar.io confirmation</span>
+                            {% elif rv and rv.overall is sameas false %}
+                                <span class="badge badge-red"><span class="badge-dot"></span> Failed</span>
+                            {% elif registration.arweave_tx_id %}
+                                <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
+                            {% elif arweave_enabled %}
+                                <span class="badge badge-yellow"><span class="badge-dot badge-dot-pulse"></span> Anchoring</span>
+                            {% else %}
+                                <span class="badge badge-gray"><span class="badge-dot"></span> Not anchored</span>
+                            {% endif %}
+                        {% else %}
+                            <span class="badge badge-gray"><span class="badge-dot"></span> Not recorded</span>
+                        {% endif %}
+                    </div>
+                    {% if registration %}
+                    <div class="chain-card-body">
+                        <div>
+                            <div class="kv">
+                                <div class="kv-row"><span class="kv-key">Model</span><span class="kv-value"><a href="/ui/models/{{ registration.record.model_name }}/{{ registration.record.model_version }}">{{ registration.record.model_name }} / v{{ registration.record.model_version }}</a></span></div>
+                                <div class="kv-row"><span class="kv-key">Source Run</span><span class="kv-value"><a class="mono mono-sm" href="/ui/runs/{{ registration.record.source_run_id }}">{{ registration.record.source_run_id }}</a></span></div>
+                                {% if registration.record.artifact_hash %}
+                                <div class="kv-row"><span class="kv-key">Artifact Hash</span><span class="kv-value mono mono-sm">{% if registration.record.artifact_hash.startswith('sha256:') %}{{ registration.record.artifact_hash }}{% else %}sha256:{{ registration.record.artifact_hash }}{% endif %}</span></div>
+                                {% endif %}
+                                {% if training and training.arweave_tx_id and training.record.artifact_hash and registration.record.artifact_hash %}
+                                {% set _train_hash = (training.record.artifact_hash or '')|replace('sha256:', '') %}
+                                {% set _reg_hash = (registration.record.artifact_hash or '')|replace('sha256:', '') %}
+                                <div class="kv-row"><span class="kv-key">Artifact Integrity</span><span class="kv-value">
+                                    {% if _reg_hash and _train_hash and _reg_hash == _train_hash %}
+                                        <span class="badge badge-green"><span class="badge-dot"></span> Matches training</span>
+                                    {% elif _reg_hash and _train_hash %}
+                                        <span class="badge badge-red"><span class="badge-dot"></span> Mismatch</span>
+                                    {% else %}<span class="badge badge-gray"><span class="badge-dot"></span> —</span>{% endif %}
+                                </span></div>
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="mini-verify">
+                            <div class="mini-verify-row">
+                                <span>Proof Found</span>
+                                {% if rv %}
+                                    {% if rv.proof_found is sameas true %}<span class="check">PASS</span>
+                                    {% elif rv.proof_found is sameas false %}<span class="cross">FAIL</span>
+                                    {% else %}<span class="badge badge-yellow">Pending</span>{% endif %}
+                                {% else %}<span class="unchecked">Not checked</span>{% endif %}
+                            </div>
+                            <div class="mini-verify-row">
+                                <span>Registration Record Matches</span>
+                                {% if rv %}
+                                    {% if rv.hash_match is sameas false or rv.source_of_truth_ok is sameas false %}<span class="cross">FAIL</span>
+                                    {% elif rv.permanent_copy_found and rv.hash_match is sameas true and (rv.source_of_truth_ok is sameas true or rv.source_of_truth_reason in ('no_live_fields_for_event_type', 'no_payload_to_compare')) %}<span class="check">PASS</span>
+                                    {% else %}<span class="badge badge-yellow">Pending</span>{% endif %}
+                                {% else %}<span class="unchecked">Not checked</span>{% endif %}
+                            </div>
+                            <div class="mini-verify-row">
+                                <span>Signature Confirmed</span>
+                                {% if rv %}
+                                    {% if rv.signature_valid is sameas true %}<span class="check">PASS</span>
+                                    {% elif rv.signature_valid is sameas false %}<span class="cross">FAIL</span>
+                                    {% else %}<span class="badge badge-yellow">Pending</span>{% endif %}
+                                {% else %}<span class="unchecked">Not checked</span>{% endif %}
+                            </div>
+                            <div class="mini-verify-meta">
+                                {% if rv and rv.attested_by %}<span>Attested by <strong>{{ rv.attested_by }}</strong></span>{% endif %}
+                                <span style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.2rem;">
+                                    <strong>Overall</strong>
+                                    {% if rv %}
+                                        {% if rv.overall is sameas true %}<strong class="check">PASS</strong>
+                                        {% elif r_pending_attestation %}<span class="badge badge-yellow">Pending ar.io</span>
+                                        {% elif rv.overall is sameas false %}<strong class="cross">FAIL</strong>
+                                        {% else %}<span class="badge badge-yellow">Pending</span>{% endif %}
+                                    {% else %}<span class="unchecked">Not verified</span>{% endif %}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    {% if registration.arweave_tx_id %}
+                    <div class="chain-card-footer">
+                        <a href="{{ registration.arweave_url }}" target="_blank" rel="noopener" class="mono mono-sm">TX: {{ registration.arweave_tx_id[:16] }}...</a>
+                        {% if registration_turbo %}
+                            {% if registration_turbo.status in ('FINALIZED', 'CONFIRMED') %}
+                                <span class="badge badge-green"><span class="badge-dot"></span> Confirmed</span>
+                            {% elif registration_turbo.status == 'NOT_FOUND' %}
+                                <span class="badge badge-yellow"><span class="badge-dot badge-dot-pulse"></span> Anchoring</span>
+                            {% else %}
+                                <span class="badge badge-yellow"><span class="badge-dot"></span> Anchoring</span>
+                            {% endif %}
+                        {% endif %}
+                    </div>
+                    {% endif %}
+                    {% endif %}
+                </div>
+            </div>
+
+            {# ── Decisions node ── #}
+            <div class="chain-node">
+                {% if prediction_count > 0 and verified_count == prediction_count %}
+                    <div class="chain-dot chain-dot-green"></div>
+                {% elif prediction_count > 0 %}
+                    <div class="chain-dot chain-dot-yellow"></div>
+                {% else %}
+                    <div class="chain-dot chain-dot-gray"></div>
+                {% endif %}
+                <div class="chain-card">
+                    <div class="chain-card-header">
+                        <h3><a href="/ui/decisions" style="color: inherit;">Decisions</a></h3>
+                        {% if prediction_count > 0 %}
+                            <span class="badge badge-yellow"><span class="badge-dot"></span> {{ prediction_count }} record{{ 's' if prediction_count != 1 }}</span>
+                        {% else %}
+                            <span class="badge badge-gray"><span class="badge-dot"></span> None yet</span>
+                        {% endif %}
+                    </div>
+                    <div class="chain-card-body" style="grid-template-columns: 1fr;">
+                        {% if prediction_count > 0 %}
+                        <div class="kv">
+                            <div class="kv-row"><span class="kv-key">Total</span><span class="kv-value">{{ prediction_count }}</span></div>
+                            <div class="kv-row"><span class="kv-key">Anchored</span><span class="kv-value">{{ anchored_count }} / {{ prediction_count }}</span></div>
+                            <div class="kv-row"><span class="kv-key">Verified</span><span class="kv-value">{{ verified_count }} / {{ prediction_count }}</span></div>
+                        </div>
+                        {% else %}
+                        <p style="color: var(--muted); font-size: 0.85rem;">No decisions recorded for this model version yet. Use the prediction form on the Decisions page to get started.</p>
+                        {% endif %}
+                    </div>
+                    {% if prediction_count > 0 %}
+                    <div class="chain-card-footer">
+                        <a href="/ui/decisions">View all decisions →</a>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        {% else %}
+        {# Empty state — no model versions registered yet. #}
+        <div class="empty-state">
+            <div class="empty-state-title">No chains to render</div>
+            <p class="empty-state-body">
+                The Lineage page renders one connected chain per model
+                version. Train a model on the
+                <a href="/ui/runs">Training Runs</a> page to populate
+                the first chain.
+            </p>
+        </div>
+        {% endif %}
+{% endblock %}

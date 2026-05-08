@@ -1,0 +1,283 @@
+{% extends "base.html" %}
+{% from "_verify_card.html" import verify_card %}
+
+{% block title %}{{ model_name }}/v{{ version }} — Verifiable AI{% endblock %}
+{% block max_width %}1400px{% endblock %}
+{% block nav_models %}active{% endblock %}
+
+{% block styles %}
+        /* Detail-layout, detail-card, field-row, anchor-link, lineage-cta
+           moved to base.html (shared by every detail page). */
+{% endblock %}
+
+{% block content %}
+        <div style="margin-bottom: 1rem;">
+            <a href="/ui/models" style="font-size: 0.82rem; color: var(--muted);">← Models</a>
+        </div>
+
+        <div class="editorial-header">
+            <div class="editorial-header-text">
+                <span class="eyebrow">
+                    Model
+                    {% if is_active %}<span class="badge badge-primary" style="margin-left: 0.4rem;">Active</span>{% endif %}
+                </span>
+                <h1 class="editorial-title">{{ model_name }} <span class="tabular" style="color: var(--muted); font-weight: 500;">v{{ version }}</span></h1>
+                {% if training and training.record.metrics and training.record.metrics.accuracy is defined %}
+                <p class="editorial-lede">
+                    Accuracy <strong style="color: var(--black);">{{ "%.1f"|format(training.record.metrics.accuracy * 100) }}%</strong>
+                    · Trained from
+                    <a href="/ui/runs/{{ training.record.run_id }}">run {{ training.record.run_id[:10] }}…</a>
+                </p>
+                {% endif %}
+            </div>
+            <div class="editorial-header-meta">
+                <a href="/ui/lineage?chain={{ model_name }}/{{ version }}" class="lineage-cta">View chain in Lineage →</a>
+                {% if registration and registration.arweave_tx_id %}
+                <a href="/ui/models/{{ model_name }}/{{ version }}?verify=true" class="btn btn-primary" data-loading-text="Verifying...">Verify with ar.io</a>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="detail-layout">
+            <!-- Left rail: identity + anchor + activate -->
+            <div>
+                <div class="detail-card">
+                    <div class="detail-card-title">Identity</div>
+                    <div class="field-row">
+                        <span class="field-label">Name</span>
+                        <span class="field-value">{{ model_name }}</span>
+                    </div>
+                    <div class="field-row">
+                        <span class="field-label">Version</span>
+                        <span class="field-value tabular">v{{ version }}</span>
+                    </div>
+                    {% if is_active %}
+                    <div class="field-row">
+                        <span class="field-label">Status</span>
+                        <span class="field-value">
+                            <span class="badge badge-primary">Active production version</span>
+                        </span>
+                    </div>
+                    {% endif %}
+                    {% if training %}
+                    <div class="field-row">
+                        <span class="field-label">Source run</span>
+                        <span class="field-value mono"><a href="/ui/runs/{{ training.record.run_id }}">{{ training.record.run_id }}</a></span>
+                    </div>
+                    {% if training.record.metrics %}
+                    {% for k, val in training.record.metrics.items() %}
+                    <div class="field-row">
+                        <span class="field-label">{{ k }}</span>
+                        <span class="field-value tabular">{{ val }}</span>
+                    </div>
+                    {% endfor %}
+                    {% endif %}
+                    {% if training.record.artifact_hash %}
+                    <div class="field-row">
+                        <span class="field-label">Artifact hash</span>
+                        <span class="field-value mono">{% if training.record.artifact_hash.startswith('sha256:') %}{{ training.record.artifact_hash }}{% else %}sha256:{{ training.record.artifact_hash }}{% endif %}</span>
+                    </div>
+                    {% endif %}
+                    {% endif %}
+                </div>
+
+                <!-- Trained on (single-step upstream context) -->
+                {% if training_dataset_inputs %}
+                <div class="detail-card">
+                    <div class="detail-card-title">
+                        Trained on
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--muted); text-transform: none;">
+                            {{ training_dataset_inputs|length }} dataset{{ 's' if training_dataset_inputs|length != 1 }}
+                        </span>
+                    </div>
+                    {% for di in training_dataset_inputs %}
+                    <div class="field-row">
+                        <span class="field-label">{{ di.name }}</span>
+                        <span class="field-value mono">
+                            <a href="/ui/datasets/{{ di.digest }}">{{ di.digest[:14] }}…</a>
+                        </span>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+
+                <!-- Activate -->
+                {% if not is_active %}
+                <div class="detail-card">
+                    <div class="detail-card-title">Activate</div>
+                    <p style="font-size: 0.85rem; color: var(--muted); margin-bottom: 0.85rem; line-height: 1.5;">
+                        Switch the demo's live prediction endpoint to this version. The active version's anchor stays
+                        the canonical proof for new decisions.
+                    </p>
+                    <form action="/api/activate/{{ model_name }}/{{ version }}" method="POST">
+                        <button type="submit" class="btn btn-primary" data-loading-text="Activating...">Activate this version</button>
+                    </form>
+                </div>
+                {% endif %}
+
+                <!-- ar.io anchor (training + registration TXs) -->
+                {% if training and training.arweave_tx_id %}
+                <div class="detail-card">
+                    <div class="detail-card-title">ar.io anchors</div>
+                    <div class="field-row">
+                        <span class="field-label">Training TX</span>
+                        <span class="field-value mono">{{ training.arweave_tx_id }}</span>
+                    </div>
+                    <a href="{{ training.arweave_url }}" target="_blank" rel="noopener" class="anchor-link">View training proof on ar.io →</a>
+                    {% if registration and registration.arweave_tx_id %}
+                    <div class="field-row">
+                        <span class="field-label">Registration TX</span>
+                        <span class="field-value mono">{{ registration.arweave_tx_id }}</span>
+                    </div>
+                    <a href="{{ registration.arweave_url }}" target="_blank" rel="noopener" class="anchor-link">View registration proof on ar.io →</a>
+                    {% endif %}
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Main column: verify card + tamper UX -->
+            <div>
+                {# The verify card here is anchored on the registration event,
+                   since registration is the model-version-specific proof
+                   (training is shared with the run detail page). #}
+                {% if registration %}
+                {{ verify_card(
+                    v=registration.last_verification,
+                    arweave_tx_id=registration.arweave_tx_id,
+                    entity_label="Registration Record",
+                    intro="Independent verification of the model-registration proof anchored when this version was promoted to the registry. Re-verify after tampering to see the chain catch the change.",
+                    cli="ario-mlflow verify model " ~ model_name ~ "/" ~ version,
+                ) }}
+                {% else %}
+                <div class="detail-card">
+                    <p style="font-size: 0.85rem; color: var(--muted);">No registration proof recorded for this version.</p>
+                </div>
+                {% endif %}
+
+                <!-- Tamper UX (model-version-specific data attacks) -->
+                {% if demo_mode and (training or registration or training_dataset_inputs) %}
+                <div class="section-label">Demonstrate Tampering</div>
+
+                <details class="tamper-section" id="tamper-section">
+                    <summary class="tamper-header">
+                        <div class="tamper-header-inner">
+                            <span class="tamper-summary-icon"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1 L7 5 L3 9" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                            <span class="tamper-summary-title">Click to tamper</span>
+                            <span class="tamper-summary-hint">simulate three attacks on the chain</span>
+                        </div>
+                    </summary>
+                    <div class="tamper-body">
+                        <div class="tamper-intro">
+                            Three ways someone with admin access to MLflow could try to silently rewrite this model's
+                            history — one attack at each link in the chain. Each gets caught at the corresponding link.
+                            Tampers auto-reverse after a short window, or click the matching Reset button. Open
+                            <a href="/ui/lineage?chain={{ model_name }}/{{ version }}">Lineage</a>
+                            in another tab to watch the chain break visually.
+                        </div>
+
+                        {% if training and training_dataset_inputs %}
+                        <div class="tamper-row">
+                            <div class="tamper-row-info">
+                                <div class="tamper-row-title"><span class="num">1</span>Tamper with the dataset metadata</div>
+                                <div class="tamper-row-desc">Mutate the recorded dataset's digest in MLflow. <em style="font-family: 'JetBrains Mono', monospace; color: var(--muted); font-style: normal;">Overwrites the <code>digest</code> in the dataset's <code>meta.yaml</code>.</em> <strong>Breaks → Training Record Matches</strong>.</div>
+                            </div>
+                            <button class="btn-tamper" data-tamper-kind="live" data-event-type="dataset" data-event-id="{{ training.record.run_id }}">Tamper</button>
+                        </div>
+                        {% endif %}
+
+                        {% if training %}
+                        <div class="tamper-row">
+                            <div class="tamper-row-info">
+                                <div class="tamper-row-title"><span class="num">2</span>Tamper the training run's live data</div>
+                                <div class="tamper-row-desc">Mutate the training run's metrics in MLflow — for example, claim a different accuracy than was actually achieved. <em style="font-family: 'JetBrains Mono', monospace; color: var(--muted); font-style: normal;">Overwrites the <code>accuracy</code> metric on the run.</em> <strong>Breaks → Training Record Matches</strong>.</div>
+                            </div>
+                            <button class="btn-tamper" data-tamper-kind="live" data-event-type="training" data-event-id="{{ training.record.run_id }}">Tamper</button>
+                        </div>
+                        {% endif %}
+
+                        {% if registration %}
+                        <div class="tamper-row">
+                            <div class="tamper-row-info">
+                                <div class="tamper-row-title"><span class="num">3</span>Swap the deployed model artifact</div>
+                                <div class="tamper-row-desc">Replace the <code>model.pkl</code> file in MLflow with different bytes — the model-swap attack governance teams worry about. Anyone could claim the swapped model is still v{{ version }}, but its artifact hash no longer matches what was anchored. <em style="font-family: 'JetBrains Mono', monospace; color: var(--muted); font-style: normal;">Overwrites <code>model/model.pkl</code> on the source run.</em> <strong>Breaks → Registration Record Matches</strong> (and Training Record Matches too).</div>
+                                <span class="tamper-headline">★ Headline tamper for governance audiences</span>
+                            </div>
+                            <button class="btn-tamper" data-tamper-kind="live" data-event-type="registration" data-event-id="{{ registration.record.event_id }}">Tamper</button>
+                        </div>
+                        {% endif %}
+
+                        <div class="tamper-footer">
+                            <div style="font-size: 0.74rem; color: var(--muted); line-height: 1.45; font-style: italic;">Each tamper changes the live MLflow data at a different link in the chain. The verifier re-derives canonical bytes from the current state and compares to what was anchored — any divergence breaks the matching record's check.</div>
+                            <div style="display: flex; align-items: center; gap: 0.4rem; padding-top: 0.45rem; border-top: 1px solid var(--border); flex-wrap: wrap;">
+                                <span class="tamper-footer-text">Tampers auto-reverse after a short window. Reset clears each.</span>
+                                {% if training and training_dataset_inputs %}<button class="btn-reset" data-event-type="dataset" data-event-id="{{ training.record.run_id }}">Reset dataset</button>{% endif %}
+                                {% if training %}<button class="btn-reset" data-event-type="training" data-event-id="{{ training.record.run_id }}">Reset training</button>{% endif %}
+                                {% if registration %}<button class="btn-reset" data-event-type="registration" data-event-id="{{ registration.record.event_id }}">Reset registration</button>{% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </details>
+                {% endif %}
+            </div>
+        </div>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+    function reloadWithVerify() {
+        const url = new URL(window.location.href);
+        url.searchParams.set('verify', 'true');
+        window.location.href = url.toString();
+    }
+
+    document.querySelectorAll('.btn-tamper').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const kind = btn.dataset.tamperKind;
+            const eventType = btn.dataset.eventType;
+            const eventId = btn.dataset.eventId;
+            btn.disabled = true;
+            btn.textContent = 'Tampering...';
+            try {
+                const r = await fetch(`/tamper/${kind}/${eventType}/${eventId}`, { method: 'POST' });
+                const data = await r.json();
+                if (data.tampered) {
+                    btn.textContent = 'Tampered — verifying...';
+                    const sec = document.getElementById('tamper-section');
+                    if (sec) sec.style.boxShadow = '0 0 0 2px var(--yellow)';
+                    setTimeout(reloadWithVerify, 600);
+                } else {
+                    btn.textContent = 'Failed';
+                    btn.disabled = false;
+                }
+            } catch (e) {
+                btn.textContent = 'Error';
+                btn.disabled = false;
+            }
+        });
+    });
+
+    document.querySelectorAll('.btn-reset').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const eventType = btn.dataset.eventType;
+            const eventId = btn.dataset.eventId;
+            btn.disabled = true;
+            btn.textContent = 'Resetting...';
+            try {
+                const r = await fetch(`/tamper/reset/${eventType}/${eventId}`, { method: 'POST' });
+                let data = {};
+                try { data = await r.json(); } catch (_) { /* non-JSON body, treat as failure */ }
+                if (!r.ok || !data.reset) {
+                    btn.textContent = 'Reset failed';
+                    btn.disabled = false;
+                    return;
+                }
+                btn.textContent = 'Reset — verifying...';
+                setTimeout(reloadWithVerify, 600);
+            } catch (e) {
+                btn.textContent = 'Error';
+                btn.disabled = false;
+            }
+        });
+    });
+    </script>
+{% endblock %}

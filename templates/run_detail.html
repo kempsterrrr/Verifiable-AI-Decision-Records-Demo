@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 {% from "_verify_card.html" import verify_card %}
+{% from "_status_badge.html" import status_badge %}
+{% from "_proof_viewer.html" import proof_viewer %}
 
 {% block title %}Run {{ envelope.record.run_id[:8] }} — Verifiable AI{% endblock %}
 {% block max_width %}1400px{% endblock %}
@@ -32,6 +34,7 @@
                 {% endif %}
             </div>
             <div class="editorial-header-meta">
+                {{ status_badge(status) }}
                 {% if envelope.record.model_name and envelope.record.model_version %}
                 <a href="/ui/lineage?chain={{ envelope.record.model_name }}/{{ envelope.record.model_version }}" class="lineage-cta">View chain in Lineage →</a>
                 {% endif %}
@@ -192,148 +195,16 @@
                 </div>
                 {% endif %}
 
-                {% if demo_mode %}
-                <!-- Tamper UX -->
-                <div class="section-label">Demonstrate Tampering</div>
-                <details class="tamper-section" id="tamper-section">
-                    <summary class="tamper-header">
-                        <div class="tamper-header-inner">
-                            <span class="tamper-summary-icon"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1 L7 5 L3 9" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-                            <span class="tamper-summary-title">Click to tamper</span>
-                            <span class="tamper-summary-hint">simulate three attacks</span>
-                        </div>
-                    </summary>
-                    <div class="tamper-body">
-                        <div class="tamper-intro">
-                            Three ways someone could try to alter this training run after the fact — all hit MLflow data, all get caught by the same verification check. Click to see how. Tampers auto-reverse after a short window, or click the matching Reset button.
-                        </div>
-                        <div class="tamper-row">
-                            <div class="tamper-row-info">
-                                <div class="tamper-row-title"><span class="num">1</span>Tamper with the saved record</div>
-                                <div class="tamper-row-desc">Edit the locally-saved copy of the training run data. <em style="font-family: 'JetBrains Mono', monospace; color: var(--muted); font-style: normal;">Overwrites <code>ario/payload.json</code> in MLflow.</em> <strong>Breaks → Training Record Matches.</strong></div>
-                            </div>
-                            <button class="btn-tamper" data-tamper-kind="saved" data-event-type="training" data-event-id="{{ envelope.record.run_id }}">Tamper</button>
-                        </div>
-                        <div class="tamper-row">
-                            <div class="tamper-row-info">
-                                <div class="tamper-row-title"><span class="num">2</span>Tamper with the live data</div>
-                                <div class="tamper-row-desc">Mutate MLflow's underlying training run — for example, change the recorded accuracy from its real value to 99.9%. <em style="font-family: 'JetBrains Mono', monospace; color: var(--muted); font-style: normal;">Overwrites the <code>accuracy</code> metric on the run.</em> <strong>Breaks → Training Record Matches.</strong></div>
-                                <span class="tamper-headline">★ Headline tamper for governance audiences</span>
-                            </div>
-                            <button class="btn-tamper" data-tamper-kind="live" data-event-type="training" data-event-id="{{ envelope.record.run_id }}">Tamper</button>
-                        </div>
-                        {% if dataset_inputs %}
-                        <div class="tamper-row">
-                            <div class="tamper-row-info">
-                                <div class="tamper-row-title"><span class="num">3</span>Tamper with the dataset metadata</div>
-                                <div class="tamper-row-desc">Mutate the recorded dataset's digest in MLflow's dataset registry. <em style="font-family: 'JetBrains Mono', monospace; color: var(--muted); font-style: normal;">Overwrites the <code>digest</code> in the dataset's <code>meta.yaml</code>.</em> <strong>Breaks → Training Record Matches</strong> (training's signed payload inlines the dataset's identity).</div>
-                            </div>
-                            <button class="btn-tamper" data-tamper-kind="live" data-event-type="dataset" data-event-id="{{ envelope.record.run_id }}">Tamper</button>
-                        </div>
-                        {% endif %}
-                        <div class="tamper-footer">
-                            <div style="font-size: 0.74rem; color: var(--muted); line-height: 1.45; font-style: italic;">Each tamper hits a different surface but the system catches each one — data tampering anywhere in MLflow shows up as the same broken check.</div>
-                            <div style="display: flex; align-items: center; gap: 0.4rem; padding-top: 0.45rem; border-top: 1px solid var(--border); flex-wrap: wrap;">
-                                <span class="tamper-footer-text">Tampers auto-reverse after a short window. Reset clears each.</span>
-                                <button class="btn-reset" data-event-type="training" data-event-id="{{ envelope.record.run_id }}">Reset training</button>
-                                {% if dataset_inputs %}<button class="btn-reset" data-event-type="dataset" data-event-id="{{ envelope.record.run_id }}">Reset dataset</button>{% endif %}
-                            </div>
-                        </div>
-                    </div>
-                </details>
-                {% endif %}
+                {# Tamper section relocated to /demo/tamper in Phase E. #}
 
-                <!-- How verification works -->
-                <div class="section-label">How verification works</div>
-                <details class="collapsible">
-                    <summary>
-                        <span class="collapsible-summary-icon"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1 L7 5 L3 9" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-                        <span class="collapsible-summary-title">Show the canonical bytes ↔ signed commitment</span>
-                        <span class="collapsible-summary-hint">click to expand</span>
-                    </summary>
-                    <div class="collapsible-body">
-                        <div class="viewer-intro">
-                            The proof has two parts. Ar.io anchors a tiny <strong>signed commitment</strong> — just hashes and a signature, no source data. MLflow stores the <strong>canonical bytes</strong> that produced the hash. Anyone with both can verify they match.
-                        </div>
-                        <div class="proof-split">
-                            <div class="panel">
-                                <div class="panel-header">
-                                    <div class="panel-title-row"><div class="panel-title">Canonical bytes</div><span class="panel-source-pill pill-mlflow">MLflow</span></div>
-                                    <div class="panel-meta">JCS canonicalized · the source · what gets hashed</div>
-                                </div>
-                                <div class="panel-body">
-                                    <div class="json-block" id="canonical-bytes-json">{% if canonical_bytes_json %}{{ canonical_bytes_json }}{% else %}<em style="color:var(--muted)">Click <strong>Verify with ar.io</strong> first to fetch and show the canonical bytes.</em>{% endif %}</div>
-                                </div>
-                                <div class="panel-footer">
-                                    <span style="font-family: 'JetBrains Mono', monospace;">ario/payload.json</span>
-                                </div>
-                            </div>
-                            <div class="panel">
-                                <div class="panel-header">
-                                    <div class="panel-title-row"><div class="panel-title">Signed commitment</div><span class="panel-source-pill pill-arweave">ar.io</span></div>
-                                    <div class="panel-meta">~500 bytes · permanent · public · the witness</div>
-                                </div>
-                                <div class="panel-body">
-                                    <div class="json-block" id="signed-commitment-json">{% if signed_commitment_json %}{{ signed_commitment_json }}{% else %}<em style="color:var(--muted)">Click <strong>Verify with ar.io</strong> first to fetch and show the signed commitment.</em>{% endif %}</div>
-                                </div>
-                                <div class="panel-footer">
-                                    {% if envelope.arweave_tx_id %}
-                                    <span>TX <span style="font-family: 'JetBrains Mono', monospace; color: var(--primary);">{{ envelope.arweave_tx_id }}</span></span>
-                                    <a href="https://turbo-gateway.com/{{ envelope.arweave_tx_id }}" target="_blank" rel="noopener">View on ar.io →</a>
-                                    {% endif %}
-                                </div>
-                            </div>
-                        </div>
-                        <div class="equality">
-                            <span class="equality-prefix">Verifier recomputes:</span>
-                            <div class="equality-formula">
-                                <span class="eq-token eq-left">SHA-256(canonical bytes)</span>
-                                <span class="eq-op">=</span>
-                                <span class="eq-token eq-right">payload_hash</span>
-                                {% if v and v.hash_match is sameas true %}
-                                    <span class="eq-result">✓ matches</span>
-                                {% elif v and v.hash_match is sameas false %}
-                                    <span class="eq-result eq-result-fail">✗ doesn't match</span>
-                                {% endif %}
-                            </div>
-                        </div>
-                        <div class="legend-row">
-                            <div><strong>What you can't do.</strong> Change either side without breaking the equality. The signature on the signed commitment binds <code style="font-family: 'JetBrains Mono', monospace;">payload_hash</code> to the signer's key.</div>
-                            <div><strong>What this isn't.</strong> Canonical bytes contain hashes of model artifacts, not the model weights themselves — the model file stays in MLflow, only its hash is anchored.</div>
-                        </div>
-                    </div>
-                </details>
+                {{ proof_viewer(
+                    canonical_bytes_json=canonical_bytes_json or envelope.canonical_bytes_json,
+                    signed_commitment_json=signed_commitment_json or envelope.signed_commitment_json,
+                    arweave_tx_id=envelope.arweave_tx_id,
+                    mlflow_path="ario/payload.json",
+                ) }}
 
-                <!-- Live MLflow tags -->
-                <div class="section-label">Live MLflow tags</div>
-                <details class="collapsible">
-                    <summary>
-                        <span class="collapsible-summary-icon"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1 L7 5 L3 9" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-                        <span class="collapsible-summary-title">Show the actual tags on this run in MLflow</span>
-                        <span class="collapsible-summary-hint">pulled live · MLflowClient.get_run()</span>
-                    </summary>
-                    <div class="collapsible-body">
-                        {% if mlflow_ario_tags %}
-                        <div style="font-size:0.78rem;color:var(--muted);line-height:1.5;margin-bottom:0.75rem;">
-                            Pulled just now from the MLflow tracking store via <code>MlflowClient.get_run()</code>. These are the actual tags on the run — not synthesised by this page.
-                        </div>
-                        <div class="kv">
-                            {% for k, val in mlflow_ario_tags.items() %}
-                            <div class="kv-row">
-                                <span class="kv-key">{{ k }}</span>
-                                <span class="kv-value mono mono-sm">{{ val }}</span>
-                            </div>
-                            {% endfor %}
-                        </div>
-                        <div style="margin-top:0.75rem;padding:0.6rem 0.75rem;background:var(--surface);border-radius:6px;font-size:0.78rem;color:var(--muted);line-height:1.5;">
-                            To see this in the native MLflow UI, run locally:<br>
-                            <code style="display:inline-block;margin-top:0.3rem;font-size:0.75rem;">mlflow ui --backend-store-uri {{ mlflow_tracking_uri }}</code>
-                        </div>
-                        {% else %}
-                        <div style="color: var(--muted); font-size: 0.85rem;">No MLflow tags found on this run (tracking store unreachable or run removed).</div>
-                        {% endif %}
-                    </div>
-                </details>
+                {# Live MLflow tags section removed in Phase E. #}
             </div>
         </div>
 {% endblock %}
@@ -456,61 +327,7 @@
     {% endif %}
 
     <script>
-    function reloadWithVerify() {
-        const url = new URL(window.location.href);
-        url.searchParams.set('verify', 'true');
-        window.location.href = url.toString();
-    }
-
-    document.querySelectorAll('.btn-tamper').forEach(btn => {
-        btn.addEventListener('click', async () => {
-            const kind = btn.dataset.tamperKind;
-            const eventType = btn.dataset.eventType;
-            const eventId = btn.dataset.eventId;
-            btn.disabled = true;
-            btn.textContent = 'Tampering...';
-            try {
-                const r = await fetch(`/tamper/${kind}/${eventType}/${eventId}`, { method: 'POST' });
-                const data = await r.json();
-                if (data.tampered) {
-                    btn.textContent = 'Tampered — verifying...';
-                    const sec = document.getElementById('tamper-section');
-                    if (sec) sec.style.boxShadow = '0 0 0 2px var(--yellow)';
-                    setTimeout(reloadWithVerify, 600);
-                } else {
-                    btn.textContent = 'Failed';
-                    btn.disabled = false;
-                }
-            } catch (e) {
-                btn.textContent = 'Error';
-                btn.disabled = false;
-            }
-        });
-    });
-
-    document.querySelectorAll('.btn-reset').forEach(btn => {
-        btn.addEventListener('click', async () => {
-            const eventType = btn.dataset.eventType;
-            const eventId = btn.dataset.eventId;
-            btn.disabled = true;
-            btn.textContent = 'Resetting...';
-            try {
-                const r = await fetch(`/tamper/reset/${eventType}/${eventId}`, { method: 'POST' });
-                let data = {};
-                try { data = await r.json(); } catch (_) { /* non-JSON body, treat as failure */ }
-                if (!r.ok || !data.reset) {
-                    btn.textContent = 'Reset failed';
-                    btn.disabled = false;
-                    return;
-                }
-                btn.textContent = 'Reset — verifying...';
-                setTimeout(reloadWithVerify, 600);
-            } catch (e) {
-                btn.textContent = 'Error';
-                btn.disabled = false;
-            }
-        });
-    });
+    // Tamper / reset JS removed in Phase E — see /demo/tamper.
 
     // Highlight the payload_hash line in the signed commitment panel.
     (function() {

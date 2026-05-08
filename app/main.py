@@ -30,6 +30,33 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _proof_display_json(payload: dict | None, envelope: dict | None) -> tuple[str | None, str | None]:
+    """Pretty-print the canonical payload + signed envelope for display.
+
+    Returns ``(canonical_bytes_json, signed_commitment_json)``. Either
+    can be ``None`` when the corresponding dict is missing — the always-on
+    verification panel renders only what's available.
+
+    Persisted on the lifecycle/record envelope at anchor time so the
+    panel renders without a gateway round-trip per page view. Phase E
+    swap from the older lazy-on-?verify=true fetch path.
+    """
+    import json as _json
+    canonical_bytes_json = None
+    signed_commitment_json = None
+    if payload is not None:
+        try:
+            canonical_bytes_json = _json.dumps(payload, indent=2, sort_keys=False)
+        except (TypeError, ValueError):
+            canonical_bytes_json = None
+    if envelope is not None:
+        try:
+            signed_commitment_json = _json.dumps(envelope, indent=2, sort_keys=False)
+        except (TypeError, ValueError):
+            signed_commitment_json = None
+    return canonical_bytes_json, signed_commitment_json
+
+
 def _build_training_cache_record(model_info: dict) -> dict:
     """Build the lifecycle_store ``record`` sub-dict for a training event.
 
@@ -116,11 +143,23 @@ def _build_dataset_anchored_records(model_info: dict) -> list[dict]:
             "source_run_id": model_info["run_id"],
             "payload_hash": da.get("payload_hash"),
         }
+        # Phase E: persist display JSON for the always-on verification
+        # panel. Dataset events have NO MLflow artifact for the canonical
+        # bytes (the plugin's _anchor_dataset_event signs and uploads
+        # only — no log_artifact), so eager persist here is the *only*
+        # way to render the canonical bytes side without a fresh
+        # Arweave fetch on every detail-page render.
+        canonical_bytes_json, signed_commitment_json = _proof_display_json(
+            da.get("payload"),
+            da.get("envelope"),
+        )
         out.append({
             "record": record,
             "arweave_tx_id": anchor_result.get("tx_id"),
             "arweave_url": anchor_result.get("url"),
             "turbo_receipt": anchor_result.get("receipt"),
+            "canonical_bytes_json": canonical_bytes_json,
+            "signed_commitment_json": signed_commitment_json,
         })
     return out
 
@@ -177,11 +216,20 @@ def _startup_anchor_lifecycle(settings, model_info, lifecycle_store):
     # arweave fields stamped from plugin's anchor result.
     if not lifecycle_store.get_by_run_id(run_id):
         record = _build_training_cache_record(model_info)
+        canonical_bytes_json, signed_commitment_json = _proof_display_json(
+            model_info.get("training_payload"),
+            model_info.get("training_envelope"),
+        )
         envelope = {
             "record": record,
             "arweave_tx_id": training_anchor.get("tx_id"),
             "arweave_url": training_anchor.get("url"),
             "turbo_receipt": training_anchor.get("receipt"),
+            # Phase E: persist display JSON so the always-on verification
+            # panel renders the canonical bytes ↔ signed commitment
+            # without a gateway round-trip per page view.
+            "canonical_bytes_json": canonical_bytes_json,
+            "signed_commitment_json": signed_commitment_json,
         }
         lifecycle_store.append(envelope)
         logger.info(
@@ -296,13 +344,18 @@ tracer = trace.get_tracer(__name__)
 app.include_router(ui_router)
 
 
-def _hydrate_record_envelope_from_verified_prediction(store, decision_id: str, verified_result):
+def _hydrate_record_envelope_from_verified_prediction(store, decision_id: str, verified_result, tracking_uri: str | None = None):
     """Background task: wait for VerifiedModel's anchor daemon to settle,
     then hydrate the demo's RecordStore envelope with the real Arweave
     TX. Phase 2.B replaces the legacy ``_anchor_record`` background
     task — VerifiedModel handles the upload itself; this just bridges
     the result back into the demo's UI store. Phase 2.D refactors
     RecordStore into a thin UI cache so this bridge goes away.
+
+    Phase E: also downloads ``ario/predictions/<id>/proof.json`` from
+    MLflow once the daemon has written it, so the always-on
+    verification panel can render the signed commitment without a
+    per-page-render gateway fetch.
     """
     try:
         finished = verified_result.wait_for_anchor(timeout=60.0)
@@ -325,6 +378,38 @@ def _hydrate_record_envelope_from_verified_prediction(store, decision_id: str, v
         )
         # Turbo receipt isn't directly accessible from VerifiedPrediction;
         # leave as None. UI doesn't strictly require it.
+
+        # Phase E: pull the signed envelope from MLflow now that the
+        # plugin's anchor daemon has finished writing the proof
+        # artifact. Best-effort — a failure here just leaves
+        # signed_commitment_json missing; canonical bytes (set
+        # synchronously when the envelope was created) still render.
+        if tracking_uri and not envelope.get("signed_commitment_json"):
+            try:
+                import json as _json
+                import tempfile as _tempfile
+                import mlflow as _mlflow
+                from mlflow.tracking import MlflowClient as _MlflowClient
+                _mlflow.set_tracking_uri(tracking_uri)
+                client = _MlflowClient()
+                run_id = (envelope.get("record") or {}).get("mlflow_run_id")
+                if run_id:
+                    with _tempfile.TemporaryDirectory() as tmp:
+                        proof_path = client.download_artifacts(
+                            run_id,
+                            f"ario/predictions/{decision_id}/proof.json",
+                            tmp,
+                        )
+                        with open(proof_path) as f:
+                            envelope_dict = _json.load(f)
+                        _, sc_json = _proof_display_json(None, envelope_dict)
+                        envelope["signed_commitment_json"] = sc_json
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    f"Could not load prediction signed envelope for "
+                    f"decision {decision_id}: {e}"
+                )
+
         store.update(decision_id, envelope)
         logger.info(
             f"Hydrated RecordStore envelope for decision {decision_id}: "
@@ -408,6 +493,14 @@ def _run_prediction(app_state, features: list[float]) -> tuple[dict, object]:
             "human_override": False,
         }
 
+        # Phase E: pretty-print the canonical payload immediately —
+        # ``verified_result.record`` is the dict the plugin signed.
+        # signed_commitment_json gets backfilled by the hydration
+        # background task once the plugin's anchor daemon writes the
+        # proof artifact to MLflow.
+        canonical_bytes_json, _ = _proof_display_json(
+            getattr(verified_result, "record", None), None,
+        )
         envelope = {
             "record": record,
             # arweave_tx_id starts None and gets hydrated by the
@@ -416,6 +509,8 @@ def _run_prediction(app_state, features: list[float]) -> tuple[dict, object]:
             "arweave_tx_id": None,
             "arweave_url": None,
             "turbo_receipt": None,
+            "canonical_bytes_json": canonical_bytes_json,
+            "signed_commitment_json": None,
         }
 
         app_state.store.append(envelope)
@@ -449,6 +544,7 @@ def api_predict(request: Request, body: dict, background_tasks: BackgroundTasks)
         request.app.state.store,
         decision_id,
         verified_result,
+        request.app.state.settings.mlflow_tracking_uri,
     )
     return envelope
 
@@ -480,6 +576,7 @@ def form_predict(
         request.app.state.store,
         decision_id,
         verified_result,
+        request.app.state.settings.mlflow_tracking_uri,
     )
     return RedirectResponse(f"/ui/decisions/{decision_id}", status_code=303)
 
@@ -615,6 +712,43 @@ def _hydrate_registration_envelope_from_plugin(
         envelope["arweave_url"] = arweave_url
         # Turbo receipt isn't accessible from the model version tags
         # directly; leave as None. UI doesn't strictly require it.
+
+        # Phase E: also pull the registration's canonical bytes + signed
+        # envelope from MLflow artifacts so the always-on verification
+        # panel renders without a per-page-render fetch. The plugin
+        # writes both files alongside model registration in
+        # ario_mlflow/client.py:391-403. Best-effort: a transient MLflow
+        # outage just leaves the JSON missing; the panel falls back to
+        # a placeholder.
+        try:
+            import json as _json
+            import tempfile as _tempfile
+            source_run_id = (envelope.get("record") or {}).get("source_run_id")
+            if source_run_id:
+                # ArioMlflowClient extends MlflowClient — download_artifacts
+                # is inherited. Files are written by the plugin at
+                # ario_mlflow/client.py:391-403 alongside the registration
+                # anchor.
+                with _tempfile.TemporaryDirectory() as tmp:
+                    payload_path = ario_client.download_artifacts(
+                        source_run_id, "ario/registration_payload.json", tmp,
+                    )
+                    proof_path = ario_client.download_artifacts(
+                        source_run_id, "ario/registration_proof.json", tmp,
+                    )
+                    with open(payload_path, "rb") as f:
+                        payload_dict = _json.loads(f.read())
+                    with open(proof_path) as f:
+                        envelope_dict = _json.load(f)
+                cb_json, sc_json = _proof_display_json(payload_dict, envelope_dict)
+                envelope["canonical_bytes_json"] = cb_json
+                envelope["signed_commitment_json"] = sc_json
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"Could not load registration display JSON for "
+                f"{model_name}/v{model_version}: {e}"
+            )
+
         lifecycle_store.update(event_id, envelope)
         logger.info(
             f"Hydrated lifecycle_store registration envelope for "

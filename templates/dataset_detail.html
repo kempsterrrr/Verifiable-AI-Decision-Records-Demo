@@ -2,6 +2,7 @@
 {% from "_verify_card.html" import verify_card %}
 {% from "_status_badge.html" import status_badge %}
 {% from "_active_badge.html" import active_badge %}
+{% from "_proof_viewer.html" import proof_viewer %}
 
 {% block title %}Dataset {{ dataset.name }} — Verifiable AI{% endblock %}
 {% block max_width %}1400px{% endblock %}
@@ -168,6 +169,13 @@
                     <p style="font-size: 0.85rem; color: var(--muted);">No runs are currently linked to this dataset.</p>
                     {% endif %}
                 </div>
+
+                {{ proof_viewer(
+                    canonical_bytes_json=envelope.canonical_bytes_json,
+                    signed_commitment_json=envelope.signed_commitment_json,
+                    arweave_tx_id=envelope.arweave_tx_id,
+                    mlflow_path="",
+                ) }}
             </div>
         </div>
 {% endblock %}

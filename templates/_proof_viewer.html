@@ -1,0 +1,62 @@
+{# Anchored-proof viewer.
+
+   Shows the two artifacts side-by-side: the canonical bytes stored in
+   MLflow and the signed commitment uploaded to ar.io. Reads as a
+   product feature — "here's the data in each system" — not as a sales
+   explainer.
+
+   Render with:
+     {% from "_proof_viewer.html" import proof_viewer %}
+     {{ proof_viewer(
+          canonical_bytes_json=envelope.canonical_bytes_json,
+          signed_commitment_json=envelope.signed_commitment_json,
+          arweave_tx_id=envelope.arweave_tx_id,
+          mlflow_path="ario/payload.json",
+        ) }}
+
+   Args:
+     canonical_bytes_json    Pretty-printed canonical payload (str).
+                             Persisted on the envelope by app/main.py.
+     signed_commitment_json  Pretty-printed signed envelope (str).
+                             Persisted by the same path.
+     arweave_tx_id           TX id for the ar.io footer link.
+     mlflow_path             Path label shown under the canonical bytes
+                             panel (e.g. "ario/payload.json"). Empty
+                             string hides the row — used by dataset
+                             events which have no MLflow artifact.
+#}
+
+{% macro proof_viewer(canonical_bytes_json, signed_commitment_json, arweave_tx_id, mlflow_path) -%}
+<div class="section-label">Anchored proof</div>
+
+<div class="proof-split">
+    <div class="panel">
+        <div class="panel-header">
+            <div class="panel-title-row"><div class="panel-title">In MLflow</div><span class="panel-source-pill pill-mlflow">MLflow</span></div>
+        </div>
+        <div class="panel-body">
+            <div class="json-block" id="canonical-bytes-json">{% if canonical_bytes_json %}{{ canonical_bytes_json }}{% else %}<em style="color:var(--muted)">Not yet available — anchoring may still be in flight.</em>{% endif %}</div>
+        </div>
+        {% if mlflow_path %}
+        <div class="panel-footer">
+            <span style="font-family: 'JetBrains Mono', monospace;">{{ mlflow_path }}</span>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="panel">
+        <div class="panel-header">
+            <div class="panel-title-row"><div class="panel-title">On ar.io</div><span class="panel-source-pill pill-arweave">ar.io</span></div>
+        </div>
+        <div class="panel-body">
+            <div class="json-block" id="signed-commitment-json">{% if signed_commitment_json %}{{ signed_commitment_json }}{% else %}<em style="color:var(--muted)">Not yet available — anchoring may still be in flight.</em>{% endif %}</div>
+        </div>
+        <div class="panel-footer">
+            {% if arweave_tx_id %}
+            <span>TX <span style="font-family: 'JetBrains Mono', monospace; color: var(--primary);">{{ arweave_tx_id }}</span></span>
+            <a href="https://turbo-gateway.com/{{ arweave_tx_id }}" target="_blank" rel="noopener">View on ar.io →</a>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{%- endmacro %}

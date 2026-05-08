@@ -6,8 +6,7 @@
           v=envelope.last_verification,
           arweave_tx_id=envelope.arweave_tx_id,
           entity_label="Decision Record",
-          intro="...",
-          cli="ario-mlflow verify trace ..."  # optional
+          intro="..."
         ) }}
 
    Args:
@@ -16,17 +15,20 @@
                    signature_valid, hash_match, source_of_truth_ok,
                    permanent_copy_found, source_of_truth_reason, attested_by,
                    attested_at, attestation_level, overall.
-     arweave_tx_id The on-chain TX id used in the manual-curl docs row.
+     arweave_tx_id The on-chain TX id, currently unused but kept on the
+                   signature for backward compatibility with existing
+                   call sites.
      entity_label  The "Record Matches" row label, e.g. "Decision Record",
                    "Training Record", "Dataset Record".
      intro         Card intro paragraph (HTML allowed) describing what these
                    checks do and don't speak to for this entity type.
-     cli           Optional plugin CLI shortcut shown in the docs panel.
-                   Pass None to omit (e.g. for entity types without a CLI
-                   subcommand yet).
 #}
 
 {% macro verify_card(v, arweave_tx_id, entity_label, intro, cli=None) -%}
+{# ``cli`` parameter retained for call-site compatibility (Phase B
+   shipped it as a positional in some places). The "How to verify
+   independently" panel was removed in Phase E — the value is no
+   longer rendered. #}
 <div class="section">
     <div class="section-header">ar.io Verification</div>
     <div class="section-body">
@@ -109,26 +111,6 @@
             {% endif %}
         </div>
 
-        {% if arweave_tx_id %}
-        <details style="margin-top: 0.85rem; font-size: 0.75rem; color: var(--muted); border-top: 1px solid var(--border); padding-top: 0.75rem;">
-            <summary style="cursor: pointer; font-weight: 600; color: var(--black); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em;">▶ How to verify independently</summary>
-            <div style="margin-top: 0.5rem; line-height: 1.6;">
-                <p>1. Fetch the pure-commitment envelope from Arweave:</p>
-                <code style="display: block; background: var(--surface); padding: 0.4rem 0.6rem; border-radius: 4px; margin: 0.25rem 0 0.5rem; font-size: 0.7rem; word-break: break-all; font-family: 'JetBrains Mono', monospace;">curl https://turbo-gateway.com/raw/{{ arweave_tx_id }}</code>
-                <p>2. Verify the Ed25519 signature using the embedded public_key (the signed body is the envelope minus the signature field, JCS-canonicalized).</p>
-                <p style="margin-top: 0.25rem;">3. Download the canonical bytes from MLflow and confirm SHA-256 matches the envelope's payload_hash.</p>
-                {% if cli %}
-                <p style="margin-top: 0.25rem; font-style: italic;">Or run <code style="font-family: 'JetBrains Mono', monospace;">{{ cli }}</code> for all checks at once.</p>
-                {% endif %}
-            </div>
-        </details>
-        {% endif %}
-
-        {% if v and v.permanent_copy_found and v.report_url %}
-        <div class="verify-actions">
-            <a href="{{ v.report_url }}" target="_blank" rel="noopener" class="btn btn-outline btn-sm">View Report</a>
-        </div>
-        {% endif %}
     </div>
 </div>
 {%- endmacro %}

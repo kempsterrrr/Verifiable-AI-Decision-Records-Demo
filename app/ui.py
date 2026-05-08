@@ -790,17 +790,6 @@ def lineage(request: Request, chain: str | None = None, verify: bool = False):
     )
 
 
-@router.get("/ui/who-this-is-for", response_class=HTMLResponse)
-def who_this_is_for(request: Request):
-    """Four-persona framing page so visitors find a doorway matched to their context."""
-    app = request.app
-    return templates.TemplateResponse(
-        request,
-        "who_this_is_for.html",
-        _common_context(app),
-    )
-
-
 @router.get("/ui/decisions/{decision_id}", response_class=HTMLResponse)
 def decision_detail(request: Request, decision_id: str, verify: bool = False):
     app = request.app

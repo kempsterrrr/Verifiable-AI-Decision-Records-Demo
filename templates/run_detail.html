@@ -22,23 +22,26 @@
         <div class="editorial-header">
             <div class="editorial-header-text">
                 <span class="eyebrow">
-                    Run
+                    Training Run
                     <span class="eyebrow-id">· {{ envelope.record.run_id[:14] }}…</span>
                 </span>
-                <h1 class="editorial-title">Training Run</h1>
                 {% if envelope.record.model_name and envelope.record.model_version %}
+                <h1 class="editorial-title">Trained <a href="/ui/models/{{ envelope.record.model_name }}/{{ envelope.record.model_version }}" style="color: inherit;">{{ envelope.record.model_name }} <span class="tabular" style="color: var(--muted); font-weight: 500;">v{{ envelope.record.model_version }}</span></a></h1>
+                {% if envelope.record.metrics and envelope.record.metrics.accuracy is defined %}
                 <p class="editorial-lede">
-                    Produced
-                    <a href="/ui/models/{{ envelope.record.model_name }}/{{ envelope.record.model_version }}"><strong>{{ envelope.record.model_name }}</strong> v{{ envelope.record.model_version }}</a>{% if envelope.record.metrics and envelope.record.metrics.accuracy is defined %} · accuracy <strong style="color: var(--black);">{{ "%.1f"|format(envelope.record.metrics.accuracy * 100) }}%</strong>{% endif %}
+                    Accuracy <strong style="color: var(--black);">{{ "%.1f"|format(envelope.record.metrics.accuracy * 100) }}%</strong>{% if envelope.record.timestamp %} · started {{ envelope.record.timestamp[:19].replace("T", " ") }}{% endif %}
                 </p>
+                {% endif %}
+                {% else %}
+                <h1 class="editorial-title">Training Run</h1>
                 {% endif %}
             </div>
             <div class="editorial-header-meta">
                 {{ status_badge(status) }}
                 {% if envelope.record.model_name and envelope.record.model_version %}
-                <a href="/ui/lineage?chain={{ envelope.record.model_name }}/{{ envelope.record.model_version }}" class="lineage-cta">View chain in Lineage →</a>
+                <a href="/ui/lineage?chain={{ envelope.record.model_name }}/{{ envelope.record.model_version }}" class="btn btn-outline">View chain in Lineage →</a>
                 {% endif %}
-                <a id="verify-btn" href="/ui/runs/{{ envelope.record.run_id }}?verify=true" class="btn btn-primary" data-loading-text="Verifying..." {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>Verify with ar.io</a>
+                <a id="verify-btn" href="/ui/runs/{{ envelope.record.run_id }}?verify=true" class="btn btn-primary" data-loading-text="Verifying..." {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>Verify now</a>
             </div>
         </div>
 
@@ -160,7 +163,7 @@
                         {% endif %}
                     </div>
                     {% if envelope.arweave_tx_id %}
-                    <a id="view-proof-btn" href="https://turbo-gateway.com/{{ envelope.arweave_tx_id }}" target="_blank" rel="noopener" class="anchor-link">View proof on ar.io →</a>
+                    <a id="view-proof-btn" href="https://turbo-gateway.com/{{ envelope.arweave_tx_id }}" target="_blank" rel="noopener" class="anchor-link">View on ar.io →</a>
                     {% endif %}
                 </div>
             </div>

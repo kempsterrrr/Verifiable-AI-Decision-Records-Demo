@@ -141,7 +141,11 @@
                     Decision
                     <span class="eyebrow-id">· {{ envelope.record.decision_id[:14] }}…</span>
                 </span>
-                <h1 class="editorial-title">Decision Record</h1>
+                <h1 class="editorial-title">
+                    {% if envelope.record.prediction['class'] == 'approve' %}Approved
+                    {% elif envelope.record.prediction['class'] == 'deny' %}Denied
+                    {% else %}Decision Record{% endif %}
+                </h1>
                 <p class="editorial-lede">
                     Made by
                     <a href="/ui/models/{{ envelope.record.model_name }}/{{ envelope.record.model_version }}"><strong>{{ envelope.record.model_name }}</strong> v{{ envelope.record.model_version }}</a>{{ active_badge(envelope.record.model_name, envelope.record.model_version, active_model_name, active_model_version) }}
@@ -151,9 +155,9 @@
             <div class="editorial-header-meta">
                 {{ status_badge(status) }}
                 {% if envelope.record.model_name and envelope.record.model_version %}
-                <a href="/ui/lineage?chain={{ envelope.record.model_name }}/{{ envelope.record.model_version }}" class="lineage-cta">View chain in Lineage →</a>
+                <a href="/ui/lineage?chain={{ envelope.record.model_name }}/{{ envelope.record.model_version }}" class="btn btn-outline">View chain in Lineage →</a>
                 {% endif %}
-                <a id="verify-btn" href="/ui/decisions/{{ envelope.record.decision_id }}?verify=true" class="btn btn-primary" data-loading-text="Verifying..." {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>Verify with ar.io</a>
+                <a id="verify-btn" href="/ui/decisions/{{ envelope.record.decision_id }}?verify=true" class="btn btn-primary" data-loading-text="Verifying..." {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}>Verify now</a>
             </div>
         </div>
 
@@ -189,18 +193,6 @@
            The detail-layout (left rail / main column) sits below it. #}
         <div class="decision-hero">
             <div class="decision-hero-top">
-                <div class="decision-hero-result">
-                    <span class="decision-hero-result-label">Result</span>
-                    <span class="decision-hero-result-value">
-                        {% if envelope.record.prediction['class'] == 'approve' %}
-                            <span class="badge badge-green"><span class="badge-dot"></span> Approved</span>
-                        {% elif envelope.record.prediction['class'] == 'deny' %}
-                            <span class="badge badge-red"><span class="badge-dot"></span> Denied</span>
-                        {% else %}
-                            {{ envelope.record.prediction['class'] }}
-                        {% endif %}
-                    </span>
-                </div>
                 <div class="decision-hero-confidence">
                     <span class="decision-hero-result-label">Confidence</span>
                     <span class="decision-hero-confidence-value">{{ "%.1f"|format(envelope.record.prediction.probabilities[envelope.record.prediction['class']] * 100) }}<span style="font-size: 0.95rem; color: var(--muted); font-weight: 500;">%</span></span>
@@ -298,7 +290,7 @@
                         {% endif %}
                     </div>
                     {% if envelope.arweave_tx_id %}
-                    <a id="view-proof-btn" href="https://turbo-gateway.com/{{ envelope.arweave_tx_id }}" target="_blank" rel="noopener" class="anchor-link">View proof on ar.io →</a>
+                    <a id="view-proof-btn" href="https://turbo-gateway.com/{{ envelope.arweave_tx_id }}" target="_blank" rel="noopener" class="anchor-link">View on ar.io →</a>
                     {% endif %}
                 </div>
             </div>

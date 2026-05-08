@@ -8,7 +8,7 @@
 {% block nav_models %}active{% endblock %}
 
 {% block styles %}
-        /* Detail-layout, detail-card, field-row, anchor-link, lineage-cta
+        /* Detail-layout, detail-card, field-row, anchor-link
            moved to base.html (shared by every detail page). */
 {% endblock %}
 
@@ -34,9 +34,9 @@
             </div>
             <div class="editorial-header-meta">
                 {{ status_badge(status) }}
-                <a href="/ui/lineage?chain={{ model_name }}/{{ version }}" class="lineage-cta">View chain in Lineage →</a>
+                <a href="/ui/lineage?chain={{ model_name }}/{{ version }}" class="btn btn-outline">View chain in Lineage →</a>
                 {% if registration and registration.arweave_tx_id %}
-                <a href="/ui/models/{{ model_name }}/{{ version }}?verify=true" class="btn btn-primary" data-loading-text="Verifying...">Verify with ar.io</a>
+                <a href="/ui/models/{{ model_name }}/{{ version }}?verify=true" class="btn btn-primary" data-loading-text="Verifying...">Verify now</a>
                 {% endif %}
             </div>
         </div>
@@ -126,13 +126,13 @@
                         <span class="field-label">Training TX</span>
                         <span class="field-value mono">{{ training.arweave_tx_id }}</span>
                     </div>
-                    <a href="{{ training.arweave_url }}" target="_blank" rel="noopener" class="anchor-link">View training proof on ar.io →</a>
+                    <a href="{{ training.arweave_url }}" target="_blank" rel="noopener" class="anchor-link">View on ar.io →</a>
                     {% if registration and registration.arweave_tx_id %}
                     <div class="field-row">
                         <span class="field-label">Registration TX</span>
                         <span class="field-value mono">{{ registration.arweave_tx_id }}</span>
                     </div>
-                    <a href="{{ registration.arweave_url }}" target="_blank" rel="noopener" class="anchor-link">View registration proof on ar.io →</a>
+                    <a href="{{ registration.arweave_url }}" target="_blank" rel="noopener" class="anchor-link">View on ar.io →</a>
                     {% endif %}
                 </div>
                 {% endif %}

@@ -77,13 +77,20 @@ Returns a dict with `envelope`, `payload`, `payload_bytes`, `payload_hash`,
 **Failure modes.** `anchor()` is synchronous and runs to completion before the
 `with` block exits.
 
-- **Arweave upload fails** (gateway down, wallet unfunded, network): the
-  envelope is still signed locally and `ario.verify_status` is set to `signed`;
-  `ario.training_tx` is absent. Your MLflow run still succeeds. Re-run later
-  to retry the upload.
+- **Arweave upload fails** (gateway down, network): the envelope is still
+  signed locally and `ario.verify_status` is set to `signed`; `ario.training_tx`
+  is absent. Your MLflow run still succeeds. Re-run later to retry. The
+  underlying `ArweaveAnchor.last_error` attribute carries the cause if you
+  pass an explicit `arweave=` instance you can inspect.
 - **Artifact hashing fails** (artifacts not yet logged, store unreachable):
   raises `ario_mlflow.anchoring.ArtifactAccessError`. Wrap the call if you
   want to log-and-continue.
+- **Caller-supplied wallet missing or malformed** (when constructing your
+  own `ArweaveAnchor(wallet_path=...)` and passing it as `arweave=`): raises
+  `ario_mlflow.WalletLoadError` from the constructor — operator intent must
+  not be silently overridden by an auto-generated wallet under a different
+  on-chain identity. Pass `wallet_path=None` (or omit the arg) to use the
+  auto-generated default.
 - **No active run**: raises `RuntimeError`. The function requires an active
   `mlflow.start_run()` block.
 
@@ -241,12 +248,45 @@ For high-throughput inference, the predict path is the hot one — predictions
 return as soon as the model produces an output. The Arweave upload happens
 asynchronously and writes back to the trace tags when it completes.
 
+## Resilience
+
+The plugin's HTTP layer is built to absorb transient ar.io gateway
+weather without bubbling up as user-visible failures.
+
+- **Retries on transient failures.** All upload, fetch, and ar.io Verify
+  requests share a `requests.Session` with a `urllib3` Retry adapter:
+  HTTP 5xx and 429 responses are retried with exponential backoff
+  (default: 2 retries, 0.5s/1.0s waits, `Retry-After` honored). 4xx
+  responses other than 429 are not retried — they're hard failures.
+  Tunable via `max_retries` and `retry_backoff_factor` constructor
+  kwargs on `ArweaveAnchor` and `ArioVerifyClient`.
+- **Multi-gateway fetch fallback.** `ArweaveAnchor.fetch_proof()` walks
+  `self.gateways` in order: on a transient failure for one, the next is
+  tried automatically. Default list is `["turbo-gateway.com",
+  "ardrive.net"]`; override via the `gateways=` kwarg or the
+  `ARIO_MLFLOW_GATEWAYS` env var. A single flaky gateway no longer
+  surfaces as a hard "Proof Found" FAIL in any verifier UI.
+- **Failure introspection via `last_error`.** When `upload_proof()`,
+  `fetch_proof()`, or `ArioVerifyClient.submit_verification()` returns
+  `None`, the instance's `last_error` attribute carries a string
+  describing the cause — gateway down, retries exhausted, response
+  body unparseable, etc. Distinguish "anchor disabled" from
+  "everything we tried failed" without parsing logs.
+- **Attestation-level polling.** `ArioVerifyClient.poll_attestation(tx_id,
+  target_level=2, timeout=120, interval=5)` repeatedly submits the
+  verification request until the desired attestation level is reached
+  or the timeout expires. Returns the latest result either way (so
+  callers can render "level 1, still propagating" status rather than
+  nothing). Useful when you want to wait for full maturity before
+  surfacing a Verified badge.
+
 ## Environment variables
 
 | Variable | Purpose | Default |
 |---|---|---|
 | `ARIO_MLFLOW_ARWEAVE_WALLET` | Path to an Arweave JWK wallet file | auto-generates + persists at `~/.ario-mlflow/wallet.json` |
-| `ARIO_MLFLOW_GATEWAY_HOST` | ar.io gateway for uploads & fetches | `turbo-gateway.com` |
+| `ARIO_MLFLOW_GATEWAY_HOST` | Primary ar.io gateway used in returned URLs | `turbo-gateway.com` |
+| `ARIO_MLFLOW_GATEWAYS` | Comma-separated list of ar.io gateways tried in order on fetch failures (e.g. `g1.com,g2.com`) | primary + `ardrive.net` fallback |
 | `ARIO_MLFLOW_SIGNING_KEY` | Base64-encoded Ed25519 seed | auto-generates at `~/.ario-mlflow/keys/` |
 | `ARIO_MLFLOW_ARIO_VERIFY_URL` | ar.io Verify REST API base URL — e.g. `https://perma.online/local/verify` (an ar.io operator's Verify endpoint) | ar.io attestation disabled if unset |
 

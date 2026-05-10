@@ -6,17 +6,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Active development. See open pull requests at
-[github.com/vilenarios/Verifiable-AI-Decision-Records-Demo/pulls](https://github.com/vilenarios/Verifiable-AI-Decision-Records-Demo/pulls)
-for in-flight work — currently a plugin safety pass, a network resilience
-pass, and this documentation pass.
+Active development. Not yet published to PyPI; install from source via
+`pip install -e .`.
 
 ## [0.1.0] — 2026
 
-Initial alpha release. Not yet published to PyPI; install from source via
-`pip install -e .`.
+Initial alpha — covers the three integration points, dataset anchoring, the
+CLI verify/audit flow, the safety-and-packaging pass, and the network
+resilience pass. Not yet published to PyPI.
 
-### Added
+### Added — core API
 
 - **`anchor()`** — training provenance helper that signs a pure-commitment
   envelope over the active MLflow run's params, metrics, and artifact
@@ -44,13 +43,46 @@ Initial alpha release. Not yet published to PyPI; install from source via
 - **HTML verification report** generated as an MLflow artifact
   (`ario/verification.html`) on each anchored event.
 
+### Added — safety pass
+
+- **`WalletLoadError`** — raised from `ArweaveAnchor(wallet_path=...)` when
+  a caller-supplied wallet path is missing or malformed. Replaces silent
+  fallback to an auto-generated wallet, which would have signed proofs
+  under a different on-chain identity with no programmatic signal.
+- **PEP 621 packaging** — migrated from `setup.py` to `pyproject.toml` with
+  full PyPI metadata, classifiers, and `__version__` exposed via
+  `ario_mlflow.__version__`.
+- **Apache-2.0 LICENSE** at repo root, matching ar.io org convention.
+
+### Added — resilience pass
+
+- **HTTP retry with exponential backoff** — `ArweaveAnchor` and
+  `ArioVerifyClient` share a `requests.Session` with a `urllib3` Retry
+  adapter. 5xx and 429 responses retry with exponential backoff, honoring
+  `Retry-After`. Configurable via `max_retries` / `retry_backoff_factor`
+  constructor kwargs.
+- **Multi-gateway fetch fallback** — `ArweaveAnchor.fetch_proof()` walks an
+  ordered gateway list (default `["turbo-gateway.com", "ardrive.net"]`,
+  override via `gateways=` kwarg or `ARIO_MLFLOW_GATEWAYS` env var) so a
+  single flaky gateway no longer surfaces as a hard verify failure.
+- **`last_error` introspection** — `ArweaveAnchor` and `ArioVerifyClient`
+  expose a `last_error` string attribute populated when methods return
+  `None`, so callers can distinguish "anchor disabled" from "retries
+  exhausted" without parsing logs.
+- **`ArioVerifyClient.poll_attestation()`** — wait for an attestation to
+  reach a target maturity level (1 → 2 → 3) with configurable timeout +
+  interval. Returns the latest result either way.
+
+### Removed
+
+- **`https://vilenarios.com/local/verify` fallback in `report.py`** — when
+  no verify URL is configured, the CLI command stands alone in generated
+  HTML reports instead of pointing at a personal endpoint.
+
 ### Known limitations
 
-- MLflow 3.x: prediction-side `verify_source_of_truth` may return
-  `live_refetch_incomplete` due to changed trace artifact location handling
-  in 3.x. Training and registration verification are unaffected.
-- No retry on transient gateway failures, no multi-gateway fallback yet
-  (queued in the resilience pass PR).
-- A caller-supplied wallet path that points to a missing or malformed file
-  silently falls back to an auto-generated wallet (queued: raise
-  `WalletLoadError` instead, in the safety pass PR).
+- **MLflow 3.x prediction verification** — the prediction-side
+  `verify_source_of_truth` check returns `live_refetch_incomplete` because
+  MLflow 3.x changed how trace artifact locations are resolved. Training
+  and registration verification are unaffected on 3.x. Investigation
+  scheduled.

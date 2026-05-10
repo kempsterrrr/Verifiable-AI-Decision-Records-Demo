@@ -1071,6 +1071,35 @@ def test_verification_run_tags_skips_when_level_missing():
     assert out == {"ario.report_url": "https://r/"}
 
 
+# --- CLI NO_COLOR support -------------------------------------------------
+
+
+def test_cli_glyph_includes_ansi_when_no_color_unset(monkeypatch):
+    """Default behavior: ANSI escape codes wrap the glyph."""
+    from ario_mlflow.cli import _check_glyph
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    out = _check_glyph()
+    assert "\033[" in out
+    assert "✓" in out
+
+
+def test_cli_glyph_strips_ansi_when_no_color_set(monkeypatch):
+    """NO_COLOR=1 (or any non-empty value) strips ANSI escapes for clean
+    output to logs, CI artifacts, and downstream parsers — community
+    convention from no-color.org."""
+    from ario_mlflow.cli import _check_glyph, _cross_glyph, _pending_glyph
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert "\033[" not in _check_glyph()
+    assert "\033[" not in _cross_glyph()
+    assert "\033[" not in _pending_glyph()
+    # Glyph characters themselves are preserved.
+    assert _check_glyph() == "✓"
+    assert _cross_glyph() == "✗"
+    assert _pending_glyph() == "?"
+
+
 def test_verification_run_tags_empty_for_none():
     from ario_mlflow.cli import _verification_run_tags
 

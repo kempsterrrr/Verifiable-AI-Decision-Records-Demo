@@ -43,12 +43,38 @@ def _get_components():
 
 _LABEL_WIDTH = 28
 
+def _glyph(symbol: str, color_code: str) -> str:
+    """Return ``symbol`` wrapped in an ANSI color code.
+
+    Respects the NO_COLOR community standard (https://no-color.org): when
+    the ``NO_COLOR`` env var is set to any non-empty value, ANSI escapes
+    are stripped \u2014 useful for piping ``ario-mlflow verify`` into log
+    files, CI artifacts, or downstream parsers that mangle escape codes.
+    Read at call time (not import time) so tests can monkeypatch the
+    env var without reloading the module.
+    """
+    if os.environ.get("NO_COLOR", ""):
+        return symbol
+    return f"\033[{color_code}m{symbol}\033[0m"
+
+
+def _check_glyph() -> str:
+    return _glyph("\u2713", "32")
+
+
+def _cross_glyph() -> str:
+    return _glyph("\u2717", "31")
+
+
+def _pending_glyph() -> str:
+    return _glyph("?", "33")
+
 
 def _print_check(label: str, result: dict, value_when_ok: str | None = None):
     """Print one check line. Status: \u2713 / \u2717 / ? (not applicable)."""
-    check = "\033[32m\u2713\033[0m"
-    cross = "\033[31m\u2717\033[0m"
-    pending = "\033[33m?\033[0m"
+    check = _check_glyph()
+    cross = _cross_glyph()
+    pending = _pending_glyph()
 
     ok = result.get("ok")
     if ok is True:
@@ -107,9 +133,9 @@ def _print_four_checks(
     # ar.io Verify \u2014 show the maturity level whenever the API returned
     # something, regardless of whether it passed the threshold. Helps
     # users see "Level 1, growing" vs. "TX missing" at a glance.
-    check = "\033[32m\u2713\033[0m"
-    cross = "\033[31m\u2717\033[0m"
-    pending = "\033[33m?\033[0m"
+    check = _check_glyph()
+    cross = _cross_glyph()
+    pending = _pending_glyph()
     ok = ario_attestation.get("ok")
     attester = ario_attestation.get("attested_by") or "unknown"
 
@@ -476,8 +502,8 @@ def cmd_audit(args):
         print("  No artifact hash recorded.")
 
     print(f"\n{'=' * 50}")
-    check = "\033[32m\u2713\033[0m"
-    cross = "\033[31m\u2717\033[0m"
+    check = _check_glyph()
+    cross = _cross_glyph()
     print(f"Overall: {check + ' All checks passed' if all_ok else cross + ' Issues found'}")
     return 0 if all_ok else 1
 

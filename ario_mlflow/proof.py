@@ -206,7 +206,7 @@ class ProofEngine:
             vk = VerifyKey(bytes.fromhex(envelope["public_key"]))
             vk.verify(canonical_json(body), bytes.fromhex(envelope["signature"]))
             sig_valid = True
-        except Exception:
+        except Exception:  # noqa: BLE001 — any verification failure (decode, key shape, signature mismatch) keeps sig_valid=False; verifier must not crash on adversarial input
             pass
 
         payload_hash_valid: bool | None = None

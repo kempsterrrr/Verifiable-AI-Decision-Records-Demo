@@ -358,7 +358,7 @@ def cmd_verify_trace(args):
 
     try:
         trace = mlflow.get_trace(args.trace_id)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — CLI command: any trace-load failure (missing, network, parse) returns exit 1 with a user-readable error
         print(f"Could not load trace {args.trace_id}: {e}")
         return 1
 
@@ -392,7 +392,7 @@ def cmd_verify_trace(args):
         for key, value in back_tags.items():
             try:
                 mlflow.set_trace_tag(args.trace_id, key, value)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — best-effort tag write-back; CLI continues with verification result even if a single tag setter fails
                 print(f"  ! failed to set trace tag {key}: {e}")
         print(f"  -> updated {len(back_tags)} MLflow trace tag(s)")
 
@@ -420,7 +420,7 @@ def cmd_audit(args):
         try:
             run = client.get_run(mv.run_id)
             training_tx = run.data.tags.get("ario.training_tx")
-        except Exception:
+        except Exception:  # noqa: BLE001 — audit display: training_tx is best-effort; missing tag/run renders as "unknown" without aborting the audit
             pass
 
     print(f"\nTraining (run {mv.run_id or 'unknown'}):")
@@ -466,7 +466,7 @@ def cmd_audit(args):
         try:
             run = client.get_run(mv.run_id)
             artifact_hash = run.data.tags.get("ario.artifact_hash")
-        except Exception:
+        except Exception:  # noqa: BLE001 — audit display: artifact_hash is best-effort; failure renders as "unknown" without aborting
             pass
 
     print(f"\nArtifact integrity:")

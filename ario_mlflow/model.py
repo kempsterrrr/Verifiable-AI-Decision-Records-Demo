@@ -45,7 +45,7 @@ def _resolve_model_version(client, model_uri: str):
             return None
         try:
             return client.get_model_version_by_alias(name, alias)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — any MLflow-side failure (network, missing alias, perms) → None signals "couldn't resolve"
             logger.warning(f"Could not resolve alias {model_uri}: {e}")
             return None
 
@@ -58,7 +58,7 @@ def _resolve_model_version(client, model_uri: str):
     if suffix.isdigit():
         try:
             return client.get_model_version(name, suffix)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — version-by-number resolution failures → None signals "couldn't resolve"
             logger.warning(f"Could not resolve version {model_uri}: {e}")
             return None
 
@@ -67,7 +67,7 @@ def _resolve_model_version(client, model_uri: str):
         results = client.search_model_versions(
             f"name='{name}' and current_stage='{suffix}'"
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — stage search failures → None signals "couldn't resolve"
         logger.warning(f"Could not resolve stage {model_uri}: {e}")
         return None
     if not results:
@@ -224,7 +224,7 @@ class VerifiedModel:
                         logger.info(f"Artifact integrity verified for {model_uri}")
             except IntegrityError:
                 raise
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — IntegrityError already re-raised above; everything else (mlflow access, file IO) is logged-and-skipped to avoid blocking model load
                 logger.warning(f"Could not verify artifact integrity: {e}")
 
         # Integrity has passed (or was unverifiable with a logged warning).

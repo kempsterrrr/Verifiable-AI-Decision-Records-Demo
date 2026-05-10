@@ -162,7 +162,7 @@ def artifact_checksums(client_or_run_id, run_id: str | None = None, artifact_pat
         run_id = client_or_run_id
     try:
         local_path = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path=artifact_path)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — wraps any MLflow artifact-access failure as ArtifactAccessError so callers can decide; not a silent skip
         # Callers must not silently anchor an empty tree as if it were the
         # artifact's real hash — surface the failure so they can skip.
         raise ArtifactAccessError(

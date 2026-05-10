@@ -5,6 +5,8 @@ import logging
 import os
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from ario_mlflow.proof import canonical_json
 
@@ -14,6 +16,58 @@ logger = logging.getLogger(__name__)
 # reused across sessions. Matches the pattern used by proof.py for signing
 # keys (~/.ario-mlflow/keys/).
 DEFAULT_WALLET_PATH = os.path.expanduser("~/.ario-mlflow/wallet.json")
+
+# HTTP retry policy for transient gateway failures. Applied to all
+# session-based requests (upload, fetch, status). 5xx + 429 are retried
+# with exponential backoff; the gateway's ``Retry-After`` header is
+# honored when present. 4xx responses other than 429 are NOT retried —
+# they indicate a request the gateway already rejected on the merits.
+_DEFAULT_MAX_RETRIES = 2  # 1 initial + 2 retries = 3 attempts
+_DEFAULT_RETRY_BACKOFF = 0.5  # seconds; doubles each retry: 0.5s, 1.0s
+_RETRY_STATUS_CODES = (429, 500, 502, 503, 504)
+
+# Default ordered list of ar.io gateways tried for FETCH operations
+# (proof retrieval). Override via the ``gateways`` constructor kwarg or
+# the ``ARIO_MLFLOW_GATEWAYS`` env var (comma-separated). Ordering is
+# preference: index 0 is tried first; later entries are fallbacks for
+# transient gateway outages.
+#
+# Future swap point: when the AR.IO Network Process gains a Python
+# client (or we shell out to the JS wayfinder package), replace
+# ``_resolve_gateways`` body with a discovery call and keep this list
+# only as the bootstrap fallback.
+_DEFAULT_FETCH_GATEWAYS = ("turbo-gateway.com", "ardrive.net")
+
+
+def _resolve_gateways(
+    gateways: list[str] | None,
+    gateway_host: str,
+) -> list[str]:
+    """Resolve the ordered fetch-gateway list.
+
+    Precedence (highest first):
+
+    1. Explicit ``gateways`` kwarg passed to ``ArweaveAnchor``.
+    2. ``ARIO_MLFLOW_GATEWAYS`` env var (comma-separated).
+    3. Built-in default: ``gateway_host`` first, then any
+       :data:`_DEFAULT_FETCH_GATEWAYS` entries not already present.
+
+    Returns a deduplicated list preserving order.
+    """
+    if gateways is not None:
+        candidates = list(gateways)
+    elif env := os.environ.get("ARIO_MLFLOW_GATEWAYS"):
+        candidates = [g.strip() for g in env.split(",") if g.strip()]
+    else:
+        candidates = [gateway_host, *_DEFAULT_FETCH_GATEWAYS]
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for g in candidates:
+        if g and g not in seen:
+            seen.add(g)
+            ordered.append(g)
+    return ordered
 
 # The three wallet_mode values exposed in logs / tags / reports:
 #   user-configured — loaded from a caller-supplied wallet path.
@@ -41,13 +95,45 @@ class WalletLoadError(Exception):
 class ArweaveAnchor:
     """Upload proof payloads to Arweave via Turbo SDK."""
 
-    def __init__(self, wallet_path: str | None = None, gateway_host: str = "turbo-gateway.com"):
+    def __init__(
+        self,
+        wallet_path: str | None = None,
+        gateway_host: str = "turbo-gateway.com",
+        *,
+        gateways: list[str] | None = None,
+        max_retries: int = _DEFAULT_MAX_RETRIES,
+        retry_backoff_factor: float = _DEFAULT_RETRY_BACKOFF,
+    ):
         self.gateway_host = gateway_host
+        # Ordered fetch-gateway list. ``gateway_host`` retains its role
+        # as the "primary" gateway used in returned URLs (the value
+        # surfaced to UIs and reports); ``gateways`` is the resilience
+        # list iterated when fetches fail.
+        self.gateways = _resolve_gateways(gateways, gateway_host)
         self.enabled = False
         self.wallet_mode: str | None = None
         self._signer = None
         self._upload_url = None
         self._token = None
+        # Last failure surfaced to callers that get ``None`` from
+        # upload_proof / fetch_proof. ``None`` means "no error
+        # recorded since the last successful call."
+        self.last_error: str | None = None
+
+        # Single session shared across upload, fetch, and status calls.
+        # The mounted HTTPAdapter retries 5xx + 429 with exponential
+        # backoff; transient gateway failures stop being terminal.
+        self._session = requests.Session()
+        retry = Retry(
+            total=max_retries,
+            backoff_factor=retry_backoff_factor,
+            status_forcelist=_RETRY_STATUS_CODES,
+            allowed_methods=("GET", "POST", "HEAD"),
+            respect_retry_after_header=True,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        self._session.mount("https://", adapter)
+        self._session.mount("http://", adapter)
 
         wallet_path = wallet_path or os.environ.get("ARIO_MLFLOW_ARWEAVE_WALLET", "")
 
@@ -288,7 +374,10 @@ class ArweaveAnchor:
                 paths, or business-sensitive identifiers** — Arweave tags
                 are public, queryable, and permanent.
         """
+        self.last_error = None
+
         if not self.enabled or not self._signer:
+            self.last_error = "anchor disabled (turbo-sdk unavailable or wallet unconfigured)"
             return None
 
         try:
@@ -303,7 +392,7 @@ class ArweaveAnchor:
 
             url = f"{self._upload_url}/tx/{self._token}"
             raw_data = data_item.get_raw()
-            response = requests.post(
+            response = self._session.post(
                 url,
                 data=raw_data,
                 headers={"Content-Type": "application/octet-stream", "Content-Length": str(len(raw_data))},
@@ -311,33 +400,97 @@ class ArweaveAnchor:
             )
 
             if response.status_code != 200:
-                raise Exception(f"Upload failed: {response.status_code} - {response.text}")
+                # 4xx (other than 429, which the Retry policy retries)
+                # reaches here as a hard failure. Truncate response body
+                # to keep logs readable.
+                self.last_error = (
+                    f"upload returned HTTP {response.status_code}: "
+                    f"{response.text[:200]}"
+                )
+                logger.error(f"Arweave upload failed: {self.last_error}")
+                return None
 
             receipt = response.json()
             tx_id = receipt["id"]
             logger.info(f"Uploaded to Arweave: tx_id={tx_id}")
             return {"tx_id": tx_id, "url": f"https://{self.gateway_host}/{tx_id}", "receipt": receipt}
 
-        except Exception as e:
-            logger.error(f"Arweave upload failed: {e}")
+        except requests.exceptions.RequestException as e:
+            # Covers ConnectionError, Timeout, and RetryError (raised
+            # when urllib3's Retry policy exhausts).
+            self.last_error = f"upload network/HTTP error: {type(e).__name__}: {e}"
+            logger.error(f"Arweave upload failed: {self.last_error}")
+            return None
+        except Exception as e:  # noqa: BLE001 — preserve None-return contract for unexpected failures; full traceback logged
+            self.last_error = f"upload unexpected error: {type(e).__name__}: {e}"
+            logger.error(f"Arweave upload failed: {self.last_error}", exc_info=True)
             return None
 
     def fetch_proof(self, tx_id: str) -> dict | None:
-        try:
-            resp = requests.get(f"https://{self.gateway_host}/raw/{tx_id}", timeout=30)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            logger.error(f"Failed to fetch from Arweave: {e}")
+        """Fetch a proof envelope by Arweave TX ID.
+
+        Iterates :attr:`gateways` in order; on transient HTTP/network
+        errors against one gateway, falls back to the next. Returns the
+        parsed JSON on first success, or ``None`` if every gateway
+        failed (with the failure trail recorded in ``self.last_error``).
+        """
+        self.last_error = None
+        if not self.gateways:
+            self.last_error = "no fetch gateways configured"
+            logger.error(self.last_error)
             return None
 
+        errors: list[str] = []
+        for gateway in self.gateways:
+            url = f"https://{gateway}/raw/{tx_id}"
+            try:
+                resp = self._session.get(url, timeout=30)
+                resp.raise_for_status()
+                # ValueError from resp.json() (gateway returned 200 with
+                # non-JSON body) is treated as a gateway failure, not a
+                # caller-side bug — fall over to the next gateway.
+                parsed = resp.json()
+                if gateway != self.gateways[0]:
+                    # Surface the fact that we failed over so ops can
+                    # see it in logs without parsing every request.
+                    logger.info(
+                        f"Fetched {tx_id} from fallback gateway {gateway} "
+                        f"after primary {self.gateways[0]} failed"
+                    )
+                return parsed
+            except (requests.exceptions.RequestException, ValueError) as e:
+                errors.append(f"{gateway}: {type(e).__name__}: {e}")
+                logger.warning(
+                    f"Gateway {gateway} failed for tx {tx_id}: {type(e).__name__}: {e}"
+                )
+                continue
+
+        self.last_error = (
+            f"fetch failed across {len(self.gateways)} gateway(s) "
+            f"({', '.join(self.gateways)}): {' | '.join(errors)}"
+        )
+        logger.error(f"All gateways failed for tx {tx_id}: {self.last_error}")
+        return None
+
     def check_status(self, tx_id: str) -> dict:
+        """Query Turbo's bundler-status endpoint for ``tx_id``.
+
+        Single-endpoint by design: this hits Turbo's internal status
+        service (``turbo.ardrive.io/tx/<id>/status``), not a generic
+        ar.io gateway. Multi-gateway fallback isn't applicable —
+        finalization status is Turbo-specific. Retries against the same
+        endpoint on transient errors via the shared session.
+        """
         try:
-            resp = requests.get(f"https://turbo.ardrive.io/tx/{tx_id}/status", timeout=10)
+            resp = self._session.get(
+                f"https://turbo.ardrive.io/tx/{tx_id}/status", timeout=10
+            )
             if resp.status_code == 200:
+                # ValueError if the response isn't JSON — handled below
+                # alongside transport errors so callers always get a dict.
                 data = resp.json()
                 return {"status": data.get("status", "UNKNOWN"), "info": data.get("info")}
             return {"status": "NOT_FOUND"}
-        except Exception as e:
-            logger.error(f"Failed to check Turbo status: {e}")
+        except (requests.exceptions.RequestException, ValueError) as e:
+            logger.error(f"Failed to check Turbo status for {tx_id}: {type(e).__name__}: {e}")
             return {"status": "UNKNOWN"}

@@ -298,7 +298,7 @@ class ArioMlflowClient(MlflowClient):
                     run = self.get_run(source_run_id)
                     training_tx = run.data.tags.get("ario.training_tx")
                     expected_hash = run.data.tags.get("ario.artifact_hash")
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 — tracking-store read failure: skip anchor attempt rather than mint a fresh GENESIS chain (would permanently break provenance — see comment below)
                     # A transient tracking-store failure must NOT silently
                     # drop training_tx and mint a fresh GENESIS chain —
                     # that would permanently break provenance for this
@@ -441,7 +441,7 @@ class ArioMlflowClient(MlflowClient):
                 tx_id=result["tx_id"] if result else None,
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — registration anchoring runs in a daemon thread; failure must record status="failed" and continue, not crash the calling thread
             logger.error(f"Failed to anchor registration {model_name}/v{version}: {e}")
             self._record_status(
                 "registration", model_name, version,
@@ -579,7 +579,7 @@ class ArioMlflowClient(MlflowClient):
                     status="signed",
                 )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — promotion anchoring runs in a daemon thread; failure logs + records status="failed" without crashing the calling thread
             logger.error(f"Failed to anchor promotion {model_name}/v{version}: {e}")
             self._record_status(
                 "promotion", model_name, version,

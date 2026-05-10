@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -2475,7 +2476,7 @@ def test_ario_client_registration_passes_metadata_through(monkeypatch):
     assert payload["model_name"] == "m"
 
 
-def test_arweave_upload_proof_sets_post_timeout(monkeypatch):
+def test_arweave_upload_proof_sets_post_timeout():
     """POST must not hang indefinitely — matches the sibling GET's 30s bound."""
     import ario_mlflow.arweave as arweave_module
 
@@ -2489,12 +2490,12 @@ def test_arweave_upload_proof_sets_post_timeout(monkeypatch):
         captured["timeout"] = timeout
         return _FakeResp()
 
-    monkeypatch.setattr(arweave_module.requests, "post", _fake_post)
-
     # Construct an anchor with the internals populated enough to reach the POST.
     anchor = arweave_module.ArweaveAnchor.__new__(arweave_module.ArweaveAnchor)
     anchor.enabled = True
     anchor.gateway_host = "turbo-gateway.com"
+    anchor.gateways = ["turbo-gateway.com"]
+    anchor.last_error = None
 
     class _FakeSigner:
         def get_wallet_address(self): return "addr"
@@ -2502,6 +2503,13 @@ def test_arweave_upload_proof_sets_post_timeout(monkeypatch):
     anchor._signer = _FakeSigner()
     anchor._upload_url = "https://upload.example"
     anchor._token = "token"
+
+    # Capture the post call via the session's post attribute — the real
+    # session would route through urllib3's retry adapter, but for this
+    # test we only care that upload_proof passed an explicit timeout.
+    fake_session = MagicMock()
+    fake_session.post = _fake_post
+    anchor._session = fake_session
 
     # Stub the data-item creation path so we don't depend on turbo_sdk internals.
     class _FakeDataItem:
@@ -2516,7 +2524,7 @@ def test_arweave_upload_proof_sets_post_timeout(monkeypatch):
     result = anchor.upload_proof({"record": {"event_type": "x"}, "record_hash": "h"})
     assert result is not None
     # The test's real purpose: the POST carried an explicit timeout.
-    assert captured.get("timeout") is not None, "requests.post was called without timeout"
+    assert captured.get("timeout") is not None, "session.post was called without timeout"
     assert captured["timeout"] >= 10, captured["timeout"]
 
 

@@ -28,11 +28,19 @@ covered a different design where the proof carried the source data.
 import json
 import logging
 import os
+import time
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from ario_mlflow.proof import ProofEngine, canonical_json, hash_data, normalize_floats
-from ario_mlflow.arweave import ArweaveAnchor
+from ario_mlflow.arweave import (
+    ArweaveAnchor,
+    _DEFAULT_MAX_RETRIES,
+    _DEFAULT_RETRY_BACKOFF,
+    _RETRY_STATUS_CODES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -931,37 +939,137 @@ def verify_proof_by_tx(
 
 
 class ArioVerifyClient:
-    """Client for AR.IO Verify REST API."""
+    """Client for AR.IO Verify REST API.
 
-    def __init__(self, base_url: str | None = None):
+    Uses a shared :class:`requests.Session` with a retry policy
+    (5xx + 429 with exponential backoff) so transient gateway failures
+    don't show up as a hard "ar.io Verify failed" verdict.
+    """
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        *,
+        max_retries: int = _DEFAULT_MAX_RETRIES,
+        retry_backoff_factor: float = _DEFAULT_RETRY_BACKOFF,
+        health_timeout: float = 5.0,
+        submit_timeout: float = 30.0,
+    ):
         self.base_url = (base_url or os.environ.get("ARIO_MLFLOW_ARIO_VERIFY_URL", "")).rstrip("/")
         self.enabled = False
+        # Last failure surfaced to callers that get None from
+        # submit_verification. Reset on each call.
+        self.last_error: str | None = None
+        self._submit_timeout = submit_timeout
+
+        # Shared session with retry on transient failures.
+        self._session = requests.Session()
+        retry = Retry(
+            total=max_retries,
+            backoff_factor=retry_backoff_factor,
+            status_forcelist=_RETRY_STATUS_CODES,
+            allowed_methods=("GET", "POST"),
+            respect_retry_after_header=True,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        self._session.mount("https://", adapter)
+        self._session.mount("http://", adapter)
 
         if not self.base_url:
             return
 
         try:
-            resp = requests.get(f"{self.base_url}/health", timeout=5)
+            resp = self._session.get(f"{self.base_url}/health", timeout=health_timeout)
             if resp.status_code == 200:
                 self.enabled = True
                 logger.info(f"ar.io Verify connected at {self.base_url}")
-        except Exception as e:
-            logger.warning(f"ar.io Verify unavailable: {e}")
+            else:
+                logger.warning(
+                    f"ar.io Verify health check returned HTTP {resp.status_code} "
+                    f"at {self.base_url}; client disabled"
+                )
+        except requests.exceptions.RequestException as e:
+            logger.warning(
+                f"ar.io Verify unavailable at {self.base_url}: {type(e).__name__}: {e}"
+            )
 
     def submit_verification(self, tx_id: str) -> dict | None:
+        self.last_error = None
         if not self.enabled:
+            self.last_error = "ar.io Verify client not enabled"
             return None
         try:
-            resp = requests.post(
+            resp = self._session.post(
                 f"{self.base_url}/api/v1/verify",
                 json={"txId": tx_id},
-                timeout=30,
+                timeout=self._submit_timeout,
             )
             resp.raise_for_status()
             return self._normalize(resp.json())
-        except Exception as e:
-            logger.error(f"ar.io Verify failed: {e}")
+        except requests.exceptions.RequestException as e:
+            self.last_error = f"submit_verification network/HTTP error: {type(e).__name__}: {e}"
+            logger.error(f"ar.io Verify failed for {tx_id}: {self.last_error}")
             return None
+        except (ValueError, KeyError) as e:
+            self.last_error = f"submit_verification response parse error: {type(e).__name__}: {e}"
+            logger.error(f"ar.io Verify response invalid for {tx_id}: {self.last_error}")
+            return None
+
+    def poll_attestation(
+        self,
+        tx_id: str,
+        *,
+        target_level: int = 2,
+        timeout: float = 120.0,
+        interval: float = 5.0,
+    ) -> dict | None:
+        """Poll ``submit_verification`` until ``target_level`` is reached.
+
+        ar.io Verify's ``attestation_level`` grows over time as a proof
+        propagates: roughly 1 = anchored, 2 = content matches, 3 =
+        signature attested by an operator. Callers wanting stronger
+        maturity than the immediate result can use this helper instead
+        of polling externally.
+
+        Returns the latest verification dict — at ``target_level`` or
+        higher on success, or whatever level was last seen if the
+        timeout expired. Returns ``None`` only if the client is
+        disabled or every submit attempt failed (in which case
+        ``self.last_error`` carries the last failure).
+        """
+        if not self.enabled:
+            self.last_error = "ar.io Verify client not enabled"
+            return None
+
+        deadline = time.monotonic() + timeout
+        last_result: dict | None = None
+        attempts = 0
+        while True:
+            attempts += 1
+            result = self.submit_verification(tx_id)
+            if result is not None:
+                last_result = result
+                level = result.get("attestation_level") or 0
+                if level >= target_level:
+                    logger.info(
+                        f"ar.io Verify reached level {level} for {tx_id} "
+                        f"after {attempts} attempt(s)"
+                    )
+                    return result
+            if time.monotonic() >= deadline:
+                if last_result is None:
+                    logger.warning(
+                        f"ar.io Verify polling for {tx_id} got no successful "
+                        f"response in {timeout}s ({attempts} attempts)"
+                    )
+                else:
+                    logger.info(
+                        f"ar.io Verify polling for {tx_id} timed out at level "
+                        f"{last_result.get('attestation_level')} after {attempts} attempt(s); "
+                        f"target was {target_level}"
+                    )
+                return last_result
+            time.sleep(interval)
 
     def _normalize(self, data: dict) -> dict:
         # ar.io Verify returns explicit nulls for sub-objects when no

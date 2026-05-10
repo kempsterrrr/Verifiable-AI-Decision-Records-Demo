@@ -219,6 +219,16 @@ and treat the wallet like any other production secret. Source data (params,
 metrics, artifact bytes) always stays in MLflow — nothing else goes on chain —
 so costs are flat regardless of how big your training run was.
 
+**At scale.** Each event is one upload, so cost grows linearly with anchor
+volume, not with model size. A high-throughput inference service anchoring
+every prediction sees one ~500-byte upload per call — well under the per-file
+free threshold. Account-level limits and any paid-tier rates are documented
+at [console.ar.io](https://console.ar.io) and the
+[ardrive.io Turbo docs](https://docs.ardrive.io); model your projected
+volume against current rates before going live. See also
+[`docs/plugin-production.md`](../docs/plugin-production.md) for wallet
+ops, monitoring, and balance alerting.
+
 ## Network requirements
 
 If your environment restricts outbound traffic, allowlist:
@@ -395,6 +405,35 @@ These attestations cover **integrity and authenticity** of the anchored
 record. Semantic verification (whether *this model* produced *this output*
 on *this input*) is a separate problem and on the roadmap, not in v0.1.
 
+## Verifying without Python
+
+The proof envelope spec is language-neutral: an Ed25519 signature over an
+RFC-8785 (JCS) canonicalized JSON object, with a SHA-256 commitment to the
+canonical payload bytes that live as an MLflow artifact. Any RFC-8785 +
+Ed25519 + SHA-256 implementation in any language can verify a proof — no
+`ario-mlflow` install needed.
+
+The auditor recipe:
+
+1. **Fetch the envelope** from any ar.io gateway: `GET https://<gateway>/raw/<tx_id>`.
+2. **Verify the signature.** Strip the `signature` field from the envelope,
+   JCS-canonicalize the rest (RFC 8785), then verify the original
+   `signature` (hex) against the embedded `public_key` (hex) using Ed25519.
+3. **Re-hash the canonical payload.** Download `ario/payload.json` from the
+   MLflow run's artifacts. Compute SHA-256 of the raw bytes. Compare to the
+   envelope's `payload_hash`.
+4. **Walk the chain** (optional). Each envelope's `previous_hash` is the
+   prior anchor's `payload_hash` for that event type, or `"GENESIS"`.
+   Fetch the predecessor by its TX (recorded in the relevant tag,
+   e.g. `ario.last_training_hash`) and recurse.
+
+JCS implementations exist for Python (`jcs`), JavaScript (`canonicalize`),
+Go (`gowebpki/jcs`), Java, Rust, and others — interoperable with the same
+ecosystem as Notary and Sigstore.
+
+The Python plugin is a convenience wrapper around this recipe; the proof
+itself doesn't depend on the plugin's continued existence.
+
 ## Tests
 
 ```bash
@@ -407,5 +446,7 @@ No network or MLflow server required.
 
 - [`CHANGELOG.md`](../CHANGELOG.md) — release history and known limitations.
 - [`docs/architecture.md`](../docs/architecture.md) — system design (pure-commitment proofs, per-event chains, JCS canonicalization).
+- [`docs/plugin-production.md`](../docs/plugin-production.md) — production deployment guide: wallet ops, CI/CD patterns, monitoring, runbooks.
+- [`docs/plugin-threat-model.md`](../docs/plugin-threat-model.md) — what the plugin defends against, what it doesn't, trust boundaries.
 - Demo app — see the repo-root `README.md`.
 - Roadmap and deferred work — `ROADMAP.md` at the repo root.

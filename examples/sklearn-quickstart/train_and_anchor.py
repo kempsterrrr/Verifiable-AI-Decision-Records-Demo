@@ -32,6 +32,7 @@ import sys
 from pathlib import Path
 
 import mlflow
+import mlflow.data
 from sklearn.datasets import load_iris
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
@@ -52,6 +53,16 @@ def main() -> int:
     )
 
     with mlflow.start_run() as run:
+        # Log the training dataset so anchor() can mint its own
+        # standalone dataset proof referenced from the training event.
+        train_ds = mlflow.data.from_numpy(
+            X_train,
+            targets=y_train,
+            source="https://archive.ics.uci.edu/dataset/53/iris",
+            name="iris-train",
+        )
+        mlflow.log_input(train_ds, context="training")
+
         model = LogisticRegression(max_iter=200).fit(X_train, y_train)
         acc = model.score(X_test, y_test)
 

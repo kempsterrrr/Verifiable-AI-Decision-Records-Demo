@@ -144,30 +144,31 @@ Without a wallet, the app runs in **local proof mode** — hashing, signing, and
 
 ## Demo Walkthrough
 
+The demo's navigation walks the verification chain left to right: **Datasets → Training Runs → Models → Decisions → Lineage**. Each list page leads to a detail page, and every detail page links upstream and downstream so an auditor can step through the chain in either direction.
+
 ### 1. Train a Model
 
-The landing page (`/`) shows the Models page. Click **Train & Anchor** to train a new model. Watch the four-step progress: training → registering → anchoring training proof → anchoring registration proof. After completion, the app automatically redirects to the model lineage page.
+Open **Training Runs** (`/ui/runs`). The train form is the expandable card above the runs table. Click **Train & Anchor** to train a new model — training → registering → anchoring training proof → anchoring registration proof. After completion the new run + model version appear in their respective list pages.
 
-### 2. View the Model Lineage
+### 2. Trace the Chain
 
-The model lineage page shows the proof chain forming in real time: Training Run → Model Registration → Decisions. Each node shows its verification status and ar.io transaction ID. Compliance readers can think of this as a cryptographically verifiable record.
+Open **Lineage** (`/ui/lineage`). A single connected chain is rendered at a time — Dataset(s) → Training Run → Model Version → Decisions — with verification status on each node. The chip picker at the top switches between chains (one per model version); the URL updates so chains are linkable. Every detail page has a **View chain in Lineage →** CTA so any entity is one click away from its full chain.
 
 ### 3. Make a Prediction
 
-Navigate to **Decisions** and submit the form with applicant features (income, credit score, etc.). The response is instant — the detail page shows "Anchoring..." with a pulsing indicator, then auto-updates when the ar.io upload completes (~1-2s).
+Navigate to **Decisions** (`/`) and submit the prediction form (income, credit score, etc.). The response is instant — the new decision's detail page shows "Anchoring..." with a pulsing indicator, then auto-updates when the ar.io upload completes (~1-2s).
 
 ### 4. View the Decision Record
 
-Click a decision ID to see the full record:
-- **Decision** — result, confidence, probabilities with visual bars, features used
-- **ar.io Verification** — three-row verify card with `Proof Found`, `Decision Record Matches`, `Signature Confirmed`. The same three rows apply to predictions, training (`Training Record Matches`), and registration (`Registration Record Matches`).
-- **Model lineage** — MLflow run ID, version, artifact URI, with link to the full lineage view
-- **ar.io anchoring** — transaction ID, status (`Anchoring` → `Pending verification` → `Verified` → `Confirmed`, with `Tampered` / `Not anchored` as failure states)
-- **Upload receipt** — ar.io's timestamp witness: millisecond timestamp, wallet owner, signed receipt
+Click a decision to see the full record. The detail page is a two-column layout:
+- **Left rail** — Identity (features, probabilities, MLflow run/version), ar.io anchor card (TX, signer key, block), upstream context links to the model + run + datasets used.
+- **Main column** — **ar.io Verification** three-row verify card (`Proof Found`, `Decision Record Matches`, `Signature Confirmed`) plus the always-on **Anchored proof** viewer that shows the canonical bytes from MLflow side-by-side with the signed commitment on ar.io.
+
+The same shape repeats on every detail page (Dataset, Run, Model, Decision) so an auditor learns one pattern and reads every page the same way. Status badges in the editorial header use the canonical five-state enum: **Verified · Anchored · Anchoring · Tampered · None**.
 
 ### 5. Verify a Record
 
-Click **Verify with ar.io** to run on-demand verification. The three-row verify card shows:
+Click **Verify now** on any detail page to run on-demand verification. The three-row verify card shows:
 
 - **Proof Found** — the pure-commitment envelope was fetched from ar.io.
 - **Decision Record Matches** *(or `Training Record Matches` / `Registration Record Matches` depending on event type)* — `ario/payload.json` in MLflow re-hashes to the envelope's `payload_hash`, **and** re-deriving the canonical bytes from a *separate* live MLflow surface produces the same bytes. This consolidated check catches MLflow tampering — if either surface was modified after anchoring, the two won't agree.
@@ -182,7 +183,7 @@ The three core checks apply uniformly to predictions, training, and registration
 
 ### 6. Tamper Demo
 
-The detail and lineage pages expose tamper buttons paired to the real checks — modify the proof envelope, overwrite `ario/payload.json` in MLflow, mutate MLflow params/metrics, swap in a fake TX ID. Each tamper triggers exactly one row to fail, teaching what that row actually proves.
+Open the **tamper** page in the top nav (`/demo/tamper`). Each chain link — Dataset, Training Run, Model Registration, Decision — has one tamper button paired to the real check it breaks: modify the proof envelope, overwrite `ario/payload.json` in MLflow, mutate MLflow params/metrics, swap in a fake TX ID. Each tamper triggers exactly one verify row to fail across the affected links, teaching what each row actually proves. Tampers auto-revert after a TTL so the next demo starts clean.
 
 ### 7. Reset for the next session
 
@@ -192,11 +193,17 @@ Sales / pre-sales workflow: pre-seed the demo with example data before a custome
 
 | Page | URL | Description |
 |---|---|---|
-| Models (landing page) | `/` | Model versions, train new models, activate versions |
-| Decisions | `/ui/decisions` | Decision records, stats, prediction form, model provenance card, version filter (`/ui/predictions` 301-redirects here for bookmarks) |
-| Decision detail | `/ui/decisions/{id}` | Full decision record with three-row verify card and tamper buttons |
-| Model lineage | `/ui/models/{name}/{version}` | Training → Registration → Decisions chain |
-| Training run detail | `/ui/runs/{run_id}` | Training params, metrics, artifact hashes, verification |
+| Decisions (landing) | `/` | Decision records, stats, prediction form, status filter chips (`/ui/predictions` 301-redirects here for bookmarks) |
+| Decision detail | `/ui/decisions/{id}` | Full decision record with three-row verify card and anchored-proof viewer |
+| Datasets | `/ui/datasets` | Anchored dataset records, one row per `digest`, with verify status |
+| Dataset detail | `/ui/datasets/{digest}` | Dataset record, ar.io anchor, used-by runs, verify card |
+| Training Runs | `/ui/runs` | Run list + expandable Train & Anchor form |
+| Training run detail | `/ui/runs/{run_id}` | Params, metrics, artifact hashes, datasets used, verify card |
+| Models | `/ui/models` | Registered model versions (one row per version), active flag, verify status |
+| Model detail | `/ui/models/{name}/{version}` | Identity, training/registration anchors, activate, verify card |
+| Lineage | `/ui/lineage` | Focused-chain viewer with chip picker — Dataset(s) → Run → Model → Decisions |
+| Tamper | `/demo/tamper` | Per-chain-link tamper buttons (demo affordance) |
+| Admin | `/demo/admin` | One-click reset for sales workflow |
 
 ## API Reference
 

@@ -418,15 +418,15 @@
             <div class="reports-accordion-body">
                 <p>
                     Don't take this report's verdict on faith — confirm it yourself.
-                    The easy path uses the open-source <code>ario-mlflow</code>
+                    The easy path uses the open-source <code>ar-io-mlflow</code>
                     plugin; the forensic path uses only standard cryptographic
                     tools so an auditor can verify without installing anything
                     from this project.
                 </p>
 
                 <span class="verify-step-label">Easy mode · plugin CLI</span>
-<pre><code>pip install ario-mlflow
-ario-mlflow verify trace {{ decision_id }}</code></pre>
+<pre><code>pip install ar-io-mlflow
+ar-io-mlflow verify trace {{ decision_id }}</code></pre>
                 <p style="font-size: 0.86rem;">
                     Fetches the signed envelope from ar.io, pulls the canonical bytes
                     from MLflow, and prints the same four-check verdict shown above.

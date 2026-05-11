@@ -4,7 +4,11 @@ This document tracks what we're building next and what we've explicitly parked. 
 
 ## Where we are today
 
-The repo contains two parts: **`ario_mlflow/`** is the product (a standalone MLflow plugin), and **`app/`** is a sales-facing demo of what the plugin enables.
+This repo is the **sales-facing demo** — a FastAPI + Jinja2 app that
+makes the verification flow tangible. The MLflow plugin it wraps lives
+separately at [ar-io/ar-io-mlflow](https://github.com/ar-io/ar-io-mlflow)
+and is installed from PyPI as
+[`ar-io-mlflow`](https://pypi.org/project/ar-io-mlflow/).
 
 We're at an **early-stage proof of a verifiable-provenance pipeline** — not yet a production compliance product. Core primitives (hash, sign, anchor to Arweave via ar.io, verify) are in place and end-to-end working. The plugin installs cleanly, the demo runs on Railway with proper persistence, and 104 tests pass.
 

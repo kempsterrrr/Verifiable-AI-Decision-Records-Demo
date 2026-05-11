@@ -307,7 +307,7 @@
                     arweave_tx_id=envelope.arweave_tx_id,
                     entity_label="Decision Record",
                     intro="Independent verification of MLflow data integrity. These verify this decision record matches the original proof anchored to ar.io at runtime — they do <strong>not</strong> speak to whether the decision itself was correct.",
-                    cli="ario-mlflow verify trace " ~ envelope.record.trace_id,
+                    cli="ar-io-mlflow verify trace " ~ envelope.record.trace_id,
                 ) }}
 
                 {# Tamper section relocated to /demo/tamper in Phase E.

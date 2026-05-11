@@ -254,11 +254,11 @@ def test_reports_detail_pending_banner_when_unverified(client):
 
 
 def test_reports_detail_independent_verify_lead_with_plugin(client):
-    """Easy-mode accordion shows ``ario-mlflow verify trace <id>``."""
+    """Easy-mode accordion shows ``ar-io-mlflow verify trace <id>``."""
     _inject_envelope(client, decision_id="dec-iv-1", verdict="verified")
     r = client.get("/ui/reports/dec-iv-1")
     assert r.status_code == 200
-    assert "ario-mlflow verify trace dec-iv-1" in r.text
+    assert "ar-io-mlflow verify trace dec-iv-1" in r.text
     assert "Easy mode" in r.text
 
 

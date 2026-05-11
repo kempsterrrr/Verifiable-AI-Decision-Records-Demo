@@ -4,12 +4,17 @@ Tamper-evident verifiable record for the full MLflow lifecycle, anchored to ar.i
 
 ## What's in this repo
 
-This repository contains two parts:
+A **FastAPI + Jinja2 sales-facing demo** that uses the `ar-io-mlflow`
+plugin to make verifiable ML provenance tangible. Hosted on Railway at
+[verifiable-ai-demo-production.up.railway.app](https://verifiable-ai-demo-production.up.railway.app).
 
-- **`ario_mlflow/`** — the **product**. A standalone MLflow plugin that anchors training, registration, and inference events to ar.io / Arweave. Any MLflow user can adopt it with `pip install -e .` (and eventually `pip install ario-mlflow`). See [Plugin section](#mlflow-plugin-ario-mlflow) below or `ario_mlflow/README.md` for usage.
-- **`app/`** — a **sales-facing demonstration**. A FastAPI + Jinja2 web app that uses the plugin to make the verification flow tangible. Hosted on Railway at [verifiable-ai-demo-production.up.railway.app](https://verifiable-ai-demo-production.up.railway.app). The demo is not the product — it's a working showcase used by sales / pre-sales.
+The plugin itself is a standalone PyPI package:
 
-For deeper context: [`docs/architecture.md`](docs/architecture.md) covers the system design; [`docs/deployment.md`](docs/deployment.md) covers the demo's production deployment; [`ROADMAP.md`](ROADMAP.md) tracks what's next.
+- **Source:** [ar-io/ar-io-mlflow](https://github.com/ar-io/ar-io-mlflow)
+- **PyPI:** [`pip install ar-io-mlflow`](https://pypi.org/project/ar-io-mlflow/)
+- **Docs:** README, [production deployment guide](https://github.com/ar-io/ar-io-mlflow/blob/main/docs/plugin-production.md), [threat model](https://github.com/ar-io/ar-io-mlflow/blob/main/docs/plugin-threat-model.md), and the auditor recipe — all in the plugin repo.
+
+This repo just consumes it. See [`docs/deployment.md`](docs/deployment.md) for the demo's production deployment, and [`ROADMAP.md`](ROADMAP.md) for what's next.
 
 ## What This Demonstrates
 
@@ -67,7 +72,7 @@ RecordStore: display cache (input, output, decision_id, latency, arweave_tx)
 
   ... later, on demand ...
 
-/verify endpoint (or `ario-mlflow verify ...` CLI)
+/verify endpoint (or `ar-io-mlflow verify ...` CLI)
   |---> Fetch the pure-commitment envelope from ar.io
   |---> Check 1 (Proof Found): envelope retrieved from ar.io
   |---> Check 2 ({Event} Record Matches): download ario/payload.json from MLflow → re-hash → matches envelope, and re-derive canonical bytes from current MLflow state → matches anchored
@@ -179,7 +184,7 @@ Click **Verify now** on any detail page to run on-demand verification. The three
 
 Plus an **Attested by** line (operator + timestamp) when an ar.io gateway operator has independently signed an attestation. **Conditional:** ar.io Verify runs only when `VAIDR_ARIO_VERIFY_URL` (or `ARIO_MLFLOW_ARIO_VERIFY_URL` for the plugin CLI) is configured. Otherwise the row reads `Pending` and the overall verdict is computed from the three core checks.
 
-The three core checks apply uniformly to predictions, training, and registration — feature-equivalent verification across the lifecycle. The demo, the `/verify/{decision_id}` endpoint, and the `ario-mlflow verify run|model|trace` CLI all run the same checks. Each check returns one of three states: PASS, FAIL, or Pending (transient — re-verify later).
+The three core checks apply uniformly to predictions, training, and registration — feature-equivalent verification across the lifecycle. The demo, the `/verify/{decision_id}` endpoint, and the `ar-io-mlflow verify run|model|trace` CLI all run the same checks. Each check returns one of three states: PASS, FAIL, or Pending (transient — re-verify later).
 
 ### 6. Tamper Demo
 
@@ -278,191 +283,26 @@ The demo is deployed on Railway with a mounted volume at `/app/persistent`. All 
 
 ---
 
-## MLflow Plugin (`ario-mlflow`)
+## The MLflow plugin
 
-The `ario_mlflow/` package is a standalone MLflow plugin that any MLflow user can adopt. It provides the same verifiable provenance as the demo, integrated into the native MLflow workflow.
-
-### Install
-
-```bash
-pip install -e .
-```
-
-### Usage
-
-**Training — log a dataset, then call `anchor()`:**
-
-```python
-import mlflow
-import mlflow.data
-from ario_mlflow import anchor
-
-dataset = mlflow.data.from_pandas(
-    train_df, source="s3://bucket/train.csv", name="train_q1_2026",
-)
-
-with mlflow.start_run() as run:
-    mlflow.log_input(dataset, context="training")    # required (see below)
-    mlflow.log_param("lr", 0.01)
-    mlflow.sklearn.log_model(model, "model")
-    mlflow.log_metric("accuracy", 0.95)
-    anchor()
-    # → Signs a proof for the dataset, uploads to Arweave (its own TX).
-    # → Signs a proof for the training run, uploads to Arweave (linked TX).
-    # → Writes ario.* tags + artifacts on the run.
-```
-
-Just importing `ario_mlflow` auto-injects `ario.enabled` / `ario.version` tags on every run via the `RunContextProvider`. `anchor()` adds the rich proof layer and must be called inside the run.
-
-**Strict-by-default on dataset inputs.** As of input-side anchoring v1, `anchor()` raises `ValueError` when the run has no logged dataset inputs. The fail-closed default exists so a chain that claims to be auditable can't silently ship without a dataset reference at the head. For workflows that genuinely have no single dataset (research scripts, GPAI training on internet-scale corpora) pass `allow_empty_dataset_inputs=True` to override.
-
-**The dataset's default digest samples rows** (MLflow's `PandasDataset` default — fast for large frames, doesn't catch single-row poisoning). For airtight integrity, supply your own SHA-256:
-
-```python
-import hashlib
-true_digest = hashlib.sha256(open("train.csv", "rb").read()).hexdigest()
-dataset = mlflow.data.from_pandas(
-    train_df, source="s3://bucket/train.csv", name="train_q1_2026",
-    digest=true_digest,
-)
-```
-
-The plugin commits to whatever digest the Dataset reports — the strength of the integrity guarantee follows the strength of the digest the caller chose.
-
-**Schema is fingerprinted, not stored verbatim.** Each dataset's `schema_hash` in the canonical bytes is the SHA-256 of the JCS-canonicalized schema JSON — column names never enter the proof. Privacy-preserving for regulated domains where column names can be sensitive (medical, financial). Tamper-detectable: schema mutations in MLflow flip the verifier's source-of-truth check via training's inlined dataset metadata.
-
-**Standalone dataset anchoring (publisher / pre-train pattern).** `anchor()` accepts an optional `dataset=` keyword that anchors a Dataset object on its own — no active MLflow run required. Useful for dataset publishers (anchor once, hand the TX to downstream model trainers) or pre-train workflows where the dataset is finalized before training begins.
-
-```python
-from ario_mlflow import anchor
-import mlflow.data
-
-dataset = mlflow.data.from_pandas(df, source="...", name="train_q1_2026")
-result = anchor(dataset=dataset)
-print(result["envelope"]["payload_hash"])
-print(result["anchor_result"]["tx_id"])
-```
-
-Inside `mlflow.start_run()`, the default training-mode `anchor()` auto-anchors each `mlflow.log_input()` dataset as a standalone event before signing the training proof. Each gets its own Arweave TX, written to the run as a tag (`ario.dataset_anchor_tx.<dataset_name>`) for chain-walking navigation. Auditors fetch the dataset proof independently of the training proof.
-
-**Limits worth knowing.** Two v1 deferrals:
-
-- **Dataset SoT is deferred (v2).** Today the dataset event is verified via signature + ar.io attestation. Live re-derivation against MLflow's dataset registry — to catch post-anchor mutation of dataset metadata at the dataset proof's *own* SoT check — is the v2 follow-up. In v1, that mutation is still caught one link down: training's signed payload inlines the dataset's identity, so the verifier's training Record Matches check flips on tamper. The v2 work will tie the plugin's dataset events more deeply into MLflow's dataset registry API — when it lands, the dataset's own Record Matches check will fire on tamper.
-- **Cross-run dataset reuse re-anchors each time.** Two training runs against the same dataset both produce a fresh dataset proof. A registry of pre-anchored datasets (digest → TX) to dedupe is a v3 follow-up.
-
-Both are tracked in [ROADMAP.md](ROADMAP.md).
-
-**Registration / promotion — one client swap:**
-
-```python
-from ario_mlflow import ArioMlflowClient
-
-client = ArioMlflowClient()
-client.create_model_version("fraud-detector", source=uri, run_id=run_id)
-# → Re-hashes artifacts, anchors registration proof, writes ario.registration_tx
-#   and ario.artifact_verified on the model version.
-
-client.transition_model_version_stage("fraud-detector", "1", "Production")
-# → Anchors promotion proof, writes ario.promotion_tx tag.
-```
-
-**Inference — `VerifiedModel` wrapper:**
-
-```python
-from ario_mlflow import VerifiedModel
-
-model = VerifiedModel("models:/fraud-detector/Production")
-# Model artifacts are re-hashed at load time and compared to ario.artifact_hash.
-# A mismatch raises IntegrityError (refuses to serve).
-
-result = model.predict({"feature1": 1.0, "feature2": 2.0})
-# result.prediction   — immediate
-# result.decision_id  — immediate
-# result.proof_status — "anchoring" → "anchored"
-```
-
-Every `predict()` creates an MLflow trace (visible in the Traces tab) and anchors
-a signed proof for that specific prediction in the background.
-
-**Reject tampered artifacts at load time:**
-
-```python
-from ario_mlflow import VerifiedModel, IntegrityError
-
-try:
-    model = VerifiedModel("models:/fraud-detector/Production")
-except IntegrityError as e:
-    # Artifact hash does not match ario.artifact_hash — do not serve this model
-    alert_secops(e)
-    raise
-```
-
-**Compliance / Audit — CLI:**
+The plugin this demo wraps is published separately as
+[`ar-io-mlflow`](https://pypi.org/project/ar-io-mlflow/) — source at
+[ar-io/ar-io-mlflow](https://github.com/ar-io/ar-io-mlflow). Install it
+in your own MLflow pipeline with:
 
 ```bash
-# Verify a training run
-ario-mlflow verify run <run_id>
-
-# Verify a model registration
-ario-mlflow verify model fraud-detector/3
-
-# Verify an individual inference trace
-ario-mlflow verify trace <trace_id>
-
-# Full model lineage audit (training → registration → promotion)
-ario-mlflow audit fraud-detector/3
+pip install ar-io-mlflow
 ```
 
-All three `verify` commands call ar.io Verify, then write the attestation back to MLflow:
+The plugin's README covers the three integration points (`anchor()`,
+`ArioMlflowClient`, `VerifiedModel`), dataset anchoring, the CLI verify /
+audit flow, environment variables, the full MLflow tag schema, network
+resilience (retries + multi-gateway fetch fallback), and the auditor
+recipe for verifying proofs in any language without Python.
 
-- `verify run` → sets `ario.verify_status`, `ario.attestation_level`, `ario.report_url`, `ario.attested_by`, `ario.attested_at` on the run and refreshes `ario/verification.html`.
-- `verify model` → sets the same tags on the model version and refreshes `ario/registration_verification.html` on the source run.
-- `verify trace` → sets the same tags on the trace.
-
-Re-run any `verify` command to pick up newer attestation levels (1 → 2 → 3) as the proof propagates.
-
-### Plugin configuration
-
-| Variable | Required | Description |
-|---|---|---|
-| `ARIO_MLFLOW_ARWEAVE_WALLET` | No | Path to Arweave JWK wallet. If unset or unreadable, an in-memory wallet is generated for the session (not persisted — set this in production so proofs stay owned by the same address). |
-| `ARIO_MLFLOW_SIGNING_KEY` | No | Base64 Ed25519 seed. If unset, a keypair is auto-generated at `~/.ario-mlflow/keys/`. |
-| `ARIO_MLFLOW_GATEWAY_HOST` | No | ar.io gateway (default: `turbo-gateway.com`) |
-| `ARIO_MLFLOW_ARIO_VERIFY_URL` | No | ar.io Verify URL. Verification is skipped if unset. |
-
-### What shows up where in MLflow
-
-| MLflow surface | Who writes it | What you see |
-|---|---|---|
-| **Runs** tab → Tags + `ario/` artifacts | `anchor()` | `ario.training_tx`, `ario.payload_hash`, `ario.artifact_hash`, `ario.last_training_hash`, `ario.verify_status`; `ario/payload.json`, `ario/proof.json`, `ario/receipt.json`, `ario/verification.html` |
-| **Models** tab → Model version tags + `ario/` artifacts on the source run | `ArioMlflowClient` | `ario.registration_tx`, `ario.promotion_tx`, `ario.artifact_verified`; `ario/registration_payload.json`, `ario/registration_verification.html` |
-| **Traces** tab → Trace tags | `VerifiedModel.predict()` | `ario.decision_id`, `ario.prediction_tx`, `ario.payload_hash`, `ario.input_hash`, `ario.output_hash`, `ario.proof_status`, `ario.artifact_verified` |
-
-After running the CLI `verify` commands, each surface also carries `ario.verify_status = verified`, `ario.attestation_level`, `ario.report_url`, `ario.attested_by`, `ario.attested_at`.
-
-### MLflow UI integration
-
-The plugin writes these tags, all visible in the native MLflow UI:
-
-| Tag | Where | Written by |
-|---|---|---|
-| `ario.training_tx` | Run | `anchor()` |
-| `ario.payload_hash` | Run, Trace | `anchor()`, `VerifiedModel.predict` |
-| `ario.last_training_hash` | Registered model | `anchor()` (chain head) |
-| `ario.registration_tx` | Model version | `ArioMlflowClient.create_model_version` |
-| `ario.promotion_tx` | Model version | `ArioMlflowClient.transition_model_version_stage` |
-| `ario.artifact_hash` | Run | `anchor()` |
-| `ario.artifact_verified` | Model version, Trace | `ArioMlflowClient`, `VerifiedModel` |
-| `ario.verify_status` | Run, Model version, Trace | `anchor()`, `ArioMlflowClient`, CLI verify |
-| `ario.attestation_level` | Run, Model version, Trace | CLI verify |
-| `ario.report_url` | Run, Model version, Trace | CLI verify |
-| `ario.attested_by` | Run, Model version, Trace | CLI verify |
-| `ario.attested_at` | Run, Model version, Trace | CLI verify |
-| `ario.prediction_tx` | Trace | `VerifiedModel.predict` |
-| `ario.input_hash`, `ario.output_hash` | Trace | `VerifiedModel.predict` |
-| `ario.decision_id` | Trace | `VerifiedModel.predict` |
-| `ario.proof_status` | Trace | `VerifiedModel.predict` |
-| `ario.arweave_url` | Run, Model version, Trace | all |
+For deployment patterns, threat model, and architecture in depth, see
+the plugin's [`docs/`](https://github.com/ar-io/ar-io-mlflow/tree/main/docs)
+directory.
 
 ---
 
@@ -513,4 +353,4 @@ An auditor can independently verify any proof with standard cryptographic tools 
 5. **Walk the chain.** Each envelope's `previous_hash` should be retrievable on Arweave (or `GENESIS`).
 6. **Optional:** request an ar.io Verify attestation for an independent third-party check.
 
-`ario-mlflow verify run|model|trace <id>` runs all of the above in one command and writes the result back to MLflow as `ario.verify_status`, `ario.attestation_level`, etc. No dependency on the demo's internals — works against any MLflow + Arweave deployment.
+`ar-io-mlflow verify run|model|trace <id>` runs all of the above in one command and writes the result back to MLflow as `ario.verify_status`, `ario.attestation_level`, etc. No dependency on the demo's internals — works against any MLflow + Arweave deployment.

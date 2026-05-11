@@ -50,5 +50,5 @@ Called from `anchor_synthetic_dataset` before
 - File an upstream issue at <https://github.com/ar-io/ar-io-mlflow>
   describing both symptoms, the attribute-shape table above, and the
   suggested `to_dict()`-based fix. Once the patch ships, bump the
-  plugin pin in `requirements.txt` / `setup.py` and delete
+  `ar-io-mlflow` version in `requirements.txt` and delete
   `_dataset_view_for_plugin` from `app/model.py`.

@@ -175,7 +175,7 @@
                     arweave_tx_id=envelope.arweave_tx_id,
                     entity_label="Training Record",
                     intro="Independent verification of MLflow data integrity. These verify this training run matches the original proof anchored with ar.io at training time — they do <strong>not</strong> speak to whether the model itself is good.",
-                    cli="ario-mlflow verify run " ~ envelope.record.run_id,
+                    cli="ar-io-mlflow verify run " ~ envelope.record.run_id,
                 ) }}
 
                 {% if dataset_inputs %}

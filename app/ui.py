@@ -1083,6 +1083,337 @@ def model_detail(request: Request, model_name: str, version: str, verify: bool =
     )
 
 
+def _decision_verdict(env: dict, arweave_enabled: bool) -> str:
+    """Map a decision envelope's status to the Reports view's three
+    audit-reader verdict states:
+
+    - ``verified`` — all four checks passed.
+    - ``issues``   — a verify pass found a real check failing
+                     (canonical ``tampered`` state).
+    - ``pending``  — anything else (not yet re-derived, ar.io
+                     attestation still propagating, anchoring in
+                     flight, or no anchor at all). The audit-reader
+                     view collapses these into one "not yet
+                     determined" bucket since none of them are an
+                     audit-reader verdict.
+    """
+    status = _envelope_status(env, arweave_enabled=arweave_enabled)
+    if status == "verified":
+        return "verified"
+    if status == "tampered":
+        return "issues"
+    return "pending"
+
+
+def _build_audit_checks(v: dict | None, signer_key: str | None) -> list[dict]:
+    """Build the four plain-language audit-check entries the Reports
+    detail page's "Has anything changed?" section renders.
+
+    Mirrors the four checks in ``_verify_envelope``'s return shape but
+    rewrites each into a single audit-reader sentence with a ✓ / ✗
+    icon. The Decisions detail page shows the same data as labelled
+    table rows; this view collapses them into prose for a non-technical
+    reader. Each entry: ``label`` (slug for CSS), ``status``
+    ("pass" / "fail" / "pending"), ``statement`` (the full sentence).
+
+    Returns an empty list when ``v`` is ``None`` — the template
+    interprets that as "verification hasn't run yet" and shows the
+    Pending banner instead of an empty checks panel.
+    """
+    if not v:
+        return []
+    checks: list[dict] = []
+
+    # 1. proof retrieval from ar.io
+    pcf = v.get("permanent_copy_found")
+    if pcf is True:
+        checks.append({
+            "label": "found",
+            "status": "pass",
+            "statement": "We retrieved the proof from ar.io — the proof was found and is readable.",
+        })
+    elif pcf is False:
+        checks.append({
+            "label": "found",
+            "status": "fail",
+            "statement": "We tried to retrieve the proof from ar.io — but the proof was not found at the expected address.",
+        })
+
+    # 2. signature
+    sv = v.get("signature_valid")
+    key_hint = f" by recognized key {signer_key[:8]}…" if signer_key else ""
+    if sv is True:
+        checks.append({
+            "label": "signature",
+            "status": "pass",
+            "statement": f"We verified the cryptographic signature — valid, signed{key_hint}.",
+        })
+    elif sv is False:
+        checks.append({
+            "label": "signature",
+            "status": "fail",
+            "statement": "We verified the cryptographic signature — invalid. The proof appears to have been modified after signing.",
+        })
+
+    # 3. anchored-bytes hash
+    hm = v.get("hash_match")
+    if hm is True:
+        checks.append({
+            "label": "hash",
+            "status": "pass",
+            "statement": "We re-hashed the decision proof from its source — the hash matches what was anchored.",
+        })
+    elif hm is False:
+        checks.append({
+            "label": "hash",
+            "status": "fail",
+            "statement": "We re-hashed the decision proof from its source — the hash does not match what was anchored.",
+        })
+
+    # 4. ar.io attestation maturity
+    attestation_level = v.get("attestation_level")
+    if isinstance(attestation_level, int):
+        level_labels = {1: "Submitted", 2: "Confirmed", 3: "Permanent"}
+        level_word = level_labels.get(attestation_level, f"Level {attestation_level}")
+        if attestation_level >= 2:
+            checks.append({
+                "label": "attestation",
+                "status": "pass",
+                "statement": f"We checked ar.io attestation maturity — Level {attestation_level} ({level_word}).",
+            })
+        else:
+            checks.append({
+                "label": "attestation",
+                "status": "pending",
+                "statement": f"We checked ar.io attestation maturity — still propagating (Level {attestation_level}, {level_word}). Try again in a few minutes.",
+            })
+
+    return checks
+
+
+def _failing_line_for_banner(checks: list[dict]) -> str | None:
+    """Pick a single plain-language line for the Issues-Found banner
+    sub-text. Prefers signature failures (most alarming — points at
+    impersonation), then hash, then proof-retrieval. Returns ``None``
+    if no checks failed."""
+    priority = ["signature", "hash", "found"]
+    fails = {c["label"]: c["statement"] for c in checks if c["status"] == "fail"}
+    for label in priority:
+        if label in fails:
+            return fails[label]
+    return next(iter(fails.values()), None)
+
+
+def _format_decision_outcome(prediction: dict) -> str:
+    """Human-readable outcome string for the Reports list / detail.
+
+    "Approved (0.87)" / "Denied (0.31)" — the score of the chosen
+    class so a reader sees how confident the classifier was.
+    Falls back to em-dash when prediction shape is unexpected.
+    """
+    cls = (prediction or {}).get("class")
+    probabilities = (prediction or {}).get("probabilities") or {}
+    if cls == "approve":
+        label = "Approved"
+    elif cls == "deny":
+        label = "Denied"
+    else:
+        return "—"
+    score = probabilities.get(cls)
+    if isinstance(score, (int, float)):
+        return f"{label} ({score:.2f})"
+    return label
+
+
+@router.get("/ui/reports", response_class=HTMLResponse)
+def reports_list(request: Request):
+    """Reports — audit-reader view of every anchored decision.
+
+    Headline summary (green / red / neutral) + table sorted issues
+    first, then most-recent verified, then pending. Reuses the
+    existing five-state envelope status — only the *presentation*
+    is audit-reader shaped. No new verification path; the same
+    ``last_verification`` the Decisions detail page persists is
+    what the verdict reads.
+
+    Distinct from ``/ui/decisions/`` (the technical workflow page):
+    same underlying records, different reader, different framing.
+    """
+    app = request.app
+    arweave_enabled = app.state.anchor.enabled if app.state.anchor else False
+    records = app.state.store.list_all()
+
+    # Cache training-run lookups so a workload with N decisions
+    # against the same model version doesn't trigger N lifecycle-
+    # store scans for the same dataset name.
+    dataset_name_by_run_id: dict[str, str] = {}
+    def _dataset_name_for_run(run_id: str | None) -> str:
+        if not run_id:
+            return "—"
+        if run_id in dataset_name_by_run_id:
+            return dataset_name_by_run_id[run_id]
+        training_env = app.state.lifecycle_store.get_by_run_id(run_id)
+        name = "—"
+        if training_env:
+            inputs = (training_env.get("record") or {}).get("dataset_inputs") or []
+            if inputs:
+                name = inputs[0].get("name") or "—"
+        dataset_name_by_run_id[run_id] = name
+        return name
+
+    rows = []
+    counts = {"verified": 0, "issues": 0, "pending": 0, "total": 0}
+    for env in records:
+        rec = env.get("record") or {}
+        verdict = _decision_verdict(env, arweave_enabled)
+        counts[verdict] += 1
+        counts["total"] += 1
+        rows.append({
+            "decision_id": rec.get("decision_id", ""),
+            "timestamp": rec.get("timestamp", ""),
+            "outcome": _format_decision_outcome(rec.get("prediction") or {}),
+            "model_name": rec.get("model_name", ""),
+            "model_version": rec.get("model_version", ""),
+            "dataset_name": _dataset_name_for_run(rec.get("mlflow_run_id")),
+            "verdict": verdict,
+        })
+
+    # Stable two-pass sort:
+    #   pass 1: most recent first within whatever bucket they end up in
+    #   pass 2: verdict priority — issues at the top, then verified,
+    #           then pending. Stable so the timestamp ordering survives.
+    rows.sort(key=lambda r: r["timestamp"], reverse=True)
+    verdict_priority = {"issues": 0, "verified": 1, "pending": 2}
+    rows.sort(key=lambda r: verdict_priority[r["verdict"]])
+
+    return templates.TemplateResponse(
+        request,
+        "reports_list.html",
+        {
+            **_common_context(app),
+            "rows": rows,
+            "counts": counts,
+        },
+    )
+
+
+@router.get("/ui/reports/{decision_id}", response_class=HTMLResponse)
+def reports_detail(request: Request, decision_id: str, verify: bool = False):
+    """Per-decision audit report — the shareable artifact.
+
+    Renders a verdict banner + three plain-language Q&A sections answering
+    *which model made this decision?*, *what data was the model trained
+    on?*, and *has anything changed since this decision was anchored?*.
+    Each section sources its data from the same MLflow run / lifecycle
+    envelopes the Decisions detail page reads; nothing new is fetched
+    or computed.
+
+    On ``?verify=true`` re-runs the plugin's verification (same path the
+    Decisions detail page uses) and persists ``last_verification`` on the
+    envelope so subsequent loads show the fresh verdict without
+    re-hitting the gateway. Otherwise reads cached ``last_verification``
+    from disk; pending verifications surface as the pending banner.
+
+    Phases 4 onward layer the accordions (independent-verify commands,
+    raw evidence) and shareability (print CSS, copy-permalink) on top
+    of the same data this route already gathers.
+    """
+    import json as _json
+
+    app = request.app
+    arweave_enabled = app.state.anchor.enabled if app.state.anchor else False
+    envelope = app.state.store.get_by_id(decision_id)
+    if not envelope:
+        return HTMLResponse("<h1>Decision not found</h1>", status_code=404)
+
+    # Re-verify on demand. Same persistence pattern as decision_detail
+    # — once the verify pass completes, ``last_verification`` is the
+    # canonical state both pages read from.
+    if verify and envelope.get("arweave_tx_id"):
+        result = _verify_envelope(app, envelope)
+        result["verified_at"] = datetime.now(timezone.utc).isoformat()
+        persistable = {k: v for k, v in result.items() if k != "plugin_full_verify"}
+        envelope["last_verification"] = persistable
+        app.state.store.update(decision_id, envelope)
+
+    rec = envelope.get("record") or {}
+    verdict = _decision_verdict(envelope, arweave_enabled)
+
+    # Resolve training run + registration + dataset via the lifecycle
+    # store. Each of these is the upstream entity the audit report's
+    # Q&A sections reference (e.g. "registered on [date] by [signer]").
+    source_run_id = rec.get("mlflow_run_id")
+    training_env = (
+        app.state.lifecycle_store.get_by_run_id(source_run_id) if source_run_id else None
+    )
+    training_rec = (training_env or {}).get("record") or {}
+
+    reg_env = app.state.lifecycle_store.get_by_model_version(
+        rec.get("model_name"), rec.get("model_version"),
+    ) if rec.get("model_name") and rec.get("model_version") else None
+    reg_rec = (reg_env or {}).get("record") or {}
+
+    # Dataset: take the first dataset_input from the training event
+    # (mirrors the Decisions detail page's "trained on" strip) and
+    # look up its standalone dataset_anchored envelope for the n_samples
+    # / anchor TX fields.
+    dataset_input = (training_rec.get("dataset_inputs") or [{}])[0] if training_rec else {}
+    dataset_digest = dataset_input.get("digest")
+    dataset_env = None
+    if dataset_digest:
+        for env in app.state.lifecycle_store.list_all():
+            r = env.get("record") or {}
+            if r.get("event_type") == "dataset_anchored" and r.get("digest") == dataset_digest:
+                dataset_env = env
+                break
+    dataset_rec = (dataset_env or {}).get("record") or {}
+
+    # Signer key — pulled from the persisted signed commitment JSON the
+    # plugin writes at anchor time. Truncated to 8 hex chars for the
+    # plain-language signature sentence ("signed by recognized key
+    # abc12345…"). When a verified key registry ships (paused plan, see
+    # docs/plans/active/2026-05-05-verification-correctness-piece-b-c.md
+    # Piece C), this becomes the org-bound identity instead of a raw
+    # hex fingerprint.
+    signer_key: str | None = None
+    sc_json = envelope.get("signed_commitment_json")
+    if sc_json:
+        try:
+            signer_key = (_json.loads(sc_json) or {}).get("public_key")
+        except (ValueError, TypeError):
+            signer_key = None
+
+    checks = _build_audit_checks(envelope.get("last_verification"), signer_key)
+    failing_line = _failing_line_for_banner(checks) if verdict == "issues" else None
+
+    # Verified-at timestamp from the cached verification.
+    last_v = envelope.get("last_verification") or {}
+    verified_at = last_v.get("verified_at")
+
+    return templates.TemplateResponse(
+        request,
+        "reports_detail.html",
+        {
+            **_common_context(app),
+            "decision_id": decision_id,
+            "envelope": envelope,
+            "rec": rec,
+            "verdict": verdict,
+            "verified_at": verified_at,
+            "signer_key": signer_key,
+            "failing_line": failing_line,
+            "checks": checks,
+            "outcome": _format_decision_outcome(rec.get("prediction") or {}),
+            "training_rec": training_rec,
+            "training_env": training_env,
+            "reg_env": reg_env,
+            "reg_rec": reg_rec,
+            "dataset_rec": dataset_rec,
+            "dataset_env": dataset_env,
+        },
+    )
+
+
 # Demo administration page — sales / pre-sales workflow only. Registers
 # only when ``demo_mode`` is True (the default; override with
 # VAIDR_DEMO_MODE=false in production). The page hosts the "Reset demo

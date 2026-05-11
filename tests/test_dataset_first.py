@@ -33,6 +33,9 @@ def _reload_app(monkeypatch, tmp_path):
     # Arweave disabled — upload is best-effort; lifecycle entries still
     # get written and have ``arweave_tx_id == None``.
     monkeypatch.setenv("VAIDR_ARWEAVE_WALLET_PATH", "")
+    # 60s default sleep in `_scheduled_revert` blocks /tamper/* routes;
+    # nothing here asserts on the revert timing.
+    monkeypatch.setenv("VAIDR_TAMPER_TTL_SECONDS", "0")
 
     from app.config import get_settings
     get_settings.cache_clear()

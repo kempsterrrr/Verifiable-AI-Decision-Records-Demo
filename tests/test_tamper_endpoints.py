@@ -25,6 +25,11 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("VAIDR_MLFLOW_TRACKING_URI", f"file://{tmp_path}/mlruns")
     # Disable Arweave so anchoring doesn't try to hit the network.
     monkeypatch.setenv("VAIDR_ARWEAVE_WALLET_PATH", "")
+    # 60s default sleep in `_scheduled_revert` (FastAPI BackgroundTask
+    # tied to the response cycle) blocks TestClient.post for 60s on
+    # /tamper/saved and /tamper/live routes. 0 makes the revert
+    # near-instant; none of the test assertions depend on the timing.
+    monkeypatch.setenv("VAIDR_TAMPER_TTL_SECONDS", "0")
     # Clear the lru_cache so get_settings() picks up the monkeypatched env.
     from app.config import get_settings
     get_settings.cache_clear()

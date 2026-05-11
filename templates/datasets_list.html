@@ -165,15 +165,15 @@
             <div class="create-panel" id="create-panel">
                 <div class="create-form" id="create-form">
                     <div class="form-group form-group-name">
-                        <label>Name</label>
+                        <label for="ds-name">Name</label>
                         <input type="text" id="ds-name" placeholder="Credit scoring - my variant" maxlength="80">
                     </div>
                     <div class="form-group form-group-number">
-                        <label>Sample count</label>
+                        <label for="ds-n-samples">Sample count</label>
                         <input type="number" id="ds-n-samples" value="1000" min="50" max="50000">
                     </div>
                     <div class="form-group form-group-number">
-                        <label>Random Seed</label>
+                        <label for="ds-seed">Random Seed</label>
                         <input type="number" id="ds-seed" value="" placeholder="Random">
                     </div>
                     <button class="btn btn-primary" id="ds-create-btn" onclick="createDataset()">Generate &amp; Anchor</button>
@@ -314,8 +314,15 @@
         })
         .then(data => {
             progress.classList.remove('active');
-            result.innerHTML = 'Dataset created (digest <span class="mono">' + data.dataset_id +
-                '</span>). Redirecting to detail page...';
+            // textContent (not innerHTML) for server-derived values — prevents
+            // an attacker-controlled dataset name or digest from injecting
+            // markup. The monospace digest span is created via DOM API.
+            result.textContent = 'Dataset created (digest ';
+            const digestEl = document.createElement('span');
+            digestEl.className = 'mono';
+            digestEl.textContent = data.dataset_id;
+            result.appendChild(digestEl);
+            result.appendChild(document.createTextNode('). Redirecting to detail page...'));
             result.classList.add('show');
             setTimeout(() => { window.location.href = data.redirect_url; }, 1200);
         })
@@ -329,7 +336,9 @@
     }
 
     function showError(el, msg) {
-        el.innerHTML = msg;
+        // textContent (not innerHTML) — error strings can include
+        // server-derived content from the API's `error` field.
+        el.textContent = msg;
         el.style.background = 'var(--red-bg)';
         el.style.color = 'var(--red)';
         el.style.borderColor = 'var(--red)';

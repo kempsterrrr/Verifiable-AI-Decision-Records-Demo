@@ -139,14 +139,16 @@ def reset_demo_state(app) -> str:
             proof_engine=app.state.proof_engine,
             arweave=app.state.anchor,
         )
+        appended = 0
         for result in anchor_results:
             env = _build_standalone_dataset_envelope(result)
             name = (env.get("record") or {}).get("name")
             if name in standalone_names_present:
                 continue
             new_lifecycle_store.append(env)
+            appended += 1
         logger.info(
-            f"Reset: re-seeded {len(anchor_results)} standalone dataset entries."
+            f"Reset: re-seeded {appended} standalone dataset entries."
         )
 
     app.state.store = new_store

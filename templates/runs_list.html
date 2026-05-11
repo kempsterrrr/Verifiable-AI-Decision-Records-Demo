@@ -135,7 +135,8 @@
         @media (max-width: 768px) {
             .train-hero-top { flex-direction: column; align-items: flex-start; }
             .train-form { flex-direction: column; }
-            .train-form input { width: 100%; }
+            .train-form input,
+            .train-form select { width: 100%; }
         }
 
         .col-run { width: 220px; }
@@ -305,7 +306,7 @@
         const result = document.getElementById('train-result');
 
         if (!datasetEl || !datasetEl.value) {
-            result.innerHTML = 'Pick a dataset before training.';
+            result.textContent = 'Pick a dataset before training.';
             result.style.background = 'var(--red-bg)';
             result.style.color = 'var(--red)';
             result.style.borderColor = 'var(--red)';
@@ -348,7 +349,7 @@
                 setStepActive('step-anchor-reg');
                 return pollAnchor(data.registration_event_id, 'step-anchor-reg');
             }).then(() => {
-                result.innerHTML = 'Model v' + data.model_version + ' trained (accuracy: ' + data.accuracy.toFixed(4) + ') and anchored to ar.io. Redirecting to run detail...';
+                result.textContent = 'Model v' + data.model_version + ' trained (accuracy: ' + data.accuracy.toFixed(4) + ') and anchored to ar.io. Redirecting to run detail...';
                 result.classList.add('show');
                 btn.textContent = 'Start Training';
                 btn.disabled = false;
@@ -359,7 +360,12 @@
             });
         })
         .catch(err => {
-            result.innerHTML = 'Training failed: ' + err.message;
+            // Clear the loading state — without this the spinner panel
+            // stays active even after a failed POST.
+            progress.classList.remove('active');
+            // textContent (not innerHTML) — the server's `error` field
+            // could contain markup.
+            result.textContent = 'Training failed: ' + err.message;
             result.style.background = 'var(--red-bg)';
             result.style.color = 'var(--red)';
             result.style.borderColor = 'var(--red)';

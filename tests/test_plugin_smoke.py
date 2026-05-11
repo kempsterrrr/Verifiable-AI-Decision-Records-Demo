@@ -2548,7 +2548,14 @@ def test_arweave_upload_proof_sets_post_timeout():
     fake_bundle = types.ModuleType("turbo_sdk.bundle")
     fake_bundle.create_data = lambda data, signer, tags: _FakeDataItem()
     fake_bundle.sign = lambda item, signer: None
-    sys.modules["turbo_sdk.bundle"] = fake_bundle
+    # Use ``monkeypatch.setitem`` (not raw ``sys.modules[...] = ...``) so
+    # the stub is automatically restored at teardown. Without this the
+    # stubbed module leaks into later test files — notably
+    # tests/test_tamper_endpoints.py whose TestClient boot triggers real
+    # Arweave uploads via the still-stubbed bundle, causing 400 "Data item
+    # parsing error" failures and a cascade of training-tamper assertion
+    # failures downstream.
+    monkeypatch.setitem(sys.modules, "turbo_sdk.bundle", fake_bundle)
 
     result = anchor.upload_proof({"record": {"event_type": "x"}, "record_hash": "h"})
     assert result is not None

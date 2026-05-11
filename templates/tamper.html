@@ -1,0 +1,630 @@
+{% extends "base.html" %}
+{% from "_status_badge.html" import status_badge %}
+{% from "_active_badge.html" import active_badge %}
+
+{% block title %}Tamper — Verifiable AI{% endblock %}
+{% block max_width %}1400px{% endblock %}
+{% block nav_tamper %}active{% endblock %}
+
+{% block styles %}
+        /* Reuse picker styling from lineage.html. */
+        .chain-picker {
+            display: flex;
+            align-items: center;
+            gap: 0.85rem;
+            padding: 0.85rem 1rem;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--white);
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+        }
+        .chain-picker-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.65rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            white-space: nowrap;
+        }
+        .chain-picker-chips {
+            display: flex;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+            flex: 1;
+        }
+        .chain-picker-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.4rem 0.75rem;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--white);
+            color: var(--black);
+            font-size: 0.82rem;
+            font-weight: 500;
+            text-decoration: none;
+            transition: all 0.12s;
+        }
+        .chain-picker-chip:hover { border-color: var(--primary); text-decoration: none; }
+        .chain-picker-chip.selected {
+            background: var(--primary);
+            color: var(--white);
+            border-color: var(--primary);
+        }
+        .chain-picker-chip-version { font-family: 'JetBrains Mono', monospace; font-weight: 700; }
+        .chain-picker-chip-active {
+            background: var(--lavender);
+            color: var(--primary);
+            font-size: 0.62rem;
+            font-weight: 700;
+            padding: 0.1rem 0.35rem;
+            border-radius: 3px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+        .chain-picker-chip.selected .chain-picker-chip-active {
+            background: rgba(255, 255, 255, 0.25);
+            color: var(--white);
+        }
+        .chain-picker-actions { margin-left: auto; display: flex; gap: 0.5rem; }
+
+        /* Yellow demo banner — visually marks this page as demo-only
+           so it never reads as part of the audit flow. */
+        .demo-banner {
+            padding: 0.85rem 1.1rem;
+            background: var(--yellow-bg);
+            border: 1px solid var(--yellow);
+            border-radius: 8px;
+            margin-bottom: 1.5rem;
+            font-size: 0.85rem;
+            color: var(--yellow);
+            line-height: 1.5;
+        }
+        .demo-banner strong { color: var(--yellow); }
+
+        /* Tamper card — one per chain link. Builds on .detail-card from
+           base.html but adds a tamper-action area. */
+        .tamper-link-card {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--white);
+            margin-bottom: 1rem;
+            overflow: hidden;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }
+        .tamper-link-card.is-broken {
+            border-color: var(--red);
+            box-shadow: 0 0 0 1px var(--red);
+        }
+        .tamper-link-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            padding: 0.95rem 1.25rem;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+        }
+        .tamper-link-card.is-broken .tamper-link-head {
+            background: var(--red-bg);
+            border-bottom-color: var(--red);
+        }
+        .tamper-link-eyebrow {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.62rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+        .tamper-link-title {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 1rem;
+            color: var(--black);
+            margin-top: 0.15rem;
+        }
+        .tamper-link-status {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 0.25rem;
+            text-align: right;
+            min-width: 0;
+        }
+        /* "Mutated" chip — surfaced on the card the user clicked tamper
+           on, alongside (not replacing) the verify status badge. Tells
+           the user "this link's data is currently mutated" even when the
+           verifier flag flips on a different downstream link. */
+        .mutated-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            padding: 0.2rem 0.5rem;
+            background: var(--yellow-bg);
+            border: 1px solid var(--yellow);
+            color: var(--yellow);
+            border-radius: 4px;
+            font-size: 0.66rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            white-space: nowrap;
+        }
+        .mutated-chip-icon {
+            font-size: 0.78rem;
+            line-height: 1;
+        }
+        /* "What failed" hint — italic muted-red, sits directly under
+           the status badge when at least one cryptographic check has
+           flipped. Not shown for Pending ar.io (which is yellow not
+           red). Tells the user *which* check broke. */
+        .tamper-failure {
+            font-size: 0.74rem;
+            color: var(--red);
+            font-style: italic;
+            line-height: 1.35;
+            display: flex;
+            align-items: baseline;
+            gap: 0.3rem;
+            white-space: nowrap;
+        }
+        .tamper-failure-arrow {
+            font-family: 'JetBrains Mono', monospace;
+            opacity: 0.6;
+        }
+
+        .tamper-link-body { padding: 1rem 1.25rem; }
+        .tamper-link-meta {
+            font-size: 0.78rem;
+            color: var(--muted);
+            margin-bottom: 0.85rem;
+            line-height: 1.5;
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+        .tamper-link-meta code {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.74rem;
+            color: var(--primary);
+            background: var(--code-bg);
+            padding: 0.05rem 0.35rem;
+            border-radius: 3px;
+        }
+
+        /* Tamper action row — description on left, button stack on right.
+           Replaces the lettered (A/B/C/D) numbered rows from the prior
+           shape; each link has exactly one tamper now. */
+        .tamper-action {
+            display: flex;
+            align-items: flex-start;
+            gap: 1rem;
+            padding-top: 0.85rem;
+            border-top: 1px solid var(--border);
+        }
+        .tamper-action-info { flex: 1; min-width: 0; }
+        .tamper-action-title {
+            font-size: 0.88rem;
+            font-weight: 600;
+            color: var(--black);
+            margin-bottom: 0.25rem;
+        }
+        .tamper-action-desc {
+            font-size: 0.78rem;
+            color: var(--muted);
+            line-height: 1.5;
+            margin-bottom: 0.5rem;
+        }
+        .tamper-action-desc em {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.74rem;
+            font-style: normal;
+            color: var(--muted);
+        }
+        .tamper-action-desc strong { color: var(--black); font-weight: 600; }
+        .tamper-action-desc code {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.74rem;
+            background: var(--surface);
+            padding: 0.05rem 0.3rem;
+            border-radius: 3px;
+            color: var(--primary);
+        }
+
+        /* "Caught at" caption — small monospace footnote under the
+           description, telling the user which check this attack will
+           flip BEFORE they click. Pairs with the .tamper-failure hint
+           shown AFTER tampering. */
+        .tamper-caught-at {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.72rem;
+            color: var(--muted);
+            line-height: 1.45;
+            padding-top: 0.5rem;
+            margin-top: 0.4rem;
+            border-top: 1px dashed var(--border);
+            display: flex;
+            gap: 0.4rem;
+        }
+        .tamper-caught-at-label {
+            color: var(--primary);
+            font-weight: 600;
+        }
+        .tamper-caught-at-detail { font-style: italic; color: var(--muted); }
+
+        .tamper-action-buttons {
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+            flex-shrink: 0;
+        }
+        .tamper-action-buttons .btn-reset {
+            font-size: 0.7rem;
+            padding: 0.25rem 0.6rem;
+            opacity: 0.8;
+        }
+        .tamper-headline {
+            display: inline-block;
+            margin-top: 0.25rem;
+            font-size: 0.7rem;
+            color: var(--primary);
+            background: var(--lavender);
+            padding: 0.15rem 0.5rem;
+            border-radius: 3px;
+            font-weight: 600;
+        }
+
+        /* Decisions sub-list */
+        .tamper-decision-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            padding: 0.7rem 0;
+            border-top: 1px solid var(--border);
+            font-size: 0.85rem;
+        }
+        .tamper-decision-row:first-child { border-top: none; padding-top: 0.25rem; }
+        .tamper-decision-meta {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            min-width: 0;
+            flex: 1;
+            flex-wrap: wrap;
+        }
+        .tamper-decision-meta .mono { white-space: nowrap; }
+        .tamper-decision-actions {
+            display: flex;
+            gap: 0.4rem;
+            flex-shrink: 0;
+            align-items: center;
+        }
+        .tamper-decision-failure {
+            font-size: 0.72rem;
+            font-style: italic;
+            color: var(--red);
+            white-space: nowrap;
+        }
+
+        @media (max-width: 720px) {
+            .tamper-action { flex-direction: column; align-items: stretch; }
+            .tamper-action-buttons { flex-direction: row; }
+        }
+{% endblock %}
+
+{% block content %}
+        <div class="editorial-header">
+            <div class="editorial-header-text">
+                <span class="eyebrow">Demo · Tamper</span>
+                <h1 class="editorial-title">Demonstrate Tampering</h1>
+                <p class="editorial-lede">
+                    Simulate changes to data or outputs and detect integrity
+                    breaks instantly. See exactly what fails when trust is
+                    broken.
+                </p>
+            </div>
+        </div>
+
+        <div class="demo-banner">
+            <strong>Demo only.</strong>
+            This page is gated behind <code style="font-family: 'JetBrains Mono', monospace; font-size: 0.78rem;">VAIDR_DEMO_MODE=true</code>
+            and writes against MLflow's live data so each break is real. Tampers
+            auto-reverse after a short window, or click the per-link Reset button.
+            Anchored proofs on ar.io are immutable; only MLflow state is mutated.
+        </div>
+
+        {% if available_chains and selected_chain %}
+        <div class="chain-picker">
+            <span class="chain-picker-label">Chain</span>
+            <div class="chain-picker-chips">
+                {% for c in available_chains %}
+                <a class="chain-picker-chip {% if c.key == selected_chain.key %}selected{% endif %}" href="/demo/tamper?chain={{ c.key }}">
+                    {{ c.model_name }} <span class="chain-picker-chip-version">v{{ c.model_version }}</span>
+                    {% if c.is_active %}<span class="chain-picker-chip-active">Active</span>{% endif %}
+                </a>
+                {% endfor %}
+            </div>
+            <div class="chain-picker-actions">
+                <a href="/demo/tamper?chain={{ selected_chain.key }}&verify=true" class="btn btn-outline btn-sm" data-loading-text="Verifying...">Re-verify chain</a>
+            </div>
+        </div>
+
+        {# ── Dataset link ── #}
+        {% for ds in dataset_views %}
+        <div class="tamper-link-card {% if ds.failures %}is-broken{% endif %}">
+            <div class="tamper-link-head">
+                <div>
+                    <div class="tamper-link-eyebrow">Dataset</div>
+                    <div class="tamper-link-title">{{ ds.envelope.record.name }}</div>
+                </div>
+                <div class="tamper-link-status">
+                    {% if ds.is_mutated %}
+                    <span class="mutated-chip" title="This link's data has been mutated. The verifier catches the change at the link whose payload includes this data.">
+                        <span class="mutated-chip-icon">✏</span> Mutated
+                    </span>
+                    {% endif %}
+                    {{ status_badge(ds.status) }}
+                    {% for failure in ds.failures %}
+                    <div class="tamper-failure"><span class="tamper-failure-arrow">→</span>{{ failure }}</div>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="tamper-link-body">
+                <div class="tamper-link-meta">
+                    <span>Digest <code>{{ ds.envelope.record.digest[:18] }}…</code> · Source <code>{{ ds.envelope.record.source }}</code></span>
+                </div>
+                <div class="tamper-action">
+                    <div class="tamper-action-info">
+                        <div class="tamper-action-title">Mutate the dataset's digest in MLflow</div>
+                        <div class="tamper-action-desc">
+                            Overwrite the <code>digest</code> field in the dataset's
+                            <code>meta.yaml</code> — claim a different fingerprint
+                            for the same training data.
+                        </div>
+                        <div class="tamper-caught-at">
+                            <span class="tamper-caught-at-label">Caught at</span>
+                            <span class="tamper-caught-at-detail">Training Run · Source-of-truth check (the dataset's identity is inlined in the training payload, so re-deriving from MLflow's tampered state diverges)</span>
+                        </div>
+                    </div>
+                    <div class="tamper-action-buttons">
+                        <button class="btn-tamper" data-tamper-kind="live" data-event-type="dataset" data-event-id="{{ training_view.envelope.record.run_id }}">Tamper</button>
+                        <button class="btn-reset" data-event-type="dataset" data-event-id="{{ training_view.envelope.record.run_id }}">Reset</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+
+        {# ── Training Run link ── #}
+        {% if training_view %}
+        <div class="tamper-link-card {% if training_view.failures %}is-broken{% endif %}">
+            <div class="tamper-link-head">
+                <div>
+                    <div class="tamper-link-eyebrow">Training Run</div>
+                    <div class="tamper-link-title">{{ training_view.envelope.record.run_id[:14] }}…</div>
+                </div>
+                <div class="tamper-link-status">
+                    {% if training_view.is_mutated %}
+                    <span class="mutated-chip" title="This link's data has been mutated.">
+                        <span class="mutated-chip-icon">✏</span> Mutated
+                    </span>
+                    {% endif %}
+                    {{ status_badge(training_view.status) }}
+                    {% for failure in training_view.failures %}
+                    <div class="tamper-failure"><span class="tamper-failure-arrow">→</span>{{ failure }}</div>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="tamper-link-body">
+                <div class="tamper-link-meta">
+                    {% if training_view.envelope.record.metrics and training_view.envelope.record.metrics.accuracy is defined %}
+                    <span>Accuracy <code>{{ "%.4f"|format(training_view.envelope.record.metrics.accuracy) }}</code></span>
+                    {% endif %}
+                    {% if training_view.envelope.record.artifact_hash %}
+                    <span>Artifact <code>{{ training_view.envelope.record.artifact_hash[:18] }}…</code></span>
+                    {% endif %}
+                </div>
+                <div class="tamper-action">
+                    <div class="tamper-action-info">
+                        <div class="tamper-action-title">Inflate the run's accuracy metric</div>
+                        <div class="tamper-action-desc">
+                            Overwrite the <code>accuracy</code> metric in MLflow to <code>0.999</code> —
+                            the classic governance worry: "make the model look better
+                            than it actually was."
+                        </div>
+                        <div class="tamper-caught-at">
+                            <span class="tamper-caught-at-label">Caught at</span>
+                            <span class="tamper-caught-at-detail">Training Run · Source-of-truth check (re-derived metrics diverge from anchored payload)</span>
+                        </div>
+                        <span class="tamper-headline">★ Headline tamper for governance audiences</span>
+                    </div>
+                    <div class="tamper-action-buttons">
+                        <button class="btn-tamper" data-tamper-kind="live" data-event-type="training" data-event-id="{{ training_view.envelope.record.run_id }}">Tamper</button>
+                        <button class="btn-reset" data-event-type="training" data-event-id="{{ training_view.envelope.record.run_id }}">Reset</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        {# ── Registration link ── #}
+        {% if registration_view %}
+        <div class="tamper-link-card {% if registration_view.failures %}is-broken{% endif %}">
+            <div class="tamper-link-head">
+                <div>
+                    <div class="tamper-link-eyebrow">Model Registration</div>
+                    <div class="tamper-link-title">{{ registration_view.envelope.record.model_name }} <span class="tabular">v{{ registration_view.envelope.record.model_version }}</span></div>
+                </div>
+                <div class="tamper-link-status">
+                    {% if registration_view.is_mutated %}
+                    <span class="mutated-chip" title="This link's data has been mutated.">
+                        <span class="mutated-chip-icon">✏</span> Mutated
+                    </span>
+                    {% endif %}
+                    {{ status_badge(registration_view.status) }}
+                    {% for failure in registration_view.failures %}
+                    <div class="tamper-failure"><span class="tamper-failure-arrow">→</span>{{ failure }}</div>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="tamper-link-body">
+                <div class="tamper-link-meta">
+                    {% if registration_view.envelope.record.artifact_hash %}
+                    <span>Artifact <code>{{ registration_view.envelope.record.artifact_hash[:18] }}…</code></span>
+                    {% endif %}
+                </div>
+                <div class="tamper-action">
+                    <div class="tamper-action-info">
+                        <div class="tamper-action-title">Swap the deployed model artifact</div>
+                        <div class="tamper-action-desc">
+                            Replace the bytes of <code>model.pkl</code> on the source run.
+                            Anyone could claim the swapped model is still
+                            v{{ registration_view.envelope.record.model_version }}, but its artifact hash
+                            no longer matches what was anchored at registration time.
+                        </div>
+                        <div class="tamper-caught-at">
+                            <span class="tamper-caught-at-label">Caught at</span>
+                            <span class="tamper-caught-at-detail">Registration · Source-of-truth check (artifact hash diverges) · also Training Run (artifact_checksums is inlined in both payloads)</span>
+                        </div>
+                        <span class="tamper-headline">★ Headline tamper for governance audiences</span>
+                    </div>
+                    <div class="tamper-action-buttons">
+                        <button class="btn-tamper" data-tamper-kind="live" data-event-type="registration" data-event-id="{{ registration_view.envelope.record.event_id }}">Tamper</button>
+                        <button class="btn-reset" data-event-type="registration" data-event-id="{{ registration_view.envelope.record.event_id }}">Reset</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        {# ── Decisions link ── #}
+        <div class="tamper-link-card">
+            <div class="tamper-link-head">
+                <div>
+                    <div class="tamper-link-eyebrow">Decisions</div>
+                    <div class="tamper-link-title">
+                        {{ decision_views|length }} recent decision{{ "s" if decision_views|length != 1 }}
+                        {% if decision_views|length > 0 and decision_views|length < (prediction_count or 0) %}<span class="detail-card-title-meta">of {{ prediction_count }} total</span>{% endif %}
+                    </div>
+                </div>
+                {% if prediction_count and verified_count == prediction_count %}
+                    <span class="badge badge-green"><span class="badge-dot"></span> All verified</span>
+                {% elif prediction_count %}
+                    <span class="badge badge-yellow"><span class="badge-dot"></span> {{ verified_count }} / {{ prediction_count }} verified</span>
+                {% else %}
+                    <span class="badge badge-gray"><span class="badge-dot"></span> No decisions yet</span>
+                {% endif %}
+            </div>
+            <div class="tamper-link-body">
+                {% if decision_views %}
+                <p style="font-size: 0.78rem; color: var(--muted); margin-bottom: 0.65rem; line-height: 1.5;">
+                    Tamper an individual decision to simulate "someone retroactively rewrote what the
+                    model decided." Overwrites the live trace tag <code style="font-family: 'JetBrains Mono', monospace; color: var(--primary); background: var(--code-bg); padding: 0.05rem 0.3rem; border-radius: 3px; font-size: 0.74rem;">ario.payload_json</code>
+                    on the MLflow trace.
+                </p>
+                <div class="tamper-caught-at" style="margin-top: 0; margin-bottom: 0.85rem; border-top: none; border-bottom: 1px dashed var(--border); padding-top: 0; padding-bottom: 0.5rem;">
+                    <span class="tamper-caught-at-label">Caught at</span>
+                    <span class="tamper-caught-at-detail">This decision · Source-of-truth check (live trace tag diverges from anchored payload)</span>
+                </div>
+                {% for d in decision_views %}
+                <div class="tamper-decision-row">
+                    <div class="tamper-decision-meta">
+                        <a class="mono mono-sm" href="/ui/decisions/{{ d.decision_id }}">{{ d.decision_id[:10] }}…</a>
+                        {% if d.envelope.record.prediction['class'] == 'approve' %}
+                            <span class="badge badge-green"><span class="badge-dot"></span> Approved</span>
+                        {% elif d.envelope.record.prediction['class'] == 'deny' %}
+                            <span class="badge badge-red"><span class="badge-dot"></span> Denied</span>
+                        {% endif %}
+                        {% if d.is_mutated %}
+                        <span class="mutated-chip" title="This decision's live trace tag has been mutated.">
+                            <span class="mutated-chip-icon">✏</span> Mutated
+                        </span>
+                        {% endif %}
+                        {{ status_badge(d.status) }}
+                        {% if d.failures %}
+                        <span class="tamper-decision-failure">→ {{ d.failures|join(', ') }}</span>
+                        {% endif %}
+                    </div>
+                    <div class="tamper-decision-actions">
+                        <button class="btn-tamper btn-sm" data-tamper-kind="live" data-event-type="decision" data-event-id="{{ d.decision_id }}">Tamper</button>
+                        <button class="btn-reset btn-sm" data-event-type="decision" data-event-id="{{ d.decision_id }}">Reset</button>
+                    </div>
+                </div>
+                {% endfor %}
+                {% else %}
+                <p style="font-size: 0.85rem; color: var(--muted);">No decisions yet for this chain. Make a prediction on the <a href="/ui/decisions">Decisions page</a> first.</p>
+                {% endif %}
+            </div>
+        </div>
+
+        {% else %}
+        <div class="empty-state">
+            <div class="empty-state-title">No chains to tamper</div>
+            <p class="empty-state-body">
+                The tamper page operates on a registered model version's chain.
+                Train a model on the <a href="/ui/runs">Training Runs</a> page first.
+            </p>
+        </div>
+        {% endif %}
+{% endblock %}
+
+{% block scripts %}
+    <script>
+    function reloadWithVerify() {
+        const url = new URL(window.location.href);
+        url.searchParams.set('verify', 'true');
+        window.location.href = url.toString();
+    }
+
+    document.querySelectorAll('.btn-tamper').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const kind = btn.dataset.tamperKind;
+            const eventType = btn.dataset.eventType;
+            const eventId = btn.dataset.eventId;
+            btn.disabled = true;
+            btn.textContent = 'Tampering...';
+            try {
+                const r = await fetch(`/tamper/${kind}/${eventType}/${eventId}`, { method: 'POST' });
+                const data = await r.json();
+                if (data.tampered) {
+                    btn.textContent = 'Tampered — verifying...';
+                    setTimeout(reloadWithVerify, 600);
+                } else {
+                    btn.textContent = 'Failed';
+                    btn.disabled = false;
+                }
+            } catch (e) {
+                btn.textContent = 'Error';
+                btn.disabled = false;
+            }
+        });
+    });
+
+    document.querySelectorAll('.btn-reset').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const eventType = btn.dataset.eventType;
+            const eventId = btn.dataset.eventId;
+            btn.disabled = true;
+            btn.textContent = 'Resetting...';
+            try {
+                const r = await fetch(`/tamper/reset/${eventType}/${eventId}`, { method: 'POST' });
+                let data = {};
+                try { data = await r.json(); } catch (_) { /* non-JSON body, treat as failure */ }
+                if (!r.ok || !data.reset) {
+                    btn.textContent = 'Reset failed';
+                    btn.disabled = false;
+                    return;
+                }
+                btn.textContent = 'Reset — verifying...';
+                setTimeout(reloadWithVerify, 600);
+            } catch (e) {
+                btn.textContent = 'Error';
+                btn.disabled = false;
+            }
+        });
+    });
+    </script>
+{% endblock %}

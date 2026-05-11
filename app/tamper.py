@@ -349,6 +349,36 @@ def tamper_live(event_type, event_id, *, lifecycle_store, record_store, tracking
         return snapshot
 
 
+def _clear_chain_verification(run_id, *, lifecycle_store):
+    """Clear last_verification on every chain event tied to this run_id.
+
+    Called after a chain-link tamper reset (training / registration /
+    dataset) so the persisted four-check verdict doesn't keep the badge
+    stuck on "Tampered" after the underlying data is restored. Without
+    this, auto-revert leaves the chain visually broken until the next
+    explicit ?verify=true pass.
+    """
+    for env in lifecycle_store.list_all():
+        rec = env.get("record", {})
+        et = rec.get("event_type", "")
+        match = (
+            (et == "training_complete" and rec.get("run_id") == run_id)
+            or (et == "dataset_anchored" and rec.get("source_run_id") == run_id)
+            or (et == "model_registered" and rec.get("source_run_id") == run_id)
+        )
+        if match and env.get("last_verification") is not None:
+            env["last_verification"] = None
+            lifecycle_store.update(rec["event_id"], env)
+
+
+def _clear_decision_verification(decision_id, *, record_store):
+    """Clear last_verification on a single decision envelope."""
+    env = record_store.get_by_id(decision_id)
+    if env and env.get("last_verification") is not None:
+        env["last_verification"] = None
+        record_store.update(decision_id, env)
+
+
 def reset(event_type, event_id, *, lifecycle_store, record_store, tracking_uri):
     """Restore both saved and live state for an event from snapshots."""
     reverted = 0
@@ -435,5 +465,30 @@ def reset(event_type, event_id, *, lifecycle_store, record_store, tracking_uri):
                 logger.warning(
                     f"Reset failed for {key}; keeping snapshot for retry: {e}"
                 )
+
+    # After successful restore, clear stale last_verification so badges
+    # return to "Anchored" automatically. Without this the persisted
+    # four-check verdict would keep cards stuck on "Tampered" until the
+    # next explicit ?verify=true pass — confusing for cold-load demo
+    # sessions and after the 60s auto-revert.
+    if reverted > 0:
+        try:
+            if event_type == "decision":
+                _clear_decision_verification(event_id, record_store=record_store)
+            elif event_type == "dataset":
+                # Dataset tamper passes run_id as event_id (it mutates the
+                # dataset registry tied to that run). _resolve_run_id
+                # doesn't know "dataset" — short-circuit here.
+                _clear_chain_verification(event_id, lifecycle_store=lifecycle_store)
+            else:
+                run_id = _resolve_run_id(
+                    event_type, event_id, lifecycle_store, record_store,
+                )
+                _clear_chain_verification(run_id, lifecycle_store=lifecycle_store)
+        except Exception as e:  # noqa: BLE001
+            # Clearing is best-effort — a failure here just means the
+            # next page render shows stale "Tampered" until explicit
+            # re-verify, which is the pre-fix behavior.
+            logger.warning(f"Could not clear stale last_verification: {e}")
 
     return reverted

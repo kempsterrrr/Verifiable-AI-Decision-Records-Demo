@@ -1,0 +1,521 @@
+{% extends "base.html" %}
+{% from "_verdict_banner.html" import verdict_banner %}
+{% from "_qa_section.html" import qa_section %}
+
+{% block title %}Audit report — {{ decision_id[:10] }}… — Verifiable AI{% endblock %}
+{% block max_width %}920px{% endblock %}
+{% block nav_reports %}active{% endblock %}
+
+{% block styles %}
+        /* ── Verdict banner — three variants on one shape. Bold,
+              full-bleed, sits at the top of the report so the verdict
+              is the first thing any reader sees. ── */
+        .verdict-banner {
+            display: grid;
+            grid-template-columns: auto 1fr auto;
+            align-items: center;
+            gap: 1.5rem;
+            padding: 1.75rem 2rem;
+            border-radius: 10px;
+            border: 1px solid;
+            margin-bottom: 2.5rem;
+        }
+        .verdict-banner-icon {
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            font-size: 2.5rem;
+            line-height: 1;
+        }
+        .verdict-banner-title {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 1.5rem;
+            letter-spacing: -0.015em;
+            margin: 0 0 0.3rem 0;
+            line-height: 1.2;
+        }
+        .verdict-banner-subline {
+            font-size: 0.9rem;
+            margin: 0;
+            line-height: 1.5;
+            color: var(--black);
+        }
+        .verdict-banner-cta {
+            padding: 0.6rem 1.2rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            white-space: nowrap;
+            text-decoration: none;
+            border: 1px solid currentColor;
+        }
+        .verdict-banner-cta:hover { opacity: 0.85; }
+
+        .verdict-banner-verified {
+            background: var(--green-bg);
+            border-color: var(--green);
+            color: var(--green);
+        }
+        .verdict-banner-issues {
+            background: var(--red-bg);
+            border-color: var(--red);
+            color: var(--red);
+        }
+        .verdict-banner-issues .verdict-banner-cta {
+            background: var(--red);
+            color: var(--white);
+            border-color: var(--red);
+        }
+        .verdict-banner-pending {
+            background: var(--lavender);
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+        .verdict-banner-pending .verdict-banner-cta {
+            background: var(--primary);
+            color: var(--white);
+            border-color: var(--primary);
+        }
+
+        /* ── Q&A sections ── editorial-feeling layout. Generous spacing,
+              the question reads like a magazine sub-head, the answer body
+              is plain prose. The pull-quote is a styled aside that
+              hammers the "anchored to ar.io" pitch in one sentence. */
+        .qa-section {
+            padding: 1.75rem 0;
+            border-top: 1px solid var(--border);
+        }
+        .qa-section:first-of-type { border-top: none; padding-top: 0; }
+        .qa-question {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 1.35rem;
+            letter-spacing: -0.012em;
+            color: var(--black);
+            margin: 0 0 1rem 0;
+        }
+        .qa-body { font-size: 0.95rem; line-height: 1.65; color: var(--black); }
+        .qa-body p:not(:last-child) { margin-bottom: 0.85rem; }
+        .qa-pull-quote {
+            margin-top: 1.25rem;
+            padding: 0.95rem 1.15rem;
+            border-left: 3px solid var(--primary);
+            background: var(--lavender);
+            color: var(--black);
+            font-style: italic;
+            font-size: 0.92rem;
+            line-height: 1.5;
+        }
+
+        /* Definition-list style for the model / dataset fact blocks. */
+        .qa-facts {
+            display: grid;
+            grid-template-columns: max-content 1fr;
+            column-gap: 1.5rem;
+            row-gap: 0.55rem;
+            font-size: 0.92rem;
+        }
+        .qa-facts dt {
+            font-weight: 600;
+            color: var(--muted);
+            text-transform: uppercase;
+            font-size: 0.72rem;
+            letter-spacing: 0.05em;
+            align-self: baseline;
+            padding-top: 0.15rem;
+        }
+        .qa-facts dd { margin: 0; color: var(--black); }
+        .qa-facts dd a { color: var(--primary); }
+
+        /* Plain-language check list for the "Has anything changed?" Q&A.
+           Each item is a single sentence prefixed with a status icon. */
+        .qa-checks { list-style: none; padding: 0; margin: 0; }
+        .qa-checks li {
+            display: grid;
+            grid-template-columns: 1.4rem 1fr;
+            gap: 0.7rem;
+            padding: 0.6rem 0;
+            line-height: 1.5;
+        }
+        .qa-checks li + li { border-top: 1px solid var(--border); }
+        .qa-check-icon {
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            line-height: 1.5;
+            font-size: 0.95rem;
+        }
+        .qa-check-pass .qa-check-icon { color: var(--green); }
+        .qa-check-fail .qa-check-icon { color: var(--red); }
+        .qa-check-pending .qa-check-icon { color: var(--muted); }
+        .qa-check-fail .qa-check-statement { color: var(--red); font-weight: 500; }
+        .qa-checks-empty {
+            font-size: 0.9rem;
+            color: var(--muted);
+            font-style: italic;
+            padding: 0.75rem 0;
+        }
+
+        @media (max-width: 768px) {
+            .verdict-banner {
+                grid-template-columns: auto 1fr;
+                row-gap: 0.6rem;
+            }
+            .verdict-banner-cta {
+                grid-column: 1 / -1;
+                justify-self: start;
+            }
+            .qa-facts { grid-template-columns: 1fr; row-gap: 0.25rem; }
+            .qa-facts dt { padding-top: 0.5rem; }
+        }
+
+        /* ── Progressive-disclosure accordion ──
+              Native <details>/<summary> — collapsed by default, click
+              to expand. One accordion: "Verify this independently",
+              with the easy-mode plugin CLI on top and a nested
+              advanced details containing the curl + nacl/jcs flow
+              for auditors who don't want to trust the plugin. Raw
+              envelope evidence lives on /ui/decisions/<id> via the
+              footer link, not duplicated here. */
+        .reports-accordion {
+            margin-top: 2rem;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--white);
+        }
+        .reports-accordion + .reports-accordion { margin-top: 1rem; }
+        .reports-accordion summary {
+            cursor: pointer;
+            padding: 1rem 1.25rem;
+            font-family: 'Besley', serif;
+            font-weight: 700;
+            font-size: 1.05rem;
+            color: var(--black);
+            letter-spacing: -0.005em;
+            list-style: none;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.5rem;
+        }
+        .reports-accordion summary::-webkit-details-marker { display: none; }
+        .reports-accordion summary::after {
+            content: "+";
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            font-size: 1.2rem;
+            color: var(--muted);
+            line-height: 1;
+        }
+        .reports-accordion[open] summary::after { content: "−"; }
+        .reports-accordion summary:hover { background: var(--lavender); }
+        .reports-accordion[open] summary { border-bottom: 1px solid var(--border); }
+        /* Nested accordion — inset against the parent, smaller summary font,
+           muted border so it reads as a secondary disclosure (matches the
+           "advanced" verify path being one click deeper than the easy mode). */
+        .reports-accordion-nested {
+            margin-top: 1.5rem;
+            border-color: var(--border);
+            background: var(--lavender);
+        }
+        .reports-accordion-nested summary {
+            font-size: 0.92rem;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-weight: 600;
+            color: var(--primary);
+        }
+        .reports-accordion-nested summary:hover { background: rgba(84, 39, 200, 0.08); }
+        .reports-accordion-nested[open] summary { border-bottom-color: var(--primary); }
+        .reports-accordion-body {
+            padding: 1.25rem 1.25rem 1.5rem 1.25rem;
+            font-size: 0.92rem;
+            line-height: 1.55;
+            color: var(--black);
+        }
+        .reports-accordion-body p:not(:last-child) { margin-bottom: 0.85rem; }
+        .reports-accordion-body code {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            background: var(--lavender);
+            padding: 0.05rem 0.35rem;
+            border-radius: 3px;
+            color: var(--primary);
+            word-break: break-all;
+        }
+        .reports-accordion-body pre {
+            background: #0e0e12;
+            color: #e8e8ee;
+            padding: 1rem 1.15rem;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.82rem;
+            line-height: 1.5;
+            margin: 0.5rem 0;
+        }
+        .reports-accordion-body pre code {
+            background: transparent;
+            padding: 0;
+            color: inherit;
+            font-size: inherit;
+        }
+        .verify-step-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+            display: block;
+            margin: 1.25rem 0 0.4rem 0;
+        }
+        .verify-step-label:first-child { margin-top: 0; }
+
+        /* ── Print stylesheet ──
+              Strip the demo chrome so a browser Save-as-PDF (Cmd/Ctrl+P)
+              produces a clean audit-report artifact. Accordions auto-
+              open via JS on ``beforeprint`` (CSS alone can't open
+              <details>). */
+        @media print {
+            .topbar, .footer, .topbar-nav-admin { display: none !important; }
+            .verdict-banner-cta { display: none !important; }
+            .reports-accordion summary::after { display: none; }
+            .reports-accordion summary { cursor: default; padding: 0.6rem 0; border-bottom: 1px solid var(--border); }
+            .reports-accordion { border: none; margin-top: 1.5rem; }
+            .reports-accordion-body { padding: 0.75rem 0; }
+            .reports-accordion-body pre {
+                background: var(--white);
+                color: var(--black);
+                border: 1px solid var(--border);
+                white-space: pre-wrap;
+                word-break: break-word;
+            }
+            body { padding: 0; }
+            a { color: var(--black) !important; text-decoration: underline; }
+            .verdict-banner { break-inside: avoid; }
+            .qa-section { break-inside: avoid; }
+        }
+{% endblock %}
+
+{% block content %}
+        <div style="margin-bottom: 1rem;">
+            <a href="/ui/reports" style="font-size: 0.82rem; color: var(--muted);">← Reports</a>
+        </div>
+
+        <div class="editorial-header">
+            <div class="editorial-header-text">
+                <span class="eyebrow">
+                    Decision
+                    <span class="eyebrow-id">· {{ decision_id[:10] }}…</span>
+                </span>
+                <h1 class="editorial-title">Audit report</h1>
+                <p class="editorial-lede">
+                    {{ outcome }} on
+                    {{ rec.timestamp[:19].replace("T", " ") if rec.timestamp else "—" }} UTC,
+                    by
+                    {% if rec.model_name and rec.model_version %}
+                    {{ rec.model_name }} <span class="tabular">v{{ rec.model_version }}</span>.
+                    {% else %}an unidentified model.{% endif %}
+                </p>
+            </div>
+        </div>
+
+        {{ verdict_banner(verdict, verified_at, signer_key, failing_line, decision_id) }}
+
+        {# ── Q&A 1: Which model? ── #}
+        {% call qa_section("Which model made this decision?",
+                           pull_quote="This model's identity is anchored to ar.io — it cannot be silently swapped.") %}
+            <dl class="qa-facts">
+                {% if rec.model_name and rec.model_version %}
+                <dt>Model</dt>
+                <dd>{{ rec.model_name }} <span class="tabular">v{{ rec.model_version }}</span></dd>
+                {% endif %}
+                {% if training_rec.timestamp %}
+                <dt>Trained</dt>
+                <dd>{{ training_rec.timestamp[:19].replace("T", " ") }} UTC
+                    {% if rec.mlflow_run_id %}
+                    · run <a class="mono" href="/ui/runs/{{ rec.mlflow_run_id }}">{{ rec.mlflow_run_id[:12] }}…</a>
+                    {% endif %}
+                </dd>
+                {% endif %}
+                {% if reg_rec.timestamp %}
+                <dt>Registered</dt>
+                <dd>{{ reg_rec.timestamp[:19].replace("T", " ") }} UTC</dd>
+                {% endif %}
+                {% if signer_key %}
+                <dt>Signed by</dt>
+                <dd>recognized key <span class="mono">{{ signer_key[:16] }}…</span></dd>
+                {% endif %}
+                {% if reg_env and reg_env.arweave_tx_id %}
+                <dt>Anchor</dt>
+                <dd><a class="mono" href="{{ reg_env.arweave_url }}" target="_blank" rel="noopener">{{ reg_env.arweave_tx_id[:12] }}…</a> on ar.io</dd>
+                {% elif training_env and training_env.arweave_tx_id %}
+                <dt>Anchor</dt>
+                <dd><a class="mono" href="{{ training_env.arweave_url }}" target="_blank" rel="noopener">{{ training_env.arweave_tx_id[:12] }}…</a> on ar.io</dd>
+                {% endif %}
+            </dl>
+        {% endcall %}
+
+        {# ── Q&A 2: What data was the model trained on? ── #}
+        {% call qa_section("What data was the model trained on?",
+                           pull_quote="The training data's identity is anchored to ar.io — if the dataset is altered, this report will show an issue.") %}
+            {% if dataset_rec.name %}
+            <dl class="qa-facts">
+                <dt>Dataset</dt>
+                <dd>{{ dataset_rec.name }}</dd>
+                {% if dataset_rec.n_samples %}
+                <dt>Samples</dt>
+                <dd class="tabular">{{ dataset_rec.n_samples }}</dd>
+                {% endif %}
+                {% if dataset_rec.source %}
+                <dt>Source</dt>
+                <dd class="mono" style="font-size: 0.8rem; word-break: break-all;">{{ dataset_rec.source }}</dd>
+                {% endif %}
+                {% if dataset_rec.digest %}
+                <dt>Digest</dt>
+                <dd><a class="mono" href="/ui/datasets/{{ dataset_rec.digest }}">{{ dataset_rec.digest }}</a></dd>
+                {% endif %}
+                {% if dataset_rec.schema_hash %}
+                <dt>Schema</dt>
+                <dd class="mono" style="font-size: 0.8rem;">{{ dataset_rec.schema_hash[:24] }}…</dd>
+                {% endif %}
+                {% if dataset_env and dataset_env.arweave_tx_id %}
+                <dt>Anchor</dt>
+                <dd><a class="mono" href="{{ dataset_env.arweave_url }}" target="_blank" rel="noopener">{{ dataset_env.arweave_tx_id[:12] }}…</a> on ar.io</dd>
+                {% endif %}
+            </dl>
+            {% else %}
+            <p style="color: var(--muted); font-style: italic;">
+                No dataset reference recorded for this decision's training run.
+            </p>
+            {% endif %}
+        {% endcall %}
+
+        {# ── Q&A 3: Has anything changed? ── #}
+        {% call qa_section("Has anything changed since this decision was anchored?") %}
+            {% if checks %}
+            <ul class="qa-checks">
+                {% for c in checks %}
+                <li class="qa-check-{{ c.status }}">
+                    <span class="qa-check-icon">
+                        {% if c.status == 'pass' %}✓{% elif c.status == 'fail' %}✗{% else %}…{% endif %}
+                    </span>
+                    <span class="qa-check-statement">{{ c.statement }}</span>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p class="qa-checks-empty">
+                Verification hasn't run against this decision yet. Use
+                <strong>Run checks</strong> above (or visit
+                <a href="/ui/reports/{{ decision_id }}?verify=true">this report with <code>?verify=true</code></a>)
+                to run the four checks now.
+            </p>
+            {% endif %}
+        {% endcall %}
+
+        {# ── Accordion: Verify this independently ── #}
+        <details class="reports-accordion">
+            <summary>Verify this independently</summary>
+            <div class="reports-accordion-body">
+                <p>
+                    Don't take this report's verdict on faith — confirm it yourself.
+                    The easy path uses the open-source <code>ario-mlflow</code>
+                    plugin; the forensic path uses only standard cryptographic
+                    tools so an auditor can verify without installing anything
+                    from this project.
+                </p>
+
+                <span class="verify-step-label">Easy mode · plugin CLI</span>
+<pre><code>pip install ario-mlflow
+ario-mlflow verify trace {{ decision_id }}</code></pre>
+                <p style="font-size: 0.86rem;">
+                    Fetches the signed envelope from ar.io, pulls the canonical bytes
+                    from MLflow, and prints the same four-check verdict shown above.
+                    One command, no file shuffling.
+                </p>
+
+                <details class="reports-accordion reports-accordion-nested">
+                    <summary>Verify without trusting the plugin (advanced)</summary>
+                    <div class="reports-accordion-body">
+                        <p style="font-size: 0.9rem;">
+                            For auditors whose threat model includes "the plugin
+                            itself could lie." Uses only <code>curl</code>,
+                            <code>shasum</code>, Python's <code>nacl</code>, and
+                            <code>jcs</code> (RFC 8785 JSON canonicalisation).
+                        </p>
+
+                        {% if envelope.arweave_tx_id %}
+                        <span class="verify-step-label">1 · Fetch the signed envelope from ar.io</span>
+<pre><code>curl -sS https://arweave.net/{{ envelope.arweave_tx_id }} -o envelope.json
+python3 -c "import json; print(json.load(open('envelope.json'))['payload_hash'])"</code></pre>
+
+                        <span class="verify-step-label">2 · Fetch the canonical bytes from MLflow</span>
+<pre><code>python3 - &lt;&lt;'PY'
+import mlflow
+mlflow.set_tracking_uri("&lt;your MLflow tracking URI&gt;")
+path = mlflow.artifacts.download_artifacts(
+    run_id="{{ rec.mlflow_run_id or '<run_id>' }}",
+    artifact_path="ario/predictions/{{ decision_id }}/payload.json",
+    dst_path="."
+)
+print("saved →", path)
+PY</code></pre>
+
+                        <span class="verify-step-label">3 · Re-hash the canonical bytes</span>
+<pre><code>shasum -a 256 payload.json
+# Compare the first column to the hash printed in step 1.
+# If they match, the canonical payload hasn't been altered since anchoring.</code></pre>
+
+                        <span class="verify-step-label">4 · Verify the cryptographic signature</span>
+<pre><code>pip install pynacl jcs
+
+python3 &lt;&lt;'PY'
+import json, binascii, jcs
+from nacl.signing import VerifyKey
+env = json.load(open("envelope.json"))
+sig = binascii.unhexlify(env.pop("signature"))
+pk = binascii.unhexlify(env["public_key"])
+VerifyKey(pk).verify(jcs.canonicalize(env), sig)
+print("Signature: VALID")
+PY</code></pre>
+
+                        <p style="font-size: 0.85rem; margin-top: 1rem;">
+                            The signature covers the JCS-canonicalised envelope
+                            minus the <code>signature</code> field itself. Any
+                            byte change since signing makes
+                            <code>verify()</code> raise
+                            <code>nacl.exceptions.BadSignatureError</code>.
+                        </p>
+                        {% else %}
+                        <p style="color: var(--muted); font-style: italic;">
+                            This decision hasn't been anchored to ar.io yet —
+                            independent verification isn't possible until the
+                            anchor TX is available.
+                        </p>
+                        {% endif %}
+                    </div>
+                </details>
+            </div>
+        </details>
+
+{% endblock %}
+
+{% block scripts %}
+    <script>
+    // Auto-open all <details> when printing (browser Cmd/Ctrl+P) so the
+    // printed / Save-as-PDF artifact is self-contained — Verify-
+    // independently commands stay visible. Restore the original state
+    // after print so the on-screen experience isn't affected.
+    window.addEventListener('beforeprint', () => {
+        document.querySelectorAll('details').forEach(d => {
+            d.dataset.wasOpen = d.open ? '1' : '0';
+            d.open = true;
+        });
+    });
+    window.addEventListener('afterprint', () => {
+        document.querySelectorAll('details').forEach(d => {
+            d.open = d.dataset.wasOpen === '1';
+            delete d.dataset.wasOpen;
+        });
+    });
+    </script>
+{% endblock %}

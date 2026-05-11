@@ -1,0 +1,274 @@
+{% extends "base.html" %}
+
+{% block title %}Reports — Verifiable AI{% endblock %}
+{% block max_width %}1400px{% endblock %}
+{% block nav_reports %}active{% endblock %}
+
+{% block styles %}
+        /* ── Audit headline ── the visual centerpiece. Three variants —
+              green / red / neutral — switched on the wrapper class so
+              the icon, background, and tone shift as a unit. The headline
+              uses Besley (serif) for editorial weight; the body uses the
+              demo's default sans. */
+        .audit-headline {
+            display: grid;
+            grid-template-columns: auto 1fr auto;
+            align-items: center;
+            gap: 1.5rem;
+            padding: 1.5rem 1.75rem;
+            border-radius: 10px;
+            border: 1px solid;
+            margin-bottom: 2.25rem;
+        }
+        .audit-headline-icon {
+            font-size: 2.25rem;
+            font-weight: 700;
+            line-height: 1;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .audit-headline-title {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 1.45rem;
+            letter-spacing: -0.015em;
+            margin: 0 0 0.25rem 0;
+        }
+        .audit-headline-body {
+            font-size: 0.88rem;
+            margin: 0;
+            line-height: 1.45;
+        }
+        .audit-headline-cta {
+            padding: 0.55rem 1.1rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            white-space: nowrap;
+            text-decoration: none;
+        }
+
+        .audit-headline-green {
+            background: var(--green-bg);
+            border-color: var(--green);
+            color: var(--green);
+        }
+        .audit-headline-green .audit-headline-body { color: var(--black); }
+
+        .audit-headline-red {
+            background: var(--red-bg);
+            border-color: var(--red);
+            color: var(--red);
+        }
+        .audit-headline-red .audit-headline-body { color: var(--black); }
+        .audit-headline-red .audit-headline-cta {
+            background: var(--red);
+            color: var(--white);
+        }
+        .audit-headline-red .audit-headline-cta:hover { opacity: 0.9; }
+
+        .audit-headline-neutral {
+            background: var(--lavender);
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+        .audit-headline-neutral .audit-headline-body { color: var(--black); }
+
+        /* ── Verdict badges (audit-reader copy) ──
+              Distinct from the 5-state `_status_badge` macro. The Reports
+              view collapses verified/tampered/pending into three audit-
+              reader phrases so a non-technical reader doesn't need to
+              learn the engineering vocabulary. */
+        .verdict-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.3rem 0.7rem;
+            border-radius: 999px;
+            font-size: 0.78rem;
+            font-weight: 600;
+            letter-spacing: 0.01em;
+            white-space: nowrap;
+        }
+        .verdict-badge-icon {
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+        }
+        .verdict-verified {
+            background: var(--green-bg);
+            color: var(--green);
+            border: 1px solid var(--green);
+        }
+        .verdict-issues {
+            background: var(--red-bg);
+            color: var(--red);
+            border: 1px solid var(--red);
+        }
+        .verdict-pending {
+            background: var(--white);
+            color: var(--muted);
+            border: 1px solid var(--border);
+        }
+
+        /* ── Issues anchor target ── the "View issues" CTA scrolls to
+              the first issues row. Add some breathing room above so the
+              scroll position lands cleanly above the table header. */
+        .reports-table-anchor {
+            scroll-margin-top: 90px;
+        }
+
+        /* ── Table cells ── */
+        .col-decision { min-width: 240px; }
+        .col-outcome  { width: 170px; }
+        .col-model    { width: 170px; }
+        .col-dataset  { width: 230px; }
+        .col-verdict  { width: 170px; }
+
+        .decision-cell-id {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.82rem;
+            color: var(--black);
+        }
+        .decision-cell-timestamp {
+            display: block;
+            margin-top: 0.15rem;
+            font-size: 0.74rem;
+            color: var(--muted);
+            letter-spacing: 0.01em;
+        }
+
+        @media (max-width: 768px) {
+            .audit-headline {
+                grid-template-columns: auto 1fr;
+                row-gap: 0.5rem;
+            }
+            .audit-headline-cta {
+                grid-column: 1 / -1;
+                justify-self: start;
+            }
+        }
+{% endblock %}
+
+{% block content %}
+        <div class="editorial-header">
+            <div class="editorial-header-text">
+                <span class="eyebrow">Step 6 · Report</span>
+                <h1 class="editorial-title">Reports</h1>
+                <p class="editorial-lede">
+                    Generate an audit-ready report covering the full lineage.
+                    Export proof of integrity for auditors, regulators, or
+                    stakeholders.
+                </p>
+            </div>
+            <div class="editorial-header-meta">
+                <div class="editorial-stat">
+                    <span class="editorial-stat-label">Decisions</span>
+                    <span class="editorial-stat-value tabular">{{ counts.total }}</span>
+                </div>
+            </div>
+        </div>
+
+        {% if counts.total == 0 %}
+        <div class="empty-state">
+            <div class="empty-state-title">No decisions to audit yet</div>
+            <p class="empty-state-body">
+                Use the <a href="/ui/decisions">Decisions</a> page to make a
+                prediction, then return here. Each prediction becomes a row
+                with its own audit report.
+            </p>
+        </div>
+        {% else %}
+        {% if counts.issues > 0 %}
+        <div class="audit-headline audit-headline-red">
+            <span class="audit-headline-icon">✗</span>
+            <div>
+                <h2 class="audit-headline-title">{{ counts.issues }} of {{ counts.total }} decision{{ "s" if counts.total != 1 else "" }} have audit issues</h2>
+                <p class="audit-headline-body">
+                    At least one verification check re-derived differently
+                    than what was anchored. Open the affected
+                    decision{{ "s" if counts.issues != 1 else "" }} to see
+                    what changed.
+                </p>
+            </div>
+            <a href="#issues" class="audit-headline-cta">View issues ↓</a>
+        </div>
+        {% elif counts.pending > 0 %}
+        <div class="audit-headline audit-headline-neutral">
+            <span class="audit-headline-icon">…</span>
+            <div>
+                <h2 class="audit-headline-title">
+                    {{ counts.verified }} of {{ counts.total }} verified,
+                    {{ counts.pending }} still pending
+                </h2>
+                <p class="audit-headline-body">
+                    Pending decisions haven't been re-derived against ar.io
+                    yet — typically because the ar.io attestation level is
+                    still propagating. Open each one to run the four checks.
+                </p>
+            </div>
+        </div>
+        {% else %}
+        <div class="audit-headline audit-headline-green">
+            <span class="audit-headline-icon">✓</span>
+            <div>
+                <h2 class="audit-headline-title">All {{ counts.total }} decision{{ "s" if counts.total != 1 else "" }} verified</h2>
+                <p class="audit-headline-body">
+                    Every decision's evidence has been re-derived and
+                    matches what was anchored on ar.io.
+                </p>
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="table-wrap reports-table-anchor" id="issues">
+        <table>
+            <thead>
+                <tr>
+                    <th class="col-decision">Decision</th>
+                    <th class="col-outcome">Outcome</th>
+                    <th class="col-model">Model</th>
+                    <th class="col-dataset">Dataset</th>
+                    <th class="col-verdict">Verdict</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in rows %}
+                <tr style="cursor: pointer;" onclick="window.location='/ui/reports/{{ r.decision_id }}'">
+                    <td class="col-decision">
+                        <a href="/ui/reports/{{ r.decision_id }}" style="text-decoration: none;" onclick="event.stopPropagation();">
+                            <span class="decision-cell-id">{{ r.decision_id[:18] }}…</span>
+                            <span class="decision-cell-timestamp">
+                                {{ r.timestamp[:19].replace("T", " ") if r.timestamp else "—" }}
+                            </span>
+                        </a>
+                    </td>
+                    <td class="col-outcome">{{ r.outcome }}</td>
+                    <td class="col-model">
+                        {% if r.model_name and r.model_version %}
+                        {{ r.model_name }} <span class="tabular">v{{ r.model_version }}</span>
+                        {% else %}
+                        <span style="color: var(--muted);">—</span>
+                        {% endif %}
+                    </td>
+                    <td class="col-dataset">{{ r.dataset_name }}</td>
+                    <td class="col-verdict">
+                        {% if r.verdict == 'verified' %}
+                        <span class="verdict-badge verdict-verified">
+                            <span class="verdict-badge-icon">✓</span> Verified
+                        </span>
+                        {% elif r.verdict == 'issues' %}
+                        <span class="verdict-badge verdict-issues">
+                            <span class="verdict-badge-icon">✗</span> Issues found
+                        </span>
+                        {% else %}
+                        <span class="verdict-badge verdict-pending">
+                            Pending verification
+                        </span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% endif %}
+{% endblock %}

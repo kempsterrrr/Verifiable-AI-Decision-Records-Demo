@@ -1,0 +1,25 @@
+{# Small badge surfaced next to any reference to a registered model
+   version. Tells the auditor whether the version they're looking at
+   is *still* the production model, or has been replaced.
+
+   Usage:
+     {% from "_active_badge.html" import active_badge %}
+     {{ active_badge(env.record.model_name, env.record.model_version,
+                     active_model_name, active_model_version) }}
+
+   Pass-through context: callers should already have the active model
+   name + version from _common_context (active_model_name,
+   active_model_version).
+#}
+
+{% macro active_badge(model_name, model_version, active_model_name, active_model_version) -%}
+    {% set m = (model_name or "")|string %}
+    {% set v = (model_version or "")|string %}
+    {% set am = (active_model_name or "")|string %}
+    {% set av = (active_model_version or "")|string %}
+    {% if m and v and m == am and v == av %}
+        <span class="active-badge active-badge--current" title="This version is the current active production model.">Active</span>
+    {% elif m and v and am and av and m == am and v != av %}
+        <a class="active-badge active-badge--replaced" href="/ui/models/{{ am }}/{{ av }}" title="This version is no longer the active production model. Click to view the current active version.">Replaced by v{{ av }}</a>
+    {% endif %}
+{%- endmacro %}

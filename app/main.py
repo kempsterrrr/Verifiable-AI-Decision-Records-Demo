@@ -21,13 +21,50 @@ from app.lifecycle_store import LifecycleStore
 from ario_mlflow.proof import ProofEngine, canonical_json, hash_data
 from ario_mlflow.arweave import ArweaveAnchor
 from ario_mlflow.verify import ArioVerifyClient
-from app.model import load_model, predict, train_and_register_with_params, FEATURE_NAMES
+from app.model import (
+    load_model,
+    predict,
+    train_and_register_with_params,
+    anchor_synthetic_dataset,
+    seed_default_datasets,
+    _parse_synthetic_source,
+    DEFAULT_DATASETS,
+    DEFAULT_DATASET_NAME,
+    FEATURE_NAMES,
+)
 from app.ui import router as ui_router
 from app import tamper as tamper_mod
 from app.reset import reset_demo_state
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _proof_display_json(payload: dict | None, envelope: dict | None) -> tuple[str | None, str | None]:
+    """Pretty-print the canonical payload + signed envelope for display.
+
+    Returns ``(canonical_bytes_json, signed_commitment_json)``. Either
+    can be ``None`` when the corresponding dict is missing — the always-on
+    verification panel renders only what's available.
+
+    Persisted on the lifecycle/record envelope at anchor time so the
+    panel renders without a gateway round-trip per page view. Phase E
+    swap from the older lazy-on-?verify=true fetch path.
+    """
+    import json as _json
+    canonical_bytes_json = None
+    signed_commitment_json = None
+    if payload is not None:
+        try:
+            canonical_bytes_json = _json.dumps(payload, indent=2, sort_keys=False)
+        except (TypeError, ValueError):
+            canonical_bytes_json = None
+    if envelope is not None:
+        try:
+            signed_commitment_json = _json.dumps(envelope, indent=2, sort_keys=False)
+        except (TypeError, ValueError):
+            signed_commitment_json = None
+    return canonical_bytes_json, signed_commitment_json
 
 
 def _build_training_cache_record(model_info: dict) -> dict:
@@ -89,6 +126,81 @@ def _build_training_cache_record(model_info: dict) -> dict:
     }
 
 
+def _build_standalone_dataset_envelope(anchor_result: dict) -> dict:
+    """Wrap a standalone ``ario_mlflow.anchor(dataset=ds)`` result as a
+    lifecycle_store envelope.
+
+    Same shape as the per-training-run dataset_anchored envelopes built
+    by ``_build_dataset_anchored_records``, except ``source_run_id`` is
+    ``None`` (no associated training run) and ``n_samples`` / ``seed``
+    are surfaced from the synthetic-source query string so the UI and
+    /api/train can recover the generator params without re-parsing the
+    canonical payload's source field.
+    """
+    payload = anchor_result.get("payload") or {}
+    ar = anchor_result.get("anchor_result") or {}
+    parsed = _parse_synthetic_source(payload.get("source") or "")
+    n_samples, seed = (parsed if parsed else (None, None))
+    record = {
+        "event_id": str(uuid.uuid4()),
+        "event_type": "dataset_anchored",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "name":        payload.get("name"),
+        "source":      payload.get("source"),
+        "source_type": payload.get("source_type"),
+        "digest":      payload.get("digest"),
+        "schema_hash": payload.get("schema_hash"),
+        # No run yet — this dataset was seeded or created standalone.
+        # The "Used by" table on the dataset detail page picks up
+        # training runs by digest, not by source_run_id, so this stays
+        # accurate after a training run consumes the dataset.
+        "source_run_id": None,
+        "payload_hash": anchor_result.get("payload_hash"),
+        # Synthetic generator params, surfaced so /api/train can
+        # regenerate the same train subset deterministically.
+        "n_samples": n_samples,
+        "seed": seed,
+    }
+    canonical_bytes_json, signed_commitment_json = _proof_display_json(
+        anchor_result.get("payload"),
+        anchor_result.get("envelope"),
+    )
+    return {
+        "record": record,
+        "arweave_tx_id": ar.get("tx_id"),
+        "arweave_url": ar.get("url"),
+        "turbo_receipt": ar.get("receipt"),
+        "canonical_bytes_json": canonical_bytes_json,
+        "signed_commitment_json": signed_commitment_json,
+    }
+
+
+def _find_dataset_spec_by_digest(lifecycle_store, digest: str) -> dict | None:
+    """Look up a dataset_anchored event by digest and return the
+    ``{"name", "n_samples", "seed"}`` spec needed by
+    ``train_and_register_with_params``. Returns ``None`` if no event
+    matches or its source string doesn't carry synthetic params.
+    """
+    for env in lifecycle_store.list_all():
+        rec = env.get("record") or {}
+        if rec.get("event_type") != "dataset_anchored":
+            continue
+        if rec.get("digest") != digest:
+            continue
+        # Prefer the explicit n_samples/seed columns when the standalone
+        # envelope wrote them; fall back to re-parsing source for older
+        # per-run dataset_anchored entries.
+        n = rec.get("n_samples")
+        s = rec.get("seed")
+        if n is None or s is None:
+            parsed = _parse_synthetic_source(rec.get("source") or "")
+            if not parsed:
+                return None
+            n, s = parsed
+        return {"name": rec.get("name"), "n_samples": int(n), "seed": int(s)}
+    return None
+
+
 def _build_dataset_anchored_records(model_info: dict) -> list[dict]:
     """Build one lifecycle_store envelope per auto-anchored dataset.
 
@@ -116,11 +228,23 @@ def _build_dataset_anchored_records(model_info: dict) -> list[dict]:
             "source_run_id": model_info["run_id"],
             "payload_hash": da.get("payload_hash"),
         }
+        # Phase E: persist display JSON for the always-on verification
+        # panel. Dataset events have NO MLflow artifact for the canonical
+        # bytes (the plugin's _anchor_dataset_event signs and uploads
+        # only — no log_artifact), so eager persist here is the *only*
+        # way to render the canonical bytes side without a fresh
+        # Arweave fetch on every detail-page render.
+        canonical_bytes_json, signed_commitment_json = _proof_display_json(
+            da.get("payload"),
+            da.get("envelope"),
+        )
         out.append({
             "record": record,
             "arweave_tx_id": anchor_result.get("tx_id"),
             "arweave_url": anchor_result.get("url"),
             "turbo_receipt": anchor_result.get("receipt"),
+            "canonical_bytes_json": canonical_bytes_json,
+            "signed_commitment_json": signed_commitment_json,
         })
     return out
 
@@ -177,11 +301,20 @@ def _startup_anchor_lifecycle(settings, model_info, lifecycle_store):
     # arweave fields stamped from plugin's anchor result.
     if not lifecycle_store.get_by_run_id(run_id):
         record = _build_training_cache_record(model_info)
+        canonical_bytes_json, signed_commitment_json = _proof_display_json(
+            model_info.get("training_payload"),
+            model_info.get("training_envelope"),
+        )
         envelope = {
             "record": record,
             "arweave_tx_id": training_anchor.get("tx_id"),
             "arweave_url": training_anchor.get("url"),
             "turbo_receipt": training_anchor.get("receipt"),
+            # Phase E: persist display JSON so the always-on verification
+            # panel renders the canonical bytes ↔ signed commitment
+            # without a gateway round-trip per page view.
+            "canonical_bytes_json": canonical_bytes_json,
+            "signed_commitment_json": signed_commitment_json,
         }
         lifecycle_store.append(envelope)
         logger.info(
@@ -234,6 +367,32 @@ def _startup_anchor_lifecycle(settings, model_info, lifecycle_store):
             ).start()
 
 
+def _ensure_default_datasets_seeded(lifecycle_store, proof_engine, arweave) -> int:
+    """Idempotently anchor DEFAULT_DATASETS standalone into the
+    lifecycle_store.
+
+    Skipped when any DEFAULT_DATASETS name already has a dataset_anchored
+    entry — defaults seed as a unit, so a partial pre-existing set
+    (e.g. one was deleted) won't trigger a re-seed. Returns the number
+    of new entries written.
+    """
+    existing_names = {
+        (env.get("record") or {}).get("name")
+        for env in lifecycle_store.list_all()
+        if (env.get("record") or {}).get("event_type") == "dataset_anchored"
+    }
+    if any(spec["name"] in existing_names for spec in DEFAULT_DATASETS):
+        return 0
+    results = seed_default_datasets(proof_engine=proof_engine, arweave=arweave)
+    for result in results:
+        lifecycle_store.append(_build_standalone_dataset_envelope(result))
+    if results:
+        logger.info(
+            f"Seeded {len(results)} default datasets into lifecycle_store."
+        )
+    return len(results)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -269,6 +428,16 @@ async def lifespan(app: FastAPI):
         else None
     )
     app.state.anchor = ArweaveAnchor(arweave_wallet, settings.ario_gateway_host)
+
+    # Seed default datasets standalone before load_model. On first boot
+    # this populates the Datasets list before any training run exists;
+    # idempotent on subsequent boots. Each default gets its own
+    # signed proof + Arweave TX with no associated source_run_id.
+    _ensure_default_datasets_seeded(
+        app.state.lifecycle_store,
+        app.state.proof_engine,
+        app.state.anchor,
+    )
 
     # MLflow model — load_model now returns a VerifiedModel alongside
     # the raw sklearn estimator. The sklearn one is used for the UI's
@@ -309,13 +478,18 @@ tracer = trace.get_tracer(__name__)
 app.include_router(ui_router)
 
 
-def _hydrate_record_envelope_from_verified_prediction(store, decision_id: str, verified_result):
+def _hydrate_record_envelope_from_verified_prediction(store, decision_id: str, verified_result, tracking_uri: str | None = None):
     """Background task: wait for VerifiedModel's anchor daemon to settle,
     then hydrate the demo's RecordStore envelope with the real Arweave
     TX. Phase 2.B replaces the legacy ``_anchor_record`` background
     task — VerifiedModel handles the upload itself; this just bridges
     the result back into the demo's UI store. Phase 2.D refactors
     RecordStore into a thin UI cache so this bridge goes away.
+
+    Phase E: also downloads ``ario/predictions/<id>/proof.json`` from
+    MLflow once the daemon has written it, so the always-on
+    verification panel can render the signed commitment without a
+    per-page-render gateway fetch.
     """
     try:
         finished = verified_result.wait_for_anchor(timeout=60.0)
@@ -338,6 +512,38 @@ def _hydrate_record_envelope_from_verified_prediction(store, decision_id: str, v
         )
         # Turbo receipt isn't directly accessible from VerifiedPrediction;
         # leave as None. UI doesn't strictly require it.
+
+        # Phase E: pull the signed envelope from MLflow now that the
+        # plugin's anchor daemon has finished writing the proof
+        # artifact. Best-effort — a failure here just leaves
+        # signed_commitment_json missing; canonical bytes (set
+        # synchronously when the envelope was created) still render.
+        if tracking_uri and not envelope.get("signed_commitment_json"):
+            try:
+                import json as _json
+                import tempfile as _tempfile
+                import mlflow as _mlflow
+                from mlflow.tracking import MlflowClient as _MlflowClient
+                _mlflow.set_tracking_uri(tracking_uri)
+                client = _MlflowClient()
+                run_id = (envelope.get("record") or {}).get("mlflow_run_id")
+                if run_id:
+                    with _tempfile.TemporaryDirectory() as tmp:
+                        proof_path = client.download_artifacts(
+                            run_id,
+                            f"ario/predictions/{decision_id}/proof.json",
+                            tmp,
+                        )
+                        with open(proof_path) as f:
+                            envelope_dict = _json.load(f)
+                        _, sc_json = _proof_display_json(None, envelope_dict)
+                        envelope["signed_commitment_json"] = sc_json
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    f"Could not load prediction signed envelope for "
+                    f"decision {decision_id}: {e}"
+                )
+
         store.update(decision_id, envelope)
         logger.info(
             f"Hydrated RecordStore envelope for decision {decision_id}: "
@@ -421,6 +627,14 @@ def _run_prediction(app_state, features: list[float]) -> tuple[dict, object]:
             "human_override": False,
         }
 
+        # Phase E: pretty-print the canonical payload immediately —
+        # ``verified_result.record`` is the dict the plugin signed.
+        # signed_commitment_json gets backfilled by the hydration
+        # background task once the plugin's anchor daemon writes the
+        # proof artifact to MLflow.
+        canonical_bytes_json, _ = _proof_display_json(
+            getattr(verified_result, "record", None), None,
+        )
         envelope = {
             "record": record,
             # arweave_tx_id starts None and gets hydrated by the
@@ -429,6 +643,8 @@ def _run_prediction(app_state, features: list[float]) -> tuple[dict, object]:
             "arweave_tx_id": None,
             "arweave_url": None,
             "turbo_receipt": None,
+            "canonical_bytes_json": canonical_bytes_json,
+            "signed_commitment_json": None,
         }
 
         app_state.store.append(envelope)
@@ -462,6 +678,7 @@ def api_predict(request: Request, body: dict, background_tasks: BackgroundTasks)
         request.app.state.store,
         decision_id,
         verified_result,
+        request.app.state.settings.mlflow_tracking_uri,
     )
     return envelope
 
@@ -493,21 +710,89 @@ def form_predict(
         request.app.state.store,
         decision_id,
         verified_result,
+        request.app.state.settings.mlflow_tracking_uri,
     )
     return RedirectResponse(f"/ui/decisions/{decision_id}", status_code=303)
 
 
+@app.post("/api/datasets")
+def api_create_dataset(request: Request, body: dict):
+    """Create + anchor a new synthetic dataset standalone (no training run).
+
+    Accepts ``{name, n_samples, random_state}``. Generates the
+    deterministic train subset, wraps it as an MLflow Dataset, anchors
+    it via ``ario_mlflow.anchor(dataset=ds)``, and writes a
+    ``dataset_anchored`` lifecycle_store envelope. Returns the dataset's
+    digest plus its detail-page URL so the UI can redirect.
+    """
+    name = (body.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    try:
+        n_samples = int(body.get("n_samples"))
+        seed = int(body.get("random_state"))
+    except (TypeError, ValueError):
+        return JSONResponse(
+            {"error": "n_samples and random_state must be integers"},
+            status_code=400,
+        )
+    if n_samples < 50 or n_samples > 50000:
+        return JSONResponse(
+            {"error": "n_samples must be between 50 and 50000"},
+            status_code=400,
+        )
+
+    anchor_result = anchor_synthetic_dataset(
+        name, n_samples, seed,
+        proof_engine=request.app.state.proof_engine,
+        arweave=request.app.state.anchor,
+    )
+    envelope = _build_standalone_dataset_envelope(anchor_result)
+    request.app.state.lifecycle_store.append(envelope)
+    digest = envelope["record"]["digest"]
+    return {
+        "dataset_id": digest,
+        "name": name,
+        "n_samples": n_samples,
+        "random_state": seed,
+        "arweave_tx_id": envelope.get("arweave_tx_id"),
+        "redirect_url": f"/ui/datasets/{digest}",
+    }
+
+
 @app.post("/api/train")
 def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
-    """Train a new model version. Phase 2.A: anchoring is handled by
-    the plugin's headline API (anchor() + ArioMlflowClient) — no longer
-    by the demo's hand-rolled proof + background-upload pipeline.
+    """Train a new model version against a chosen dataset.
 
-    The lifecycle_store is still populated for UI display compatibility;
-    Phase 2.D refactors it into a UI-only cache populated from MLflow tags.
+    Phase 2.A: anchoring is handled by the plugin's headline API
+    (anchor() + ArioMlflowClient) — no longer by the demo's hand-rolled
+    proof + background-upload pipeline.
+
+    Now requires ``dataset_id`` (a dataset's content digest) in the
+    body. The dataset must already exist in the lifecycle_store —
+    either seeded at boot, created via ``POST /api/datasets``, or
+    auto-anchored by a previous training run. The route looks up the
+    dataset's synthetic-generator params from the store and threads
+    them through ``train_and_register_with_params`` as a
+    ``dataset_spec``, so the training run's regenerated train subset
+    has the same digest as the one anchored on Arweave.
     """
     import random
     settings = request.app.state.settings
+
+    dataset_id = (body.get("dataset_id") or "").strip()
+    if not dataset_id:
+        return JSONResponse(
+            {"error": "dataset_id is required"}, status_code=400,
+        )
+    dataset_spec = _find_dataset_spec_by_digest(
+        request.app.state.lifecycle_store, dataset_id,
+    )
+    if dataset_spec is None:
+        return JSONResponse(
+            {"error": f"unknown dataset_id {dataset_id!r}"}, status_code=404,
+        )
+
     max_iter = int(body.get("max_iter", 200))
     random_state = int(body.get("random_state", random.randint(1, 10000)))
 
@@ -522,6 +807,7 @@ def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
         arweave=request.app.state.anchor,
         max_iter=max_iter,
         random_state=random_state,
+        dataset_spec=dataset_spec,
     )
 
     # Populate lifecycle_store cache entries from the plugin's anchor
@@ -529,11 +815,17 @@ def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
     # already uploaded the real training+registration proofs.
     plugin_anchor = info.get("training_anchor_result") or {}
     training_record = _build_training_cache_record(info)
+    canonical_bytes_json, signed_commitment_json = _proof_display_json(
+        info.get("training_payload"),
+        info.get("training_envelope"),
+    )
     training_envelope = {
         "record": training_record,
         "arweave_tx_id": plugin_anchor.get("tx_id"),
         "arweave_url": plugin_anchor.get("url"),
         "turbo_receipt": plugin_anchor.get("receipt"),
+        "canonical_bytes_json": canonical_bytes_json,
+        "signed_commitment_json": signed_commitment_json,
     }
     request.app.state.lifecycle_store.append(training_envelope)
 
@@ -576,8 +868,16 @@ def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
             registration_record["event_id"],
         )
 
-    # Auto-switch to the newly trained model
-    new_model_info = load_model(settings.mlflow_tracking_uri, settings.mlflow_model_name)
+    # Auto-switch to the newly trained model. Pass proof_engine + arweave so
+    # the newly-active VerifiedModel can anchor predictions; without these the
+    # post-train model would silently lose inference-time anchoring until the
+    # next process boot.
+    new_model_info = load_model(
+        settings.mlflow_tracking_uri,
+        settings.mlflow_model_name,
+        proof_engine=request.app.state.proof_engine,
+        arweave=request.app.state.anchor,
+    )
     request.app.state.model_info = new_model_info
     logger.info(f"Switched active model to v{info['model_version']}")
 
@@ -628,6 +928,43 @@ def _hydrate_registration_envelope_from_plugin(
         envelope["arweave_url"] = arweave_url
         # Turbo receipt isn't accessible from the model version tags
         # directly; leave as None. UI doesn't strictly require it.
+
+        # Phase E: also pull the registration's canonical bytes + signed
+        # envelope from MLflow artifacts so the always-on verification
+        # panel renders without a per-page-render fetch. The plugin
+        # writes both files alongside model registration in
+        # ario_mlflow/client.py:391-403. Best-effort: a transient MLflow
+        # outage just leaves the JSON missing; the panel falls back to
+        # a placeholder.
+        try:
+            import json as _json
+            import tempfile as _tempfile
+            source_run_id = (envelope.get("record") or {}).get("source_run_id")
+            if source_run_id:
+                # ArioMlflowClient extends MlflowClient — download_artifacts
+                # is inherited. Files are written by the plugin at
+                # ario_mlflow/client.py:391-403 alongside the registration
+                # anchor.
+                with _tempfile.TemporaryDirectory() as tmp:
+                    payload_path = ario_client.download_artifacts(
+                        source_run_id, "ario/registration_payload.json", tmp,
+                    )
+                    proof_path = ario_client.download_artifacts(
+                        source_run_id, "ario/registration_proof.json", tmp,
+                    )
+                    with open(payload_path, "rb") as f:
+                        payload_dict = _json.loads(f.read())
+                    with open(proof_path) as f:
+                        envelope_dict = _json.load(f)
+                cb_json, sc_json = _proof_display_json(payload_dict, envelope_dict)
+                envelope["canonical_bytes_json"] = cb_json
+                envelope["signed_commitment_json"] = sc_json
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"Could not load registration display JSON for "
+                f"{model_name}/v{model_version}: {e}"
+            )
+
         lifecycle_store.update(event_id, envelope)
         logger.info(
             f"Hydrated lifecycle_store registration envelope for "

@@ -1,12 +1,14 @@
 {% extends "base.html" %}
+{% from "_status_badge.html" import status_badge %}
 
-{% block title %}Models — Verifiable AI{% endblock %}
+{% block title %}Training Runs — Verifiable AI{% endblock %}
 {% block max_width %}1400px{% endblock %}
-{% block nav_models %}active{% endblock %}
-{% block lineage_url %}/ui/models/{{ model_name }}/{{ active_version }}{% endblock %}
+{% block nav_runs %}active{% endblock %}
 
 {% block styles %}
-        /* ── Hero train section ── */
+        /* ── Train hero (moved from model_registry.html — runs are the
+              entity a training event produces, so the form belongs
+              colocated with them) ── */
         .train-hero {
             padding: 1.5rem;
             background: var(--lavender);
@@ -37,7 +39,6 @@
             white-space: nowrap;
         }
 
-        /* ── Training panel (expands below hero) ── */
         .train-panel {
             margin-top: 1.25rem;
             padding-top: 1.25rem;
@@ -59,7 +60,8 @@
             text-transform: uppercase;
             letter-spacing: 0.04em;
         }
-        .train-form input {
+        .train-form input,
+        .train-form select {
             background: var(--white);
             border: 1px solid var(--primary);
             color: var(--black);
@@ -69,12 +71,22 @@
             font-family: 'Plus Jakarta Sans', sans-serif;
             font-size: 0.85rem;
         }
-        .train-form input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px rgba(84, 39, 200, 0.2); }
-
-        .train-progress {
-            margin-top: 1.25rem;
-            display: none;
+        .train-form input:focus,
+        .train-form select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px rgba(84, 39, 200, 0.2); }
+        /* Dataset selector is wider — name + sample count hint reads
+           awkwardly truncated at the input's 120px default. */
+        .train-form .form-group-wide select { width: 280px; }
+        .train-form .form-group-wide { flex: 1 1 280px; }
+        /* Empty-state hint when no datasets exist (rare — lifespan seeds
+           defaults on first boot; only shows up if seeding fails). */
+        .train-hero-empty-datasets {
+            margin-top: 0.75rem;
+            font-size: 0.82rem;
+            color: var(--red);
         }
+        .train-hero-empty-datasets a { color: var(--red); text-decoration: underline; }
+
+        .train-progress { margin-top: 1.25rem; display: none; }
         .train-progress.active { display: block; }
         .train-step {
             display: flex;
@@ -97,14 +109,8 @@
             font-size: 0.65rem;
             flex-shrink: 0;
         }
-        .train-step.done .step-icon {
-            border-color: var(--green);
-            background: var(--green-bg);
-            color: var(--green);
-        }
-        .train-step.active-step .step-icon {
-            border-color: var(--primary);
-        }
+        .train-step.done .step-icon { border-color: var(--green); background: var(--green-bg); color: var(--green); }
+        .train-step.active-step .step-icon { border-color: var(--primary); }
         @keyframes spin { to { transform: rotate(360deg); } }
         .spinner {
             width: 14px;
@@ -114,7 +120,6 @@
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
         }
-
         .train-result {
             margin-top: 1rem;
             padding: 0.75rem 1rem;
@@ -127,73 +132,65 @@
         }
         .train-result.show { display: block; }
 
-        /* ── Context banner ── */
-        .context-banner {
-            padding: 1.25rem 1.5rem;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            margin-bottom: 2rem;
-        }
-        .context-banner h2 {
-            font-family: 'Besley', serif;
-            font-weight: 800;
-            font-size: 1.1rem;
-            color: var(--black);
-            margin-bottom: 0.5rem;
-        }
-        .context-banner p {
-            font-size: 0.85rem;
-            color: var(--muted);
-            line-height: 1.6;
-            margin-bottom: 0.75rem;
-        }
-        .context-banner p:last-of-type { margin-bottom: 0; }
-        .context-banner .context-cta {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.35rem;
-            margin-top: 0.75rem;
-            font-size: 0.8rem;
-            font-weight: 600;
-            color: var(--primary);
-            text-decoration: none;
-        }
-        .context-banner .context-cta:hover { text-decoration: underline; }
-
         @media (max-width: 768px) {
             .train-hero-top { flex-direction: column; align-items: flex-start; }
             .train-form { flex-direction: column; }
-            .train-form input { width: 100%; }
+            .train-form input,
+            .train-form select { width: 100%; }
         }
+
+        .col-run { width: 220px; }
+        .col-model { width: 200px; }
+        .col-acc { width: 110px; }
+        .col-datasets { width: 110px; }
+        .col-anchor { width: 130px; }
+        .col-status { width: 170px; }
+        .col-actions { width: 150px; }
 {% endblock %}
 
 {% block content %}
-        <div class="page-header">
-            <div>
-                <h1>Models</h1>
-                <p>{{ model_name }} — {{ versions|length }} version{{ 's' if versions|length != 1 }}</p>
+        <div class="editorial-header">
+            <div class="editorial-header-text">
+                <span class="eyebrow">Step 2 · Training</span>
+                <h1 class="editorial-title">Training Runs</h1>
+                <p class="editorial-lede">
+                    Record how the model was trained, including parameters and
+                    outputs. Make the full training process independently
+                    verifiable.
+                </p>
+            </div>
+            <div class="editorial-header-meta">
+                <div class="editorial-stat">
+                    <span class="editorial-stat-label">Runs</span>
+                    <span class="editorial-stat-value tabular">{{ runs|length }}</span>
+                </div>
             </div>
         </div>
 
-        <!-- Context Banner -->
-        <div class="context-banner">
-            <h2>How would you prove, 18 months from now, which model made a specific decision?</h2>
-            <p>Train a model below, make a prediction, then try to break the verifiable record — either by tampering with MLflow data directly, or by imagining the runs get deleted, models get silently retrained, or institutional memory is lost. Because every proof is anchored to ar.io, a third party can verify what actually happened without trusting this app or any records it stores locally.</p>
-            <a href="https://github.com/kempsterrrr/Verifiable-AI-Decision-Records-Demo/blob/main/ario_mlflow/README.md" target="_blank" rel="noopener" class="context-cta">Read the plugin README &rarr;</a>
-        </div>
-
-        <!-- Hero Training Section -->
-        <div class="train-hero">
+        <!-- Train hero -->
+        <div id="train" class="train-hero">
             <div class="train-hero-top">
                 <div class="train-hero-text">
-                    <h2>Train a New Model</h2>
+                    <h2>Train a new model</h2>
                     <p>Train, register, and anchor provenance to ar.io</p>
                 </div>
                 <button class="btn btn-primary btn-train" onclick="document.getElementById('train-panel').classList.toggle('open')">Train &amp; Anchor</button>
             </div>
 
             <div class="train-panel" id="train-panel">
+                {% if available_datasets %}
                 <div class="train-form" id="train-form">
+                    <div class="form-group form-group-wide">
+                        <label>Dataset</label>
+                        <select id="train-dataset-id">
+                            {% for d in available_datasets %}
+                            <option value="{{ d.digest }}"
+                                {% if d.digest == preselected_dataset_id %}selected{% endif %}>
+                                {{ d.name }}{% if d.n_samples %} — {{ d.n_samples }} samples{% endif %}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
                     <div class="form-group">
                         <label>Max Iterations</label>
                         <input type="number" id="train-max-iter" value="200" min="50" max="1000">
@@ -204,6 +201,11 @@
                     </div>
                     <button class="btn btn-primary" id="train-btn" onclick="startTraining()">Start Training</button>
                 </div>
+                {% else %}
+                <div class="train-hero-empty-datasets">
+                    No datasets available. <a href="/ui/datasets">Create one on the Datasets page</a> before training.
+                </div>
+                {% endif %}
 
                 <div class="train-progress" id="train-progress">
                     <div class="train-step" id="step-train"><span class="step-icon"></span> Training model...</div>
@@ -216,68 +218,63 @@
             </div>
         </div>
 
-        <!-- Versions Table -->
-        {% if versions %}
+        <!-- Runs table -->
+        {% if runs %}
         <div class="table-wrap">
         <table>
             <thead>
                 <tr>
-                    <th>Version</th>
-                    <th>Run ID</th>
-                    <th>Accuracy</th>
-                    <th>Training</th>
-                    <th>Registration</th>
-                    <th>Created</th>
-                    <th>Actions</th>
+                    <th class="col-run">Run</th>
+                    <th class="col-model">Model produced</th>
+                    <th class="col-acc">Accuracy</th>
+                    <th class="col-datasets">Datasets</th>
+                    <th>Started</th>
+                    <th class="col-anchor">Anchor</th>
+                    <th class="col-status">Status</th>
+                    <th class="col-actions">Actions</th>
                 </tr>
             </thead>
             <tbody>
-                {% for v in versions %}
-                <tr>
-                    <td>
-                        v{{ v.version }}
-                        {% if v.is_active %}
-                            <span class="badge badge-primary" style="margin-left: 0.3rem;">Active</span>
-                        {% endif %}
+                {% for r in runs %}
+                <tr style="cursor: pointer;" onclick="window.location='/ui/runs/{{ r.run_id }}'">
+                    <td class="col-run">
+                        <a class="mono" href="/ui/runs/{{ r.run_id }}" style="white-space: nowrap;" title="{{ r.run_id }}">
+                            {{ r.run_id[:18] }}…
+                        </a>
                     </td>
-                    <td>
-                        {% if v.run_id %}
-                            <a class="mono" href="/ui/runs/{{ v.run_id }}" style="text-decoration: none; white-space: nowrap;" title="{{ v.run_id }}">{{ v.run_id[:12] }}…</a>
+                    <td class="col-model">
+                        {% if r.model_name and r.model_version %}
+                        <a href="/ui/models/{{ r.model_name }}/{{ r.model_version }}" onclick="event.stopPropagation();" style="font-weight: 600;">
+                            {{ r.model_name }} <span class="tabular">v{{ r.model_version }}</span>
+                        </a>
                         {% else %}
-                            <span style="color: var(--muted);">—</span>
+                        <span style="color: var(--muted);">—</span>
                         {% endif %}
                     </td>
-                    <td>{% if v.accuracy is not none %}{{ "%.4f"|format(v.accuracy) }}{% else %}—{% endif %}</td>
-                    <td>
-                        {% if v.training_status == 'verified' %}
-                            <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
-                        {% elif v.training_status == 'anchored' %}
-                            <span class="badge badge-yellow"><span class="badge-dot"></span> Pending verification</span>
-                        {% elif v.training_status == 'local' %}
-                            <span class="badge badge-gray"><span class="badge-dot"></span> Not anchored</span>
+                    <td class="col-acc tabular">
+                        {% if r.accuracy is not none %}{{ "%.4f"|format(r.accuracy) }}{% else %}—{% endif %}
+                    </td>
+                    <td class="col-datasets tabular">
+                        {{ r.dataset_count }}
+                    </td>
+                    <td style="font-size: 0.78rem; color: var(--muted); white-space: nowrap;">
+                        {{ r.timestamp[:19].replace("T", " ") if r.timestamp else "—" }}
+                    </td>
+                    <td class="col-anchor">
+                        {% if r.arweave_tx_id %}
+                        <a class="mono mono-sm" href="{{ r.arweave_url }}" target="_blank" rel="noopener" onclick="event.stopPropagation();">
+                            {{ r.arweave_tx_id[:8] }}…
+                        </a>
                         {% else %}
-                            <span class="badge badge-gray">—</span>
+                        <span style="color: var(--muted);">—</span>
                         {% endif %}
                     </td>
-                    <td>
-                        {% if v.registration_status == 'verified' %}
-                            <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
-                        {% elif v.registration_status == 'anchored' %}
-                            <span class="badge badge-yellow"><span class="badge-dot"></span> Pending verification</span>
-                        {% elif v.registration_status == 'local' %}
-                            <span class="badge badge-gray"><span class="badge-dot"></span> Not anchored</span>
-                        {% else %}
-                            <span class="badge badge-gray">—</span>
-                        {% endif %}
-                    </td>
-                    <td style="white-space: nowrap;">{{ v.created }}</td>
-                    <td>
+                    <td class="col-status">{{ status_badge(r.status) }}</td>
+                    <td class="col-actions">
                         <div class="actions">
-                            <a href="/ui/models/{{ model_name }}/{{ v.version }}" class="btn btn-outline btn-sm">View Chain</a>
-                            {% if not v.is_active %}
-                            <form action="/api/activate/{{ model_name }}/{{ v.version }}" method="POST" style="display:inline;">
-                                <button type="submit" class="btn btn-sm" style="background: var(--lavender); color: var(--primary); border: none;" data-loading-text="Activating...">Activate</button>
-                            </form>
+                            <a href="/ui/runs/{{ r.run_id }}" class="btn btn-outline btn-sm" onclick="event.stopPropagation();">View</a>
+                            {% if r.arweave_tx_id %}
+                            <a href="/ui/runs/{{ r.run_id }}?verify=true" class="btn btn-primary btn-sm" data-loading-text="Verifying..." onclick="event.stopPropagation();">Verify</a>
                             {% endif %}
                         </div>
                     </td>
@@ -287,8 +284,13 @@
         </table>
         </div>
         {% else %}
-        <div style="text-align: center; padding: 4rem 2rem; color: var(--muted);">
-            <p>No model versions registered yet. Train a model to get started.</p>
+        <div class="empty-state">
+            <div class="empty-state-title">No training runs yet</div>
+            <p class="empty-state-body">
+                Use the Train &amp; Anchor button above to create the first run.
+                Each run will appear here with its produced model, dataset
+                count, and anchor status.
+            </p>
         </div>
         {% endif %}
 {% endblock %}
@@ -296,11 +298,21 @@
 {% block scripts %}
     <script>
     function startTraining() {
+        const datasetEl = document.getElementById('train-dataset-id');
         const maxIter = document.getElementById('train-max-iter').value || 200;
         const randomState = document.getElementById('train-random-state').value;
         const btn = document.getElementById('train-btn');
         const progress = document.getElementById('train-progress');
         const result = document.getElementById('train-result');
+
+        if (!datasetEl || !datasetEl.value) {
+            result.textContent = 'Pick a dataset before training.';
+            result.style.background = 'var(--red-bg)';
+            result.style.color = 'var(--red)';
+            result.style.borderColor = 'var(--red)';
+            result.classList.add('show');
+            return;
+        }
 
         btn.disabled = true;
         btn.textContent = 'Training...';
@@ -308,10 +320,9 @@
         progress.classList.add('active');
         result.classList.remove('show');
 
-        // Step 1+2: Train and register (one API call)
         setStepActive('step-train');
 
-        const body = { max_iter: parseInt(maxIter) };
+        const body = { dataset_id: datasetEl.value, max_iter: parseInt(maxIter) };
         if (randomState) body.random_state = parseInt(randomState);
 
         fetch('/api/train', {
@@ -319,31 +330,42 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         })
-        .then(r => r.json())
+        .then(r => {
+            // Surface 400/404 with the server's error message instead of
+            // proceeding into the happy-path step-progress flow.
+            if (!r.ok) {
+                return r.json().then(d => {
+                    throw new Error(d.error || ('HTTP ' + r.status));
+                });
+            }
+            return r.json();
+        })
         .then(data => {
             setStepDone('step-train');
             setStepDone('step-register');
 
-            // Step 3: Poll for training anchor
             setStepActive('step-anchor-train');
             return pollAnchor(data.training_event_id, 'step-anchor-train').then(() => {
-                // Step 4: Poll for registration anchor
                 setStepActive('step-anchor-reg');
                 return pollAnchor(data.registration_event_id, 'step-anchor-reg');
             }).then(() => {
-                result.innerHTML = 'Model v' + data.model_version + ' trained (accuracy: ' + data.accuracy.toFixed(4) + ') and anchored to ar.io. Redirecting to model lineage...';
+                result.textContent = 'Model v' + data.model_version + ' trained (accuracy: ' + data.accuracy.toFixed(4) + ') and anchored to ar.io. Redirecting to run detail...';
                 result.classList.add('show');
                 btn.textContent = 'Start Training';
                 btn.disabled = false;
                 btn.style.opacity = '1';
-                // Redirect to model lineage page
                 setTimeout(() => {
-                    window.location.href = '/ui/models/' + data.model_name + '/' + data.model_version;
+                    window.location.href = '/ui/runs/' + data.run_id;
                 }, 2000);
             });
         })
         .catch(err => {
-            result.innerHTML = 'Training failed: ' + err.message;
+            // Clear the loading state — without this the spinner panel
+            // stays active even after a failed POST.
+            progress.classList.remove('active');
+            // textContent (not innerHTML) — the server's `error` field
+            // could contain markup.
+            result.textContent = 'Training failed: ' + err.message;
             result.style.background = 'var(--red-bg)';
             result.style.color = 'var(--red)';
             result.style.borderColor = 'var(--red)';
@@ -353,6 +375,18 @@
             btn.style.opacity = '1';
         });
     }
+
+    // Auto-open the train panel when arriving via ?dataset=<digest>#train
+    // (the "Train a model with this dataset" CTA on dataset detail pages
+    // links here). Without this the user lands on the page with the form
+    // collapsed and has to click again.
+    (function autoOpenPanelOnDeepLink() {
+        const params = new URLSearchParams(window.location.search);
+        if (params.has('dataset') || window.location.hash === '#train') {
+            const panel = document.getElementById('train-panel');
+            if (panel) panel.classList.add('open');
+        }
+    })();
 
     function setStepActive(id) {
         const el = document.getElementById(id);

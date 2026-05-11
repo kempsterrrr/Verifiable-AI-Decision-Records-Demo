@@ -1,0 +1,29 @@
+{# Q&A section — Reports detail page.
+
+   Renders one of the three plain-language questions ("Which model?",
+   "What data?", "Has anything changed?") as a question header + body
+   block + optional editorial pull-quote ("This model's identity is
+   anchored to ar.io — it cannot be silently swapped.").
+
+   The macro is intentionally minimal — the caller fills the body via
+   the ``caller()`` block so each Q&A can use the right structure
+   (definition list for model / dataset facts; ordered list of
+   sentences for the four checks).
+
+   Args:
+     question     : full sentence ending in "?"
+     pull_quote   : optional editorial note rendered as a styled aside.
+                    Plain-text; the design system handles emphasis.
+#}
+
+{% macro qa_section(question, pull_quote=None) %}
+<section class="qa-section">
+    <h2 class="qa-question">{{ question }}</h2>
+    <div class="qa-body">
+        {{ caller() }}
+    </div>
+    {% if pull_quote %}
+    <p class="qa-pull-quote">{{ pull_quote }}</p>
+    {% endif %}
+</section>
+{% endmacro %}

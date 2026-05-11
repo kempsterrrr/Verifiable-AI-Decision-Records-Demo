@@ -1,0 +1,49 @@
+{# Verdict banner — Reports detail page.
+
+   Three variants on one shape: verified (green), issues (red),
+   pending (neutral lavender). The macro takes the verdict slug
+   plus a few context fields and renders the full headline +
+   sub-line.
+
+   Args:
+     verdict        : "verified" | "issues" | "pending"
+     verified_at    : ISO timestamp of the cached verify pass (any state)
+     signer_key     : hex public key string (truncated in display)
+     failing_line   : plain-language sentence describing the failing
+                      check; only read when verdict == "issues"
+     decision_id    : used to build the "verify again" CTA link
+#}
+
+{% macro verdict_banner(verdict, verified_at, signer_key, failing_line, decision_id) %}
+<div class="verdict-banner verdict-banner-{{ verdict }}">
+    <div class="verdict-banner-icon">
+        {% if verdict == 'verified' %}✓{% elif verdict == 'issues' %}✗{% else %}…{% endif %}
+    </div>
+    <div class="verdict-banner-text">
+        {% if verdict == 'verified' %}
+        <h2 class="verdict-banner-title">Verified — this decision's full chain of evidence is intact.</h2>
+        <p class="verdict-banner-subline">
+            {% if verified_at %}Last verified {{ verified_at[:19].replace("T", " ") }} UTC.{% endif %}
+            {% if signer_key %}Signed by recognized key <span class="mono">{{ signer_key[:8] }}…</span>{% endif %}
+        </p>
+        {% elif verdict == 'issues' %}
+        <h2 class="verdict-banner-title">Issues found — one or more checks failed.</h2>
+        <p class="verdict-banner-subline">
+            {% if failing_line %}{{ failing_line }}{% else %}A verification check returned a negative result. See details below.{% endif %}
+        </p>
+        {% else %}
+        <h2 class="verdict-banner-title">Pending — verification hasn't completed yet.</h2>
+        <p class="verdict-banner-subline">
+            Either the proof's ar.io attestation is still propagating, or this decision
+            hasn't been re-verified since it was anchored. Run the four checks now to
+            update this report.
+        </p>
+        {% endif %}
+    </div>
+    {% if verdict != 'verified' %}
+    <a href="/ui/reports/{{ decision_id }}?verify=true" class="verdict-banner-cta" data-loading-text="Verifying...">
+        {% if verdict == 'issues' %}Re-verify{% else %}Run checks{% endif %}
+    </a>
+    {% endif %}
+</div>
+{% endmacro %}

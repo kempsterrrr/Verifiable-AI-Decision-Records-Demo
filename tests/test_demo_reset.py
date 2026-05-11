@@ -30,6 +30,10 @@ def _reload_app(monkeypatch, tmp_path, demo_mode: bool):
     monkeypatch.setenv("VAIDR_MLFLOW_TRACKING_URI", str(tmp_path / "mlruns"))
     # Disable Arweave so anchoring doesn't try to hit the network.
     monkeypatch.setenv("VAIDR_ARWEAVE_WALLET_PATH", "")
+    # 60s default sleep in `_scheduled_revert` blocks TestClient on
+    # /tamper/* routes for the full TTL; tests here don't assert on
+    # the revert timing, so a near-instant revert is fine.
+    monkeypatch.setenv("VAIDR_TAMPER_TTL_SECONDS", "0")
 
     from app.config import get_settings
     get_settings.cache_clear()

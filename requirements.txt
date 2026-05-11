@@ -2,11 +2,19 @@
 # and pulls in its own deps (mlflow, PyNaCl, turbo-sdk, requests, jcs, cryptography).
 ar-io-mlflow>=0.1.0
 
-# Demo app dependencies (FastAPI + Jinja2 + UI + tracing)
+# Demo app dependencies (FastAPI + Jinja2 + UI + tracing).
+# python-multipart and Jinja2 minimums bumped past the patched
+# releases for CVEs flagged on PR #20 by CodeRabbit / OSV Scanner:
+#   python-multipart < 0.0.27 — HIGH DoS (form-parser exhaustion)
+#   Jinja2          < 3.1.5  — MODERATE sandbox escape via attr filter
+# Transitive vulns the same scan flagged (mlflow / pyarrow /
+# gitpython / aiohttp / pillow) are the plugin's responsibility to
+# pin — they enter the resolver via `ar-io-mlflow`'s own
+# requirements, not this file.
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
-python-multipart>=0.0.6
-Jinja2>=3.1.0
+python-multipart>=0.0.27
+Jinja2>=3.1.5
 pydantic>=2.5.0
 
 # scikit-learn is used by the demo's training script + tests

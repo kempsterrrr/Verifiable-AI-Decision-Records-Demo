@@ -613,11 +613,17 @@ def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
     # already uploaded the real training+registration proofs.
     plugin_anchor = info.get("training_anchor_result") or {}
     training_record = _build_training_cache_record(info)
+    canonical_bytes_json, signed_commitment_json = _proof_display_json(
+        info.get("training_payload"),
+        info.get("training_envelope"),
+    )
     training_envelope = {
         "record": training_record,
         "arweave_tx_id": plugin_anchor.get("tx_id"),
         "arweave_url": plugin_anchor.get("url"),
         "turbo_receipt": plugin_anchor.get("receipt"),
+        "canonical_bytes_json": canonical_bytes_json,
+        "signed_commitment_json": signed_commitment_json,
     }
     request.app.state.lifecycle_store.append(training_envelope)
 
@@ -660,8 +666,16 @@ def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
             registration_record["event_id"],
         )
 
-    # Auto-switch to the newly trained model
-    new_model_info = load_model(settings.mlflow_tracking_uri, settings.mlflow_model_name)
+    # Auto-switch to the newly trained model. Pass proof_engine + arweave so
+    # the newly-active VerifiedModel can anchor predictions; without these the
+    # post-train model would silently lose inference-time anchoring until the
+    # next process boot.
+    new_model_info = load_model(
+        settings.mlflow_tracking_uri,
+        settings.mlflow_model_name,
+        proof_engine=request.app.state.proof_engine,
+        arweave=request.app.state.anchor,
+    )
     request.app.state.model_info = new_model_info
     logger.info(f"Switched active model to v{info['model_version']}")
 

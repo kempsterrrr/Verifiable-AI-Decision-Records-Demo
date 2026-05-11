@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% from "_status_badge.html" import status_badge %}
+
+{% block title %}Models — Verifiable AI{% endblock %}
+{% block max_width %}1400px{% endblock %}
+{% block nav_models %}active{% endblock %}
+
+{% block styles %}
+        .col-version { width: 130px; }
+        .col-run-id { width: 180px; }
+        .col-acc { width: 110px; }
+        .col-status-narrow { width: 160px; }
+        .col-created { width: 170px; }
+
+        .train-cta {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.5rem 0.95rem;
+            border: 1px solid var(--lavender);
+            background: var(--white);
+            color: var(--primary);
+            font-weight: 600;
+            font-size: 0.85rem;
+            border-radius: 6px;
+            text-decoration: none;
+            white-space: nowrap;
+        }
+        .train-cta:hover {
+            background: var(--lavender);
+            text-decoration: none;
+        }
+        .train-cta-arrow { font-size: 1rem; line-height: 1; }
+{% endblock %}
+
+{% block content %}
+        <div class="editorial-header">
+            <div class="editorial-header-text">
+                <span class="eyebrow">Step 3 · Registry</span>
+                <h1 class="editorial-title">Models</h1>
+                <p class="editorial-lede">
+                    Registered model versions, each chained to the run that
+                    produced it via a registration anchor. The current production
+                    version is marked Active.
+                </p>
+            </div>
+            <div class="editorial-header-meta">
+                <div class="editorial-stat">
+                    <span class="editorial-stat-label">Versions</span>
+                    <span class="editorial-stat-value tabular">{{ versions|length }}</span>
+                </div>
+                <a href="/ui/runs#train" class="train-cta">
+                    Train new version <span class="train-cta-arrow">→</span>
+                </a>
+            </div>
+        </div>
+
+        {% if versions %}
+        <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th class="col-version">Version</th>
+                    <th class="col-run-id">Trained from</th>
+                    <th class="col-acc">Accuracy</th>
+                    <th class="col-status-narrow">Training</th>
+                    <th class="col-status-narrow">Registration</th>
+                    <th class="col-created">Created</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for v in versions %}
+                <tr style="cursor: pointer;" onclick="window.location='/ui/models/{{ model_name }}/{{ v.version }}'">
+                    <td class="col-version">
+                        <span style="font-family: 'Besley', serif; font-weight: 800; font-size: 0.95rem;" class="tabular">v{{ v.version }}</span>
+                        {% if v.is_active %}
+                            <span class="badge badge-primary" style="margin-left: 0.4rem;">Active</span>
+                        {% endif %}
+                    </td>
+                    <td class="col-run-id">
+                        {% if v.run_id %}
+                            <a class="mono" href="/ui/runs/{{ v.run_id }}" onclick="event.stopPropagation();" style="white-space: nowrap;" title="{{ v.run_id }}">{{ v.run_id[:14] }}…</a>
+                        {% else %}
+                            <span style="color: var(--muted);">—</span>
+                        {% endif %}
+                    </td>
+                    <td class="col-acc tabular">{% if v.accuracy is not none %}{{ "%.4f"|format(v.accuracy) }}{% else %}—{% endif %}</td>
+                    <td class="col-status-narrow">{{ status_badge(v.training_status) }}</td>
+                    <td class="col-status-narrow">{{ status_badge(v.registration_status) }}</td>
+                    <td class="col-created" style="white-space: nowrap; font-size: 0.78rem; color: var(--muted);">{{ v.created }}</td>
+                    <td>
+                        <div class="actions">
+                            <a href="/ui/models/{{ model_name }}/{{ v.version }}" class="btn btn-outline btn-sm" onclick="event.stopPropagation();">View</a>
+                            {% if v.training_status in ('verified', 'pending', 'tampered') or v.registration_status in ('verified', 'pending', 'tampered') %}
+                            <a href="/ui/models/{{ model_name }}/{{ v.version }}?verify=true" class="btn btn-primary btn-sm" data-loading-text="Verifying..." onclick="event.stopPropagation();">Verify</a>
+                            {% endif %}
+                            {% if not v.is_active %}
+                            <form action="/api/activate/{{ model_name }}/{{ v.version }}" method="POST" style="display:inline;" onclick="event.stopPropagation();">
+                                <button type="submit" class="btn btn-sm" style="background: var(--lavender); color: var(--primary); border: none;" data-loading-text="Activating...">Activate</button>
+                            </form>
+                            {% endif %}
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <div class="empty-state-title">No model versions registered yet</div>
+            <p class="empty-state-body">
+                Models appear here once a training run has registered them.
+                Start with a run on the <a href="/ui/runs">Training Runs</a>
+                page.
+            </p>
+        </div>
+        {% endif %}
+{% endblock %}

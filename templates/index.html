@@ -1,67 +1,72 @@
 {% extends "base.html" %}
+{% from "_status_badge.html" import status_badge %}
+{% from "_active_badge.html" import active_badge %}
 
 {% block title %}Verifiable AI Decision Records{% endblock %}
 {% block nav_decisions %}active{% endblock %}
-{% block lineage_url %}/ui/models/{{ model_info.model_name }}/{{ model_info.model_version }}{% endblock %}
 
 {% block styles %}
-        /* ── Stats row ── */
+        /* ── Filter chip row ── single horizontal strip replacing the
+           old stats cards. Same click-to-filter behavior. */
         .stats {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 1rem;
-            margin-bottom: 2rem;
+            display: flex;
+            align-items: stretch;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
         }
         .stat-card {
-            padding: 1.25rem;
-            border-radius: 8px;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0.85rem;
+            border-radius: 6px;
             border: 1px solid var(--border);
+            background: var(--white);
             cursor: pointer;
-            transition: all 0.15s ease;
-            position: relative;
-            overflow: hidden;
-        }
-        .stat-card::before {
-            content: '';
-            position: absolute;
-            left: 0;
-            top: 0;
-            bottom: 0;
-            width: 3px;
-            border-radius: 3px 0 0 3px;
+            transition: all 0.12s ease;
+            font-family: 'Plus Jakarta Sans', sans-serif;
         }
         .stat-card:hover { border-color: var(--primary); }
         .stat-card:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
-        .stat-card.active { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
-        .stat-number {
-            font-family: 'Besley', serif;
-            font-weight: 800;
-            font-size: 2rem;
-            line-height: 1;
-            margin-bottom: 0.25rem;
+        .stat-card.active {
+            border-color: var(--primary);
+            background: var(--lavender);
+            box-shadow: 0 0 0 1px var(--primary);
         }
-        .stat-label {
-            font-size: 0.8rem;
+        .stat-card-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .stat-card-label {
+            font-size: 0.78rem;
             font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
+            color: var(--black);
         }
-        .stat-verified { background: var(--green-bg); }
-        .stat-verified::before { background: var(--green); }
-        .stat-verified .stat-number { color: var(--green); }
-        .stat-verified .stat-label { color: var(--green); }
-        .stat-anchored { background: var(--yellow-bg); }
-        .stat-anchored::before { background: var(--yellow); }
-        .stat-anchored .stat-number { color: var(--yellow); }
-        .stat-anchored .stat-label { color: var(--yellow); }
-        .stat-failed { background: var(--red-bg); }
-        .stat-failed::before { background: var(--red); }
-        .stat-failed .stat-number { color: var(--red); }
-        .stat-failed .stat-label { color: var(--red); }
-        .stat-local { background: var(--gray-bg); }
-        .stat-local::before { background: var(--muted); }
-        .stat-local .stat-number { color: var(--muted); }
-        .stat-local .stat-label { color: var(--muted); }
+        .stat-card-count {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.78rem;
+            font-weight: 600;
+            color: var(--muted);
+            font-variant-numeric: tabular-nums;
+        }
+        .stat-card.active .stat-card-count { color: var(--primary); }
+        .stat-verified .stat-card-dot { background: var(--green); }
+        .stat-anchored .stat-card-dot { background: var(--yellow); }
+        .stat-failed .stat-card-dot { background: var(--red); }
+        .stat-local .stat-card-dot { background: var(--muted); opacity: 0.55; }
+        .stat-card-clear {
+            margin-left: auto;
+            font-size: 0.74rem;
+            color: var(--muted);
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            padding: 0.4rem 0.6rem;
+        }
+        .stat-card-clear:hover { color: var(--primary); }
 
         /* ── Toolbar ── */
         .toolbar {
@@ -210,68 +215,50 @@
 {% endblock %}
 
 {% block content %}
-        <div class="page-header">
-            <div>
-                <h1>Decisions</h1>
-                <p>Every decision below carries a signed proof anchored to ar.io. Anyone can verify the live record matches what was anchored — without trusting this app.</p>
+        <div class="editorial-header">
+            <div class="editorial-header-text">
+                <span class="eyebrow">Step 4 · Inference</span>
+                <h1 class="editorial-title">Decisions</h1>
+                <p class="editorial-lede">
+                    Every decision below carries a signed proof anchored to
+                    ar.io. Anyone can verify the live record matches what was
+                    anchored — without trusting this app.
+                </p>
+            </div>
+            <div class="editorial-header-meta">
+                <div class="editorial-stat">
+                    <span class="editorial-stat-label">Records</span>
+                    <span class="editorial-stat-value tabular">{{ records|length }}</span>
+                </div>
             </div>
         </div>
 
         {% if records %}
-        {# Compute status counts using the plugin's event-aware ``overall``
-           verdict when present, falling back to the four-field check for
-           legacy entries written before ``overall`` was persisted. None
-           values mean "pending" (not yet checked or fetch in flight) —
-           those records fall through to the anchored/anchoring/local
-           branches, NOT the failed branch. #}
-        {% set ns = namespace(verified=0, anchored=0, failed=0, local=0, anchoring=0) %}
-        {% for env in records %}
-            {% set v = env.get('last_verification') %}
-            {# Use ``v.get('overall')`` (item access) — ``v.overall`` would
-               return Undefined for legacy records missing the field, and
-               ``Undefined is none`` evaluates False, dropping legacy
-               records into the wrong branch. ``.get()`` returns None
-               cleanly and matches Python's _is_fully_verified semantics. #}
-            {% if v and v.get('overall') is sameas true %}
-                {% set ns.verified = ns.verified + 1 %}
-            {% elif v and v.get('overall') is sameas false and v.signature_valid is sameas true and v.hash_match is sameas true and v.source_of_truth_ok is sameas true and v.attestation_level and v.attestation_level < 2 %}
-                {# "Pending ar.io confirmation" — cryptographic + source-of-truth
-                   checks pass, ar.io still propagating from L1 to L2-L3.
-                   Counted as anchored, not failed, to match the detail page. #}
-                {% set ns.anchored = ns.anchored + 1 %}
-            {% elif v and v.get('overall') is sameas false %}
-                {% set ns.failed = ns.failed + 1 %}
-            {% elif v and v.get('overall') is none and v.signature_valid is sameas true and v.permanent_copy_found and v.hash_match is sameas true %}
-                {% set ns.verified = ns.verified + 1 %}
-            {% elif v and (v.signature_valid is sameas false or (v.permanent_copy_found and v.hash_match is sameas false)) %}
-                {% set ns.failed = ns.failed + 1 %}
-            {% elif env.arweave_tx_id %}
-                {% set ns.anchored = ns.anchored + 1 %}
-            {% elif arweave_enabled %}
-                {% set ns.anchoring = ns.anchoring + 1 %}
-            {% else %}
-                {% set ns.local = ns.local + 1 %}
-            {% endif %}
-        {% endfor %}
-
-        <!-- Stats -->
-        <div class="stats">
+        <!-- Status filter chip row — counts come from server-side
+             status_counts using the canonical 5-state enum. Click any
+             chip to filter the table; click again to clear. -->
+        <div class="stats" role="toolbar" aria-label="Filter decisions by status">
             <div class="stat-card stat-verified" onclick="filterStatus('verified')" id="filter-verified" role="button" tabindex="0" aria-label="Filter by Verified status" aria-pressed="false">
-                <div class="stat-number">{{ ns.verified }}</div>
-                <div class="stat-label">Verified</div>
+                <span class="stat-card-dot"></span>
+                <span class="stat-card-label">Verified</span>
+                <span class="stat-card-count">{{ status_counts.verified }}</span>
             </div>
-            <div class="stat-card stat-anchored" onclick="filterStatus('anchored')" id="filter-anchored" role="button" tabindex="0" aria-label="Filter by Pending verification status" aria-pressed="false">
-                <div class="stat-number">{{ ns.anchored + ns.anchoring }}</div>
-                <div class="stat-label">Pending verification</div>
+            <div class="stat-card stat-anchored" onclick="filterStatus('pending')" id="filter-pending" role="button" tabindex="0" aria-label="Filter by Anchored status" aria-pressed="false">
+                <span class="stat-card-dot"></span>
+                <span class="stat-card-label">Anchored</span>
+                <span class="stat-card-count">{{ status_counts.pending + status_counts.anchoring }}</span>
             </div>
-            <div class="stat-card stat-failed" onclick="filterStatus('failed')" id="filter-failed" role="button" tabindex="0" aria-label="Filter by Tampered status" aria-pressed="false">
-                <div class="stat-number">{{ ns.failed }}</div>
-                <div class="stat-label">Tampered</div>
+            <div class="stat-card stat-failed" onclick="filterStatus('tampered')" id="filter-tampered" role="button" tabindex="0" aria-label="Filter by Tampered status" aria-pressed="false">
+                <span class="stat-card-dot"></span>
+                <span class="stat-card-label">Tampered</span>
+                <span class="stat-card-count">{{ status_counts.tampered }}</span>
             </div>
-            <div class="stat-card stat-local" onclick="filterStatus('local')" id="filter-local" role="button" tabindex="0" aria-label="Filter by Not anchored status" aria-pressed="false">
-                <div class="stat-number">{{ ns.local }}</div>
-                <div class="stat-label">Not anchored</div>
+            <div class="stat-card stat-local" onclick="filterStatus('none')" id="filter-none" role="button" tabindex="0" aria-label="Filter by Not anchored status" aria-pressed="false">
+                <span class="stat-card-dot"></span>
+                <span class="stat-card-label">Not anchored</span>
+                <span class="stat-card-count">{{ status_counts.none }}</span>
             </div>
+            <button class="stat-card-clear" onclick="clearStatusFilter()" type="button" id="clear-status-filter" style="display: none;">Clear</button>
         </div>
 
         {# Phase 2.D removed the local chain-integrity widget. The widget
@@ -284,31 +271,9 @@
         <!-- Model Provenance (always shown) -->
         <div class="provenance-card">
             <div class="provenance-inner">
-                <span class="provenance-model">{{ model_info.model_name }} / v{{ model_info.model_version }}</span>
-                <span class="provenance-label">
-                    Training
-                    {% if training_status == 'verified' %}
-                        <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
-                    {% elif training_status == 'anchored' %}
-                        <span class="badge badge-yellow"><span class="badge-dot"></span> Pending verification</span>
-                    {% elif training_status == 'local' %}
-                        <span class="badge badge-gray"><span class="badge-dot"></span> Not anchored</span>
-                    {% else %}
-                        <span class="badge badge-gray">--</span>
-                    {% endif %}
-                </span>
-                <span class="provenance-label">
-                    Registration
-                    {% if registration_status == 'verified' %}
-                        <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
-                    {% elif registration_status == 'anchored' %}
-                        <span class="badge badge-yellow"><span class="badge-dot"></span> Pending verification</span>
-                    {% elif registration_status == 'local' %}
-                        <span class="badge badge-gray"><span class="badge-dot"></span> Not anchored</span>
-                    {% else %}
-                        <span class="badge badge-gray">--</span>
-                    {% endif %}
-                </span>
+                <span class="provenance-model">{{ model_info.model_name }} / v{{ model_info.model_version }}{{ active_badge(model_info.model_name, model_info.model_version, active_model_name, active_model_version) }}</span>
+                <span class="provenance-label">Training {{ status_badge(training_status) }}</span>
+                <span class="provenance-label">Registration {{ status_badge(registration_status) }}</span>
             </div>
             <a href="/ui/models/{{ model_info.model_name }}/{{ model_info.model_version }}" class="provenance-link">View chain &rarr;</a>
         </div>
@@ -378,29 +343,11 @@
             </thead>
             <tbody>
                 {% for env in records|reverse %}
-                {% set v = env.get('last_verification') %}
-                {% if v and v.get('overall') is sameas true %}
-                    {% set row_status = 'verified' %}
-                {% elif v and v.get('overall') is sameas false and v.signature_valid is sameas true and v.hash_match is sameas true and v.source_of_truth_ok is sameas true and v.attestation_level and v.attestation_level < 2 %}
-                    {# "Pending ar.io confirmation" — match detail page. #}
-                    {% set row_status = 'anchored' %}
-                {% elif v and v.get('overall') is sameas false %}
-                    {% set row_status = 'failed' %}
-                {% elif v and v.get('overall') is none and v.signature_valid is sameas true and v.permanent_copy_found and v.hash_match is sameas true %}
-                    {% set row_status = 'verified' %}
-                {% elif v and (v.signature_valid is sameas false or (v.permanent_copy_found and v.hash_match is sameas false)) %}
-                    {% set row_status = 'failed' %}
-                {% elif env.arweave_tx_id %}
-                    {% set row_status = 'anchored' %}
-                {% elif arweave_enabled %}
-                    {% set row_status = 'anchoring' %}
-                {% else %}
-                    {% set row_status = 'local' %}
-                {% endif %}
+                {% set row_status = env._status %}
                 <tr data-status="{{ row_status }}" data-date="{{ env.record.timestamp[:10] }}" data-version="{{ env.record.model_version }}">
                     <td><a href="/ui/decisions/{{ env.record.decision_id }}"><span class="mono">{{ env.record.decision_id[:8] }}</span></a></td>
                     <td>{{ env.record.timestamp[:19] }}</td>
-                    <td>v{{ env.record.model_version }}</td>
+                    <td>v{{ env.record.model_version }}{{ active_badge(env.record.model_name, env.record.model_version, active_model_name, active_model_version) }}</td>
                     <td>
                       {% if env.record.prediction is defined %}
                         {% if env.record.prediction['class'] == 'approve' %}
@@ -423,19 +370,7 @@
                             <span class="badge badge-gray">None</span>
                         {% endif %}
                     </td>
-                    <td>
-                        {% if row_status == 'verified' %}
-                            <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
-                        {% elif row_status == 'failed' %}
-                            <span class="badge badge-red"><span class="badge-dot"></span> Tampered</span>
-                        {% elif row_status == 'anchored' %}
-                            <span class="badge badge-yellow"><span class="badge-dot"></span> Pending verification</span>
-                        {% elif row_status == 'anchoring' %}
-                            <span class="badge badge-yellow"><span class="badge-dot badge-dot-pulse"></span> Anchoring</span>
-                        {% else %}
-                            <span class="badge badge-gray"><span class="badge-dot"></span> Not anchored</span>
-                        {% endif %}
-                    </td>
+                    <td>{{ status_badge(row_status) }}</td>
                     <td>
                         <div class="actions">
                             <a href="/ui/decisions/{{ env.record.decision_id }}" class="btn btn-outline btn-sm">Detail</a>
@@ -473,6 +408,19 @@
             el.classList.toggle('active', isActive);
             el.setAttribute('aria-pressed', isActive ? 'true' : 'false');
         });
+        const clearBtn = document.getElementById('clear-status-filter');
+        if (clearBtn) clearBtn.style.display = activeStatus ? '' : 'none';
+        applyFilters();
+    }
+
+    function clearStatusFilter() {
+        activeStatus = null;
+        document.querySelectorAll('.stat-card').forEach(el => {
+            el.classList.remove('active');
+            el.setAttribute('aria-pressed', 'false');
+        });
+        const clearBtn = document.getElementById('clear-status-filter');
+        if (clearBtn) clearBtn.style.display = 'none';
         applyFilters();
     }
 
@@ -508,8 +456,11 @@
             let show = true;
             if (activeStatus) {
                 const s = row.dataset.status;
-                if (activeStatus === 'anchored') {
-                    if (s !== 'anchored' && s !== 'anchoring') show = false;
+                // Pending filter rolls up the "anchoring" sub-state
+                // (TX in flight) into "Pending verification" so users
+                // see one combined yellow bucket.
+                if (activeStatus === 'pending') {
+                    if (s !== 'pending' && s !== 'anchoring') show = false;
                 } else {
                     if (s !== activeStatus) show = false;
                 }

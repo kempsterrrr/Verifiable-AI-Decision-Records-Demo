@@ -332,10 +332,13 @@ def load_model(
             # Surface the plugin's anchor results so the lifespan startup
             # flow can populate lifecycle_store with the real new-shape
             # TX without re-anchoring (which would generate legacy-shape
-            # duplicates on Arweave).
+            # duplicates on Arweave). Includes the per-dataset standalone
+            # anchors so /demo/reset and first-boot auto-train produce
+            # the same Datasets-page entries as POST /api/train.
             "training_anchor_result": info.get("training_anchor_result"),
             "training_envelope": info.get("training_envelope"),
             "training_payload": info.get("training_payload"),
+            "training_dataset_anchors": info.get("training_dataset_anchors") or [],
             "ario_client": info.get("ario_client"),
         }
 

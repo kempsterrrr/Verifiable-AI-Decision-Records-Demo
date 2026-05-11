@@ -1,0 +1,36 @@
+{# Canonical 5-state status badge.
+
+   Render with:
+     {% from "_status_badge.html" import status_badge %}
+     {{ status_badge(d.status) }}
+
+   Status values come from app.ui._envelope_status() — keep the keys
+   here in sync with that helper. The label/color choices below are
+   the single source of truth for how status reads across the app.
+#}
+
+{% macro status_badge(status, size="default") -%}
+    {% if status == "verified" %}
+        <span class="badge badge-green"><span class="badge-dot"></span> Verified</span>
+    {% elif status == "pending" %}
+        <span class="badge badge-yellow"><span class="badge-dot"></span> Anchored</span>
+    {% elif status == "anchoring" %}
+        <span class="badge badge-yellow"><span class="badge-dot badge-dot-pulse"></span> Anchoring</span>
+    {% elif status == "tampered" %}
+        <span class="badge badge-red"><span class="badge-dot"></span> Tampered</span>
+    {% elif status == "none" %}
+        <span class="badge badge-gray"><span class="badge-dot"></span> Not anchored</span>
+    {% else %}
+        <span class="badge badge-gray">—</span>
+    {% endif %}
+{%- endmacro %}
+
+{# Compact dot-only variant for dense contexts (Lineage page, chain cards). #}
+{% macro status_dot(status) -%}
+    {% if status == "verified" %}<span class="status-dot status-dot--verified" title="Verified"></span>
+    {% elif status == "pending" %}<span class="status-dot status-dot--anchored" title="Anchored"></span>
+    {% elif status == "anchoring" %}<span class="status-dot status-dot--anchored" title="Anchoring"></span>
+    {% elif status == "tampered" %}<span class="status-dot" style="background: var(--red);" title="Tampered"></span>
+    {% else %}<span class="status-dot status-dot--none" title="Not anchored"></span>
+    {% endif %}
+{%- endmacro %}

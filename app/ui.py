@@ -27,6 +27,12 @@ def _common_context(app):
         # Surfaced so base.html can conditionally render the demo-admin
         # nav link and so other templates can gate demo-only UI.
         "demo_mode": settings.demo_mode,
+        # The currently-active production model name + version. Templates
+        # use this to badge any reference to a model version with
+        # "Active" (matches) or "(replaced by vN)" (older). Coerced to
+        # str so template equality doesn't trip on int-vs-str mismatches.
+        "active_model_name": str(app.state.model_info.get("model_name", "")),
+        "active_model_version": str(app.state.model_info.get("model_version", "")),
     }
 
 
@@ -146,6 +152,14 @@ def _verify_envelope(app, envelope):
     return result
 
 
+@router.get("/")
+def root_redirect():
+    """Phase A nav swap: home routes into the verification chain at the
+    input side, mirroring the new left-to-right reading order
+    Datasets → Runs → Models → Decisions → Lineage."""
+    return RedirectResponse("/ui/datasets", status_code=302)
+
+
 @router.get("/ui/predictions")
 def predictions_redirect():
     """Permanent redirect from the old URL. Bookmarks keep working."""
@@ -157,30 +171,23 @@ def decisions(request: Request):
     app = request.app
     records = app.state.store.list_all()
     model_info = app.state.model_info
+    arweave_enabled = app.state.anchor.enabled if app.state.anchor else False
 
     # Lifecycle status for provenance card
     training_env = app.state.lifecycle_store.get_by_run_id(model_info["run_id"])
     registration_env = app.state.lifecycle_store.get_by_model_version(
         model_info["model_name"], model_info["model_version"]
     )
+    training_status = _envelope_status(training_env, arweave_enabled=arweave_enabled)
+    registration_status = _envelope_status(registration_env, arweave_enabled=arweave_enabled)
 
-    training_status = "none"
-    if training_env:
-        if _is_fully_verified(training_env.get("last_verification")):
-            training_status = "verified"
-        elif training_env.get("arweave_tx_id"):
-            training_status = "anchored"
-        else:
-            training_status = "local"
-
-    registration_status = "none"
-    if registration_env:
-        if _is_fully_verified(registration_env.get("last_verification")):
-            registration_status = "verified"
-        elif registration_env.get("arweave_tx_id"):
-            registration_status = "anchored"
-        else:
-            registration_status = "local"
+    # Pre-compute the canonical status for each record so the template
+    # doesn't have to. Aggregate counts for the filter chip strip and
+    # attach a per-record status for the row badge.
+    status_counts = {"verified": 0, "pending": 0, "anchoring": 0, "tampered": 0, "none": 0}
+    for env in records:
+        env["_status"] = _envelope_status(env, arweave_enabled=arweave_enabled)
+        status_counts[env["_status"]] = status_counts.get(env["_status"], 0) + 1
 
     return templates.TemplateResponse(
         request,
@@ -188,18 +195,20 @@ def decisions(request: Request):
         {
             **_common_context(app),
             "records": records,
+            "status_counts": status_counts,
             "training_status": training_status,
             "registration_status": registration_status,
         },
     )
 
 
-@router.get("/", response_class=HTMLResponse)
+@router.get("/ui/models", response_class=HTMLResponse)
 def model_registry(request: Request):
     app = request.app
     settings = app.state.settings
     model_name = settings.mlflow_model_name
     active_version = app.state.model_info["model_version"]
+    arweave_enabled = app.state.anchor.enabled if app.state.anchor else False
 
     mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
     client = mlflow.tracking.MlflowClient()
@@ -219,33 +228,24 @@ def model_registry(request: Request):
             except Exception:
                 pass
 
-        # Check lifecycle anchoring status
+        # Check lifecycle anchoring status using the canonical 5-state enum.
         training_env = app.state.lifecycle_store.get_by_run_id(mv.run_id) if mv.run_id else None
         reg_env = app.state.lifecycle_store.get_by_model_version(model_name, str(mv.version))
-
-        def _status(env):
-            if not env:
-                return "none"
-            if _is_fully_verified(env.get("last_verification")):
-                return "verified"
-            if env.get("arweave_tx_id"):
-                return "anchored"
-            return "local"
 
         version_data.append({
             "version": str(mv.version),
             "run_id": mv.run_id or "",
             "accuracy": accuracy,
             "stage": mv.current_stage if hasattr(mv, "current_stage") else "None",
-            "training_status": _status(training_env),
-            "registration_status": _status(reg_env),
+            "training_status": _envelope_status(training_env, arweave_enabled=arweave_enabled),
+            "registration_status": _envelope_status(reg_env, arweave_enabled=arweave_enabled),
             "is_active": str(mv.version) == str(active_version),
             "created": datetime.fromtimestamp(created / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M") if created else "",
         })
 
     return templates.TemplateResponse(
         request,
-        "model_registry.html",
+        "models_list.html",
         {
             **_common_context(app),
             "model_name": model_name,
@@ -257,17 +257,536 @@ def model_registry(request: Request):
 
 @router.get("/ui/registry")
 def registry_redirect():
-    return RedirectResponse("/", status_code=301)
+    return RedirectResponse("/ui/models", status_code=301)
 
 
-@router.get("/ui/who-this-is-for", response_class=HTMLResponse)
-def who_this_is_for(request: Request):
-    """Four-persona framing page so visitors find a doorway matched to their context."""
+def _build_chain_context(
+    app, model_name: str, version: str, verify: bool = False
+) -> dict:
+    """Resolve all chain entities (datasets → run → registration →
+    decisions) for a given model version. Shared by the Lineage page
+    and the slim model detail page so they render the same data shape.
+
+    When ``verify=True``, runs the four-check verification on every
+    envelope in the chain and persists the result back to lifecycle
+    store / record store. Also surfaces the training event's canonical
+    bytes + signed commitment for the "How verification works" panel.
+    """
+    lifecycle_records = app.state.lifecycle_store.list_all()
+    training_env = None
+    registration_env = None
+
+    for rec in lifecycle_records:
+        r = rec.get("record", {})
+        if (r.get("event_type") == "training_complete"
+                and r.get("model_name") == model_name
+                and str(r.get("model_version")) == str(version)):
+            training_env = rec
+        elif (r.get("event_type") == "model_registered"
+                and r.get("model_name") == model_name
+                and str(r.get("model_version")) == str(version)):
+            registration_env = rec
+
+    dataset_anchored_envs: list[dict] = []
+    if training_env:
+        target_run_id = training_env["record"]["run_id"]
+        for rec in lifecycle_records:
+            r = rec.get("record", {})
+            if (r.get("event_type") == "dataset_anchored"
+                    and r.get("source_run_id") == target_run_id):
+                dataset_anchored_envs.append(rec)
+
+    canonical_bytes_json = None
+    signed_commitment_json = None
+
+    if verify:
+        if training_env:
+            training_verify = _verify_envelope(app, training_env)
+            training_env["last_verification"] = {
+                k: v for k, v in training_verify.items() if k != "plugin_full_verify"
+            }
+            app.state.lifecycle_store.update(training_env["record"]["event_id"], training_env)
+
+            try:
+                import json as _json
+                full = training_verify.get("plugin_full_verify") or {}
+                anchored = full.get("anchored_bytes") or {}
+                payload_bytes = anchored.get("payload_bytes")
+                if payload_bytes:
+                    try:
+                        canonical_bytes_json = _json.dumps(
+                            _json.loads(payload_bytes), indent=2
+                        )
+                    except Exception:
+                        canonical_bytes_json = (
+                            payload_bytes.decode("utf-8")
+                            if isinstance(payload_bytes, (bytes, bytearray))
+                            else str(payload_bytes)
+                        )
+                tx_id = training_env.get("arweave_tx_id")
+                plugin_envelope = app.state.anchor.fetch_proof(tx_id) if tx_id else None
+                if plugin_envelope:
+                    signed_commitment_json = _json.dumps(plugin_envelope, indent=2)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "chain proof-viewer hydration failed for %s/v%s: %s",
+                    model_name, version, e,
+                )
+
+        if registration_env:
+            registration_verify = _verify_envelope(app, registration_env)
+            registration_env["last_verification"] = {
+                k: v for k, v in registration_verify.items() if k != "plugin_full_verify"
+            }
+            app.state.lifecycle_store.update(registration_env["record"]["event_id"], registration_env)
+
+        for ds_env in dataset_anchored_envs:
+            ds_verify = _verify_envelope(app, ds_env)
+            ds_env["last_verification"] = {
+                k: v for k, v in ds_verify.items() if k != "plugin_full_verify"
+            }
+            app.state.lifecycle_store.update(ds_env["record"]["event_id"], ds_env)
+
+    predictions = app.state.store.list_all()
+    model_predictions = [
+        p for p in predictions
+        if p.get("record", {}).get("model_name") == model_name
+        and str(p.get("record", {}).get("model_version")) == str(version)
+    ]
+    anchored_count = sum(1 for p in model_predictions if p.get("arweave_tx_id"))
+    verified_count = sum(
+        1 for p in model_predictions
+        if _is_fully_verified(p.get("last_verification"))
+    )
+
+    training_turbo = None
+    registration_turbo = None
+    if training_env and training_env.get("arweave_tx_id"):
+        training_turbo = app.state.anchor.check_status(training_env["arweave_tx_id"])
+    if registration_env and registration_env.get("arweave_tx_id"):
+        registration_turbo = app.state.anchor.check_status(registration_env["arweave_tx_id"])
+
+    return {
+        "training": training_env,
+        "training_turbo": training_turbo,
+        "registration": registration_env,
+        "registration_turbo": registration_turbo,
+        "dataset_anchored": dataset_anchored_envs,
+        "prediction_count": len(model_predictions),
+        "anchored_count": anchored_count,
+        "verified_count": verified_count,
+        "canonical_bytes_json": canonical_bytes_json,
+        "signed_commitment_json": signed_commitment_json,
+    }
+
+
+def _describe_failed_checks(v: dict | None) -> list[str]:
+    """Return human-readable descriptions of which verify checks failed.
+
+    Used by the tamper page to label *what* about a link is broken
+    (e.g., "Source-of-truth: live data diverges from anchored payload"),
+    so the user can read the cryptographic propagation directly off the
+    chain instead of just seeing a binary red/green flag.
+
+    Returns an empty list when:
+      - The envelope has no last_verification yet
+      - All four checks pass
+      - All cryptographic checks pass and only ar.io attestation is
+        still propagating (the "Anchored, awaiting ar.io" sub-state)
+    """
+    if not v:
+        return []
+    overall = v.get("overall")
+    if overall is True:
+        return []
+
+    sig_failed = v.get("signature_valid") is False
+    hash_failed = v.get("hash_match") is False
+    sot_failed = v.get("source_of_truth_ok") is False
+    if not (sig_failed or hash_failed or sot_failed):
+        # Crypto checks all pass; overall=False means ar.io attestation
+        # is still propagating. Don't surface as a failure.
+        return []
+
+    failures: list[str] = []
+    if sig_failed:
+        failures.append("Signature invalid")
+    if hash_failed:
+        failures.append("Anchored bytes hash mismatch")
+    if sot_failed:
+        failures.append("Live data diverges from anchored payload")
+    return failures
+
+
+def _envelope_status(env: dict | None, arweave_enabled: bool = False) -> str:
+    """Map a lifecycle/record envelope to the canonical 5-state status
+    enum used everywhere in the UI:
+
+    - ``verified``  — every check passed (or the legacy 4-field check)
+    - ``pending``   — anchored on chain, not yet (or only partially)
+                      re-verified. Includes the "Pending ar.io confirmation"
+                      sub-state where cryptographic checks pass but ar.io's
+                      attestation is still propagating.
+    - ``anchoring`` — Arweave anchoring is enabled but the envelope has
+                      no TX yet (in flight, not yet on chain)
+    - ``tampered``  — a verify pass ran and a real check failed
+    - ``none``      — no TX at all (legacy local-only or anchoring disabled)
+
+    Templates render via the ``_status_badge`` macro so labels and colors
+    stay in sync; nothing else should branch on these strings.
+    """
+    if not env:
+        return "none"
+
+    v = env.get("last_verification")
+    if v:
+        overall = v.get("overall")
+        if overall is True:
+            return "verified"
+        if overall is False:
+            # Distinguish "real fail" from "Pending ar.io confirmation".
+            # Real fail: at least one check that actually ran returned
+            # False. None means "not checked / not applicable" — for v1
+            # dataset events hash_match and source_of_truth_ok are
+            # intentionally None (deferred). Don't read those as failures.
+            sig_failed = v.get("signature_valid") is False
+            hash_failed = v.get("hash_match") is False
+            sot_failed = v.get("source_of_truth_ok") is False
+            if sig_failed or hash_failed or sot_failed:
+                return "tampered"
+            # All checks that ran passed; overall=False means ar.io
+            # attestation is still propagating (level < 2).
+            return "pending"
+        # Legacy fallback for entries written before ``overall`` was
+        # persisted: every required field must be explicitly True.
+        if (
+            v.get("signature_valid") is True
+            and v.get("permanent_copy_found")
+            and v.get("hash_match") is True
+        ):
+            return "verified"
+
+    if env.get("arweave_tx_id"):
+        return "pending"
+    if arweave_enabled:
+        return "anchoring"
+    return "none"
+
+
+@router.get("/ui/datasets", response_class=HTMLResponse)
+def datasets_list(request: Request):
+    """Datasets list — first stop in the verification chain.
+
+    Aggregates dataset_anchored lifecycle entries by digest so each
+    unique training dataset shows once with the count of runs that
+    consumed it. The digest is the dataset's identity in the signed
+    canonical payload, so it's also the URL key for detail pages.
+    """
     app = request.app
+    lifecycle = app.state.lifecycle_store.list_all()
+    arweave_enabled = app.state.anchor.enabled if app.state.anchor else False
+
+    # Group dataset_anchored events by digest. The latest entry's
+    # arweave fields win for the "Anchor" column display — if a dataset
+    # was re-anchored on a later run, we surface the most recent TX.
+    grouped: dict[str, dict] = {}
+    for env in lifecycle:
+        rec = env.get("record", {}) or {}
+        if rec.get("event_type") != "dataset_anchored":
+            continue
+        digest = rec.get("digest")
+        if not digest:
+            continue
+        existing = grouped.get(digest)
+        if existing is None:
+            grouped[digest] = {
+                "digest": digest,
+                "name": rec.get("name", "—"),
+                "source": rec.get("source", ""),
+                "source_type": rec.get("source_type", ""),
+                "schema_hash": rec.get("schema_hash", ""),
+                "run_ids": set(),
+                "latest_env": env,
+                "latest_ts": rec.get("timestamp", ""),
+            }
+            existing = grouped[digest]
+        run_id = rec.get("source_run_id")
+        if run_id:
+            existing["run_ids"].add(run_id)
+        ts = rec.get("timestamp", "")
+        if ts and ts > existing["latest_ts"]:
+            existing["latest_env"] = env
+            existing["latest_ts"] = ts
+
+    rows = []
+    for d in grouped.values():
+        env = d["latest_env"]
+        rows.append({
+            "digest": d["digest"],
+            "name": d["name"],
+            "source": d["source"],
+            "source_type": d["source_type"],
+            "schema_hash": d["schema_hash"],
+            "used_by_count": len(d["run_ids"]),
+            "arweave_tx_id": env.get("arweave_tx_id"),
+            "arweave_url": env.get("arweave_url"),
+            "status": _envelope_status(env, arweave_enabled=arweave_enabled),
+            "timestamp": d["latest_ts"],
+        })
+    rows.sort(key=lambda r: r["timestamp"], reverse=True)
+
     return templates.TemplateResponse(
         request,
-        "who_this_is_for.html",
-        _common_context(app),
+        "datasets_list.html",
+        {
+            **_common_context(app),
+            "datasets": rows,
+        },
+    )
+
+
+@router.get("/ui/datasets/{digest}", response_class=HTMLResponse)
+def dataset_detail(request: Request, digest: str, verify: bool = False):
+    """Dataset detail — identity card, ar.io anchor link, runs that
+    consumed this dataset, and (when ``verify=true``) the same
+    plugin-driven four-check verification used by every other detail
+    page. Phase B adds the verify card; Phase C will add the chain
+    section and tamper card."""
+    app = request.app
+    lifecycle = app.state.lifecycle_store.list_all()
+    arweave_enabled = app.state.anchor.enabled if app.state.anchor else False
+
+    matches = [
+        env for env in lifecycle
+        if (env.get("record") or {}).get("event_type") == "dataset_anchored"
+        and (env.get("record") or {}).get("digest") == digest
+    ]
+    if not matches:
+        return HTMLResponse("<h1>Dataset not found</h1>", status_code=404)
+
+    matches.sort(
+        key=lambda e: (e.get("record") or {}).get("timestamp", ""),
+        reverse=True,
+    )
+    primary = matches[0]
+    rec = primary.get("record") or {}
+
+    # Verify on demand. Same primitive as run_detail / decision_detail.
+    # Persist the result so the next page render shows the latest
+    # verdict without re-fetching from the gateway.
+    if verify and primary.get("arweave_tx_id"):
+        result = _verify_envelope(app, primary)
+        result["verified_at"] = datetime.now(timezone.utc).isoformat()
+        persistable = {k: v for k, v in result.items() if k != "plugin_full_verify"}
+        primary["last_verification"] = persistable
+        app.state.lifecycle_store.update(primary["record"]["event_id"], primary)
+
+    run_ids = sorted({
+        (e.get("record") or {}).get("source_run_id")
+        for e in matches
+        if (e.get("record") or {}).get("source_run_id")
+    })
+
+    # Resolve each run's training envelope so we can show the model it
+    # produced — gives the detail page an outbound link into the chain.
+    used_by_runs = []
+    for run_id in run_ids:
+        run_env = app.state.lifecycle_store.get_by_run_id(run_id)
+        if run_env:
+            r = run_env.get("record") or {}
+            used_by_runs.append({
+                "run_id": run_id,
+                "model_name": r.get("model_name", ""),
+                "model_version": r.get("model_version", ""),
+                "timestamp": r.get("timestamp", ""),
+                "status": _envelope_status(run_env, arweave_enabled=arweave_enabled),
+            })
+        else:
+            used_by_runs.append({
+                "run_id": run_id,
+                "model_name": "",
+                "model_version": "",
+                "timestamp": "",
+                "status": "none",
+            })
+
+    # Recompute status post-verify so the badge in the editorial header
+    # reflects the just-completed verification without a second
+    # round-trip.
+    return templates.TemplateResponse(
+        request,
+        "dataset_detail.html",
+        {
+            **_common_context(app),
+            "dataset": {
+                "digest": digest,
+                "name": rec.get("name", "—"),
+                "source": rec.get("source", ""),
+                "source_type": rec.get("source_type", ""),
+                "schema_hash": rec.get("schema_hash", ""),
+                "payload_hash": rec.get("payload_hash", ""),
+                "timestamp": rec.get("timestamp", ""),
+                "arweave_tx_id": primary.get("arweave_tx_id"),
+                "arweave_url": primary.get("arweave_url"),
+                "status": _envelope_status(primary, arweave_enabled=arweave_enabled),
+            },
+            # Pass the lifecycle envelope at top level so the shared
+            # _verify_card macro can read ``envelope.last_verification``
+            # and ``envelope.arweave_tx_id`` the same way the other
+            # detail pages do.
+            "envelope": primary,
+            "used_by_runs": used_by_runs,
+        },
+    )
+
+
+@router.get("/ui/runs", response_class=HTMLResponse)
+def runs_list(request: Request):
+    """Training runs list — second stop in the verification chain.
+
+    Reads training_complete events from lifecycle_store (one per run).
+    Hosts the "Train & anchor" form (moved here from the Models page —
+    this is where a new run is born). Each row links to the existing
+    /ui/runs/{run_id} detail page.
+    """
+    app = request.app
+    settings = app.state.settings
+    arweave_enabled = app.state.anchor.enabled if app.state.anchor else False
+    lifecycle = app.state.lifecycle_store.list_all()
+
+    rows = []
+    for env in lifecycle:
+        rec = env.get("record") or {}
+        if rec.get("event_type") != "training_complete":
+            continue
+        metrics = rec.get("metrics", {}) or {}
+        rows.append({
+            "run_id": rec.get("run_id", ""),
+            "model_name": rec.get("model_name", ""),
+            "model_version": rec.get("model_version", ""),
+            "accuracy": metrics.get("accuracy"),
+            "dataset_count": len(rec.get("dataset_inputs", []) or []),
+            "timestamp": rec.get("timestamp", ""),
+            "arweave_tx_id": env.get("arweave_tx_id"),
+            "arweave_url": env.get("arweave_url"),
+            "status": _envelope_status(env, arweave_enabled=arweave_enabled),
+        })
+    rows.sort(key=lambda r: r["timestamp"], reverse=True)
+
+    return templates.TemplateResponse(
+        request,
+        "runs_list.html",
+        {
+            **_common_context(app),
+            "runs": rows,
+            "model_name": settings.mlflow_model_name,
+        },
+    )
+
+
+@router.get("/ui/lineage", response_class=HTMLResponse)
+def lineage(request: Request, chain: str | None = None, verify: bool = False):
+    """Lineage — focused-chain viewer.
+
+    Renders one connected vertical chain at a time
+    (Dataset(s) → Run → Model → Decisions) with a chip picker above
+    to swap between chains. ``?chain=<name>/<version>`` selects the
+    chain; defaults to the active production model. ``?verify=true``
+    runs full verification on every envelope in the selected chain.
+
+    Phase C: replaces the four-column directory shipped in Phase A.
+    """
+    app = request.app
+    settings = app.state.settings
+
+    # Discover available chains — one per registered model version.
+    mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+    client = mlflow.tracking.MlflowClient()
+    available_chains = []
+    try:
+        versions = client.search_model_versions(f"name='{settings.mlflow_model_name}'")
+        active_version = str(app.state.model_info.get("model_version", ""))
+        for mv in sorted(versions, key=lambda v: int(v.version), reverse=True):
+            available_chains.append({
+                "model_name": settings.mlflow_model_name,
+                "model_version": str(mv.version),
+                "key": f"{settings.mlflow_model_name}/{mv.version}",
+                "is_active": str(mv.version) == active_version,
+            })
+    except Exception as e:
+        logger.warning("Lineage: model registry lookup failed: %s", e)
+
+    # Resolve the selected chain. Falls back to the most recent (first
+    # in the sorted list) when none specified or when the requested
+    # chain isn't registered.
+    selected_chain = None
+    if chain:
+        parts = chain.rsplit("/", 1)
+        if len(parts) == 2:
+            for c in available_chains:
+                if c["model_name"] == parts[0] and c["model_version"] == parts[1]:
+                    selected_chain = c
+                    break
+    if selected_chain is None and available_chains:
+        # Prefer active version if no explicit selection.
+        for c in available_chains:
+            if c["is_active"]:
+                selected_chain = c
+                break
+        if selected_chain is None:
+            selected_chain = available_chains[0]
+
+    # Build chain context for the selected chain.
+    chain_context = {}
+    if selected_chain:
+        chain_context = _build_chain_context(
+            app,
+            selected_chain["model_name"],
+            selected_chain["model_version"],
+            verify=verify,
+        )
+
+    # System-wide stats for the strip above the picker.
+    lifecycle = app.state.lifecycle_store.list_all()
+    decisions_all = app.state.store.list_all()
+
+    dataset_total = len({
+        (env.get("record") or {}).get("digest")
+        for env in lifecycle
+        if (env.get("record") or {}).get("event_type") == "dataset_anchored"
+        and (env.get("record") or {}).get("digest")
+    })
+    run_total = sum(
+        1 for env in lifecycle
+        if (env.get("record") or {}).get("event_type") == "training_complete"
+    )
+    model_total = len(available_chains)
+    decision_total = len(decisions_all)
+    decision_verified = sum(
+        1 for env in decisions_all
+        if _is_fully_verified(env.get("last_verification"))
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "lineage.html",
+        {
+            **_common_context(app),
+            "available_chains": available_chains,
+            "selected_chain": selected_chain,
+            "stats": {
+                "dataset_total": dataset_total,
+                "run_total": run_total,
+                "model_total": model_total,
+                "decision_total": decision_total,
+                "decision_verified": decision_verified,
+                "verified_pct": (
+                    round(decision_verified / decision_total * 100)
+                    if decision_total else 0
+                ),
+            },
+            **chain_context,
+        },
     )
 
 
@@ -349,6 +868,24 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
     if envelope.get("arweave_tx_id"):
         turbo_status = app.state.anchor.check_status(envelope["arweave_tx_id"])
 
+    # Single-step upstream context for the page's "comes from" strip:
+    # the datasets the source training run consumed. Pulled from the
+    # training event's inlined dataset_inputs (signed canonical
+    # payload), so an auditor sees the same provenance the proof
+    # commits to.
+    source_run_id = envelope.get("record", {}).get("mlflow_run_id")
+    trained_on_datasets = []
+    if source_run_id:
+        training_env = app.state.lifecycle_store.get_by_run_id(source_run_id)
+        if training_env:
+            for di in (training_env.get("record", {}).get("dataset_inputs") or []):
+                if di.get("digest"):
+                    trained_on_datasets.append({
+                        "name": di.get("name", ""),
+                        "digest": di.get("digest", ""),
+                    })
+
+    arweave_enabled = app.state.anchor.enabled if app.state.anchor else False
     return templates.TemplateResponse(
         request,
         "decision_detail.html",
@@ -363,6 +900,8 @@ def decision_detail(request: Request, decision_id: str, verify: bool = False):
             "turbo_status": turbo_status,
             "canonical_bytes_json": canonical_bytes_json,
             "signed_commitment_json": signed_commitment_json,
+            "trained_on_datasets": trained_on_datasets,
+            "status": _envelope_status(envelope, arweave_enabled=arweave_enabled),
         },
     )
 
@@ -423,28 +962,7 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
     if envelope.get("arweave_tx_id"):
         turbo_status = app.state.anchor.check_status(envelope["arweave_tx_id"])
 
-    # Fetch the live MLflow tags directly from the tracking store so evaluators
-    # can confirm the ario.* tags are really on the run (not synthesised by the
-    # demo UI). This is the closest thing to "View in MLflow UI" we can offer
-    # without running a second server alongside uvicorn on Railway.
-    mlflow_tags: dict[str, str] = {}
-    try:
-        import mlflow as _mlflow
-        settings = app.state.settings
-        _mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
-        client = _mlflow.tracking.MlflowClient()
-        run = client.get_run(run_id)
-        mlflow_tags = dict(run.data.tags)
-    except Exception as e:
-        # Log and degrade to an empty tag set so the page still renders,
-        # but don't let a tracking-store outage masquerade as "tagless run".
-        logger.warning(
-            "MLflow live-tag lookup failed for run %s: %s", run_id, e
-        )
-        mlflow_tags = {}
-
-    ario_tags = {k: v for k, v in sorted(mlflow_tags.items()) if k.startswith("ario.")}
-
+    arweave_enabled = app.state.anchor.enabled if app.state.anchor else False
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -452,13 +970,7 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
             **_common_context(app),
             "envelope": envelope,
             "turbo_status": turbo_status,
-            "mlflow_ario_tags": ario_tags,
-            # Pass the configured URI verbatim — evaluators run the
-            # suggested command from the repo root, where relative
-            # tracking URIs like "mlruns" resolve. Exposing the server's
-            # absolute path (e.g. "/app/mlruns" on Railway) leaks
-            # deployment detail and isn't useful to the reader.
-            "mlflow_tracking_uri": app.state.settings.mlflow_tracking_uri,
+            "status": _envelope_status(envelope, arweave_enabled=arweave_enabled),
             "canonical_bytes_json": canonical_bytes_json,
             "signed_commitment_json": signed_commitment_json,
         },
@@ -466,136 +978,58 @@ def run_detail(request: Request, run_id: str, verify: bool = False):
 
 
 @router.get("/ui/models/{model_name}/{version}", response_class=HTMLResponse)
-def model_chain(request: Request, model_name: str, version: str, verify: bool = False):
+def model_detail(request: Request, model_name: str, version: str, verify: bool = False):
+    """Model version detail (slim).
+
+    Phase C: replaces the multi-card chain visualization with a focused
+    metadata + verify view. The chain experience now lives on the
+    Lineage page; a "View chain in Lineage" CTA bridges to it.
+    Tamper UX stays here because it operates on this version's data.
+    """
     app = request.app
 
-    # Get lifecycle records
-    lifecycle_records = app.state.lifecycle_store.list_all()
-    training_env = None
-    registration_env = None
+    chain_context = _build_chain_context(app, model_name, version, verify=verify)
+    training_env = chain_context.get("training")
+    registration_env = chain_context.get("registration")
 
-    for rec in lifecycle_records:
-        r = rec.get("record", {})
-        if r.get("event_type") == "training_complete" and r.get("model_name") == model_name and str(r.get("model_version")) == str(version):
-            training_env = rec
-        elif r.get("event_type") == "model_registered" and r.get("model_name") == model_name and str(r.get("model_version")) == str(version):
-            registration_env = rec
+    if training_env is None and registration_env is None:
+        return HTMLResponse("<h1>Model version not found</h1>", status_code=404)
 
-    # Filter dataset_anchored entries to those that belong to this
-    # model's training run. Each becomes its own chain-card on the
-    # lineage page with its own Arweave TX and verification badge.
-    dataset_anchored_envs: list[dict] = []
+    # Whether this version is the currently active production model.
+    active_version = str(app.state.model_info.get("model_version", ""))
+    is_active = str(version) == active_version
+
+    # Surface the dataset_inputs from the training event so the slim
+    # detail page can show what this version was trained on without
+    # dropping back to the full chain visualization (which now lives
+    # on Lineage).
+    training_dataset_inputs = []
     if training_env:
-        target_run_id = training_env["record"]["run_id"]
-        for rec in lifecycle_records:
-            r = rec.get("record", {})
-            if (r.get("event_type") == "dataset_anchored"
-                    and r.get("source_run_id") == target_run_id):
-                dataset_anchored_envs.append(rec)
+        training_dataset_inputs = (
+            training_env.get("record", {}).get("dataset_inputs") or []
+        )
 
-    # Full verification (on-demand)
-    training_verify = None
-    registration_verify = None
-    canonical_bytes_json = None
-    signed_commitment_json = None
-    if verify:
-        if training_env:
-            training_verify = _verify_envelope(app, training_env)
-            # Strip non-JSON-serializable raw bytes from plugin_full_verify
-            # before persisting (see run_detail comment).
-            training_env["last_verification"] = {
-                k: v for k, v in training_verify.items() if k != "plugin_full_verify"
-            }
-            app.state.lifecycle_store.update(training_env["record"]["event_id"], training_env)
-
-            # Phase 3: surface canonical bytes + signed envelope for the
-            # "How verification works" viewer. Use the training event's
-            # bytes since training is the chain's anchor / parent link.
-            try:
-                import json as _json
-                full = training_verify.get("plugin_full_verify") or {}
-                anchored = full.get("anchored_bytes") or {}
-                payload_bytes = anchored.get("payload_bytes")
-                if payload_bytes:
-                    try:
-                        canonical_bytes_json = _json.dumps(
-                            _json.loads(payload_bytes), indent=2
-                        )
-                    except Exception:
-                        canonical_bytes_json = (
-                            payload_bytes.decode("utf-8")
-                            if isinstance(payload_bytes, (bytes, bytearray))
-                            else str(payload_bytes)
-                        )
-                tx_id = training_env.get("arweave_tx_id")
-                plugin_envelope = app.state.anchor.fetch_proof(tx_id) if tx_id else None
-                if plugin_envelope:
-                    signed_commitment_json = _json.dumps(plugin_envelope, indent=2)
-            except Exception as e:  # noqa: BLE001
-                # Display-only: never block the page render on a viewer hiccup,
-                # but log so verification regressions are diagnosable.
-                logger.warning(
-                    "model_chain proof-viewer hydration failed for %s/v%s: %s",
-                    model_name, version, e,
-                )
-
-        if registration_env:
-            registration_verify = _verify_envelope(app, registration_env)
-            registration_env["last_verification"] = {
-                k: v for k, v in registration_verify.items() if k != "plugin_full_verify"
-            }
-            app.state.lifecycle_store.update(registration_env["record"]["event_id"], registration_env)
-
-        # Verify each dataset_anchored entry. Same primitive as
-        # training/registration; for dataset events the four-check
-        # result is signature + ar.io attestation only (anchored_bytes
-        # and source_of_truth are ok=None in v1 — see standalone-
-        # dataset-anchoring plan).
-        for ds_env in dataset_anchored_envs:
-            ds_verify = _verify_envelope(app, ds_env)
-            ds_env["last_verification"] = {
-                k: v for k, v in ds_verify.items() if k != "plugin_full_verify"
-            }
-            app.state.lifecycle_store.update(ds_env["record"]["event_id"], ds_env)
-
-    # Prediction summary
-    predictions = app.state.store.list_all()
-    model_predictions = [
-        p for p in predictions
-        if p.get("record", {}).get("model_name") == model_name
-        and str(p.get("record", {}).get("model_version")) == str(version)
-    ]
-    anchored_count = sum(1 for p in model_predictions if p.get("arweave_tx_id"))
-    verified_count = sum(
-        1 for p in model_predictions
-        if _is_fully_verified(p.get("last_verification"))
+    # Model-version status surfaces in the editorial header. Anchor on
+    # the registration envelope (the model-version-specific proof). Fall
+    # back to training when registration is missing so legacy data still
+    # renders a meaningful badge.
+    arweave_enabled = app.state.anchor.enabled if app.state.anchor else False
+    status = _envelope_status(
+        registration_env or training_env,
+        arweave_enabled=arweave_enabled,
     )
-
-    # Turbo status for each
-    training_turbo = None
-    registration_turbo = None
-    if training_env and training_env.get("arweave_tx_id"):
-        training_turbo = app.state.anchor.check_status(training_env["arweave_tx_id"])
-    if registration_env and registration_env.get("arweave_tx_id"):
-        registration_turbo = app.state.anchor.check_status(registration_env["arweave_tx_id"])
 
     return templates.TemplateResponse(
         request,
-        "model_chain.html",
+        "model_detail.html",
         {
             **_common_context(app),
             "model_name": model_name,
             "version": version,
-            "training": training_env,
-            "training_turbo": training_turbo,
-            "registration": registration_env,
-            "registration_turbo": registration_turbo,
-            "dataset_anchored": dataset_anchored_envs,
-            "prediction_count": len(model_predictions),
-            "anchored_count": anchored_count,
-            "verified_count": verified_count,
-            "canonical_bytes_json": canonical_bytes_json,
-            "signed_commitment_json": signed_commitment_json,
+            "is_active": is_active,
+            "training_dataset_inputs": training_dataset_inputs,
+            "status": status,
+            **chain_context,
         },
     )
 
@@ -613,4 +1047,174 @@ if get_settings().demo_mode:
             request,
             "demo_admin.html",
             _common_context(app),
+        )
+
+    @router.get("/demo/tamper", response_class=HTMLResponse)
+    def tamper_page(request: Request, chain: str | None = None, verify: bool = False):
+        """Demo-only tamper page. Single connected chain at a time with
+        tamper buttons inline at each link.
+
+        Phase E: lifted out of the per-detail pages so the verification
+        chain reads as evidence, not as something users would intentionally
+        break. Same chip-picker UX as Lineage; same tamper/reset endpoints
+        the per-detail pages used to call. Re-verifies the chain after
+        each tamper via ``?verify=true`` so the badge state flips
+        immediately on the reloaded page.
+        """
+        app = request.app
+        settings = app.state.settings
+
+        # Discover available chains — same logic as the lineage handler.
+        mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+        client = mlflow.tracking.MlflowClient()
+        available_chains = []
+        try:
+            versions = client.search_model_versions(f"name='{settings.mlflow_model_name}'")
+            active_version = str(app.state.model_info.get("model_version", ""))
+            for mv in sorted(versions, key=lambda v: int(v.version), reverse=True):
+                available_chains.append({
+                    "model_name": settings.mlflow_model_name,
+                    "model_version": str(mv.version),
+                    "key": f"{settings.mlflow_model_name}/{mv.version}",
+                    "is_active": str(mv.version) == active_version,
+                })
+        except Exception as e:
+            logger.warning("Tamper page: model registry lookup failed: %s", e)
+
+        # Resolve selected chain (default: active).
+        selected_chain = None
+        if chain:
+            parts = chain.rsplit("/", 1)
+            if len(parts) == 2:
+                for c in available_chains:
+                    if c["model_name"] == parts[0] and c["model_version"] == parts[1]:
+                        selected_chain = c
+                        break
+        if selected_chain is None and available_chains:
+            for c in available_chains:
+                if c["is_active"]:
+                    selected_chain = c
+                    break
+            if selected_chain is None:
+                selected_chain = available_chains[0]
+
+        chain_context = {}
+        if selected_chain:
+            chain_context = _build_chain_context(
+                app,
+                selected_chain["model_name"],
+                selected_chain["model_version"],
+                verify=verify,
+            )
+
+        # Recent decisions for the selected chain so we can render
+        # decision tamper buttons inline. Cap to keep the section
+        # readable when a chain has many decisions.
+        arweave_enabled = app.state.anchor.enabled if app.state.anchor else False
+        decision_envs = app.state.store.list_all()
+        chain_decisions_raw = sorted(
+            (
+                d for d in decision_envs
+                if d.get("record", {}).get("model_name") == (selected_chain or {}).get("model_name")
+                and str(d.get("record", {}).get("model_version", "")) == (selected_chain or {}).get("model_version", "")
+            ),
+            key=lambda e: (e.get("record") or {}).get("timestamp", ""),
+            reverse=True,
+        )[:10]
+
+        # Re-verify decisions when ?verify=true. _build_chain_context
+        # only verifies training / registration / dataset events; the
+        # tamper page lists decisions too, so a decision tamper would
+        # otherwise leave the badge stale. Persist the result so
+        # subsequent renders read the fresh state.
+        if verify:
+            for d in chain_decisions_raw:
+                if not d.get("arweave_tx_id"):
+                    continue
+                result = _verify_envelope(app, d)
+                result["verified_at"] = datetime.now(timezone.utc).isoformat()
+                persistable = {
+                    k: v for k, v in result.items() if k != "plugin_full_verify"
+                }
+                d["last_verification"] = persistable
+                app.state.store.update(d["record"]["decision_id"], d)
+
+        # Active tamper snapshots — used to flag the card the user
+        # actually clicked tamper on (the "Mutated" indicator), even
+        # when the verifier flag flips on a different downstream link.
+        from app import tamper as tamper_mod
+
+        def _is_mutated(et: str, eid: str) -> bool:
+            return any(
+                (et, str(eid), kind) in tamper_mod._snapshots
+                for kind in ("saved", "live")
+            )
+
+        # Pre-compute per-envelope status + failure descriptions so the
+        # template can render the canonical 5-state badge and a "what
+        # failed" hint without inline branching. Distinguishes Pending
+        # ar.io confirmation (yellow) from genuinely Tampered (red).
+        training_run_id = (
+            chain_context.get("training", {}).get("record", {}).get("run_id")
+            if chain_context.get("training") else None
+        )
+
+        def _wrap(env, *, mutated_event_type=None, mutated_event_id=None):
+            return {
+                "envelope": env,
+                "status": _envelope_status(env, arweave_enabled=arweave_enabled),
+                "failures": _describe_failed_checks(env.get("last_verification")),
+                "is_mutated": (
+                    _is_mutated(mutated_event_type, mutated_event_id)
+                    if mutated_event_type and mutated_event_id else False
+                ),
+            }
+
+        training_view = (
+            _wrap(
+                chain_context["training"],
+                mutated_event_type="training",
+                mutated_event_id=training_run_id,
+            ) if chain_context.get("training") else None
+        )
+        registration_view = (
+            _wrap(
+                chain_context["registration"],
+                mutated_event_type="registration",
+                mutated_event_id=chain_context["registration"]["record"]["event_id"],
+            ) if chain_context.get("registration") else None
+        )
+        # Dataset tamper is keyed on run_id (the dataset_meta tamper
+        # mutates the dataset registry tied to the training run), so all
+        # dataset views in the same chain share the same mutated flag.
+        dataset_views = [
+            _wrap(
+                env,
+                mutated_event_type="dataset",
+                mutated_event_id=training_run_id,
+            )
+            for env in chain_context.get("dataset_anchored", []) or []
+        ]
+        decision_views = [
+            {
+                **_wrap(d, mutated_event_type="decision", mutated_event_id=d["record"]["decision_id"]),
+                "decision_id": d["record"]["decision_id"],
+            }
+            for d in chain_decisions_raw
+        ]
+
+        return templates.TemplateResponse(
+            request,
+            "tamper.html",
+            {
+                **_common_context(app),
+                "available_chains": available_chains,
+                "selected_chain": selected_chain,
+                "training_view": training_view,
+                "registration_view": registration_view,
+                "dataset_views": dataset_views,
+                "decision_views": decision_views,
+                "prediction_count": chain_context.get("prediction_count", 0),
+                "verified_count": chain_context.get("verified_count", 0),
+            },
         )

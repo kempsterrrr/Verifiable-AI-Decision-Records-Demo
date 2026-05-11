@@ -289,9 +289,14 @@
                         <div class="kv-row" style="color: var(--muted);">Not anchored — anchoring may still be in flight.</div>
                         {% endif %}
                     </div>
-                    {% if envelope.arweave_tx_id %}
-                    <a id="view-proof-btn" href="https://turbo-gateway.com/{{ envelope.arweave_tx_id }}" target="_blank" rel="noopener" class="anchor-link">View on ar.io →</a>
-                    {% endif %}
+                    <a
+                        id="view-proof-btn"
+                        href="https://turbo-gateway.com/{{ envelope.arweave_tx_id or '' }}"
+                        target="_blank"
+                        rel="noopener"
+                        class="anchor-link"
+                        {% if not envelope.arweave_tx_id %}style="display:none;"{% endif %}
+                    >View on ar.io →</a>
                 </div>
             </div>
 
@@ -301,7 +306,7 @@
                     v=v,
                     arweave_tx_id=envelope.arweave_tx_id,
                     entity_label="Decision Record",
-                    intro="Independent verification of MLflow data integrity. These verify this decision record matches the original proof anchored with ar.io at runtime — they do <strong>not</strong> speak to whether the decision itself was correct.",
+                    intro="Independent verification of MLflow data integrity. These verify this decision record matches the original proof anchored to ar.io at runtime — they do <strong>not</strong> speak to whether the decision itself was correct.",
                     cli="ario-mlflow verify trace " ~ envelope.record.trace_id,
                 ) }}
 

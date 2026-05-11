@@ -51,7 +51,7 @@
             {% endif %}
         </div>
 
-        <div class="verify-row" title="The data in MLflow (both the saved canonical bytes and the live state) hashes to the same value that was anchored on Arweave. ar.io independently re-verifies the bytes. FAIL means MLflow data has been tampered with since anchoring.">
+        <div class="verify-row" title="The data in MLflow (both the saved canonical bytes and the live state) hashes to the same value that was anchored to ar.io. ar.io independently re-verifies the bytes. FAIL means MLflow data has been tampered with since anchoring.">
             <span>{{ entity_label }} Matches</span>
             {% if v %}
                 {% if v.hash_match is sameas false or v.source_of_truth_ok is sameas false %}

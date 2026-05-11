@@ -171,10 +171,13 @@ as backlog.**
   in the `client` fixture's `monkeypatch.setenv` block (~line 27).
 - `tests/test_demo_reset.py` — same in `_reload_app` (~line 32).
 - `tests/test_dataset_first.py` — same in `_reload_app` (~line 33).
-- `requirements.txt` — add `pytest-xdist>=3.0`.
-- `pyproject.toml` (new file, currently absent) — `[tool.pytest.ini_options]`
-  with `addopts = -n auto --tb=short`. Alternatively
-  `pytest.ini` for slightly less ceremony.
+- `requirements-dev.txt` (new) — `-r requirements.txt` include plus
+  `pytest>=8.0` and `pytest-xdist>=3.0`. Kept separate from
+  `requirements.txt` so the Dockerfile (Railway prod image) stays slim.
+- `pytest.ini` (new) —
+  `addopts = -n auto --dist=loadfile --tb=short`. `loadfile` keeps
+  tests in a single file on the same worker; see "What actually
+  shipped" below for the reason.
 
 ## Verification
 

@@ -641,20 +641,33 @@ def dataset_detail(request: Request, digest: str, verify: bool = False):
 
 
 @router.get("/ui/runs", response_class=HTMLResponse)
-def runs_list(request: Request):
+def runs_list(request: Request, dataset: str | None = None):
     """Training runs list — second stop in the verification chain.
 
     Reads training_complete events from lifecycle_store (one per run).
     Hosts the "Train & anchor" form (moved here from the Models page —
     this is where a new run is born). Each row links to the existing
     /ui/runs/{run_id} detail page.
+
+    ``?dataset=<digest>`` preselects that dataset in the train hero's
+    selector — used by the "Train a model with this dataset" CTA on
+    each dataset detail page.
     """
+    from app.model import _parse_synthetic_source, DEFAULT_DATASET_NAME
+
     app = request.app
     settings = app.state.settings
     arweave_enabled = app.state.anchor.enabled if app.state.anchor else False
     lifecycle = app.state.lifecycle_store.list_all()
 
     rows = []
+    # Group dataset_anchored events by digest for the train hero's
+    # selector. Latest timestamp wins for display (mirrors /ui/datasets'
+    # grouping). Standalone-seeded entries (no source_run_id) carry the
+    # n_samples/seed columns; legacy per-run entries don't, so fall back
+    # to re-parsing source. The dropdown shows the dataset's name plus
+    # sample-count hint so the user can tell variants apart at a glance.
+    dataset_by_digest: dict[str, dict] = {}
     for env in lifecycle:
         rec = env.get("record") or {}
         if rec.get("event_type") != "training_complete":
@@ -671,6 +684,40 @@ def runs_list(request: Request):
             "arweave_url": env.get("arweave_url"),
             "status": _envelope_status(env, arweave_enabled=arweave_enabled),
         })
+    for env in lifecycle:
+        rec = env.get("record") or {}
+        if rec.get("event_type") != "dataset_anchored":
+            continue
+        digest = rec.get("digest")
+        if not digest:
+            continue
+        existing = dataset_by_digest.get(digest)
+        ts = rec.get("timestamp", "")
+        if existing is None or ts > existing.get("timestamp", ""):
+            n = rec.get("n_samples")
+            s = rec.get("seed")
+            if n is None or s is None:
+                parsed = _parse_synthetic_source(rec.get("source") or "")
+                if parsed:
+                    n, s = parsed
+            dataset_by_digest[digest] = {
+                "digest": digest,
+                "name": rec.get("name") or "—",
+                "n_samples": n,
+                "seed": s,
+                "timestamp": ts,
+            }
+    # Sort: the default seeded dataset first (so the dropdown's default
+    # selection is the canonical one demos walk through), then others by
+    # ``timestamp`` ascending (seeded variants before user-created ones).
+    def _sort_key(d):
+        is_default = 0 if d["name"] == DEFAULT_DATASET_NAME else 1
+        return (is_default, d["timestamp"])
+    available_datasets = sorted(dataset_by_digest.values(), key=_sort_key)
+    # Only honour the query param when it actually matches a known
+    # digest — otherwise fall through to the dropdown's first option.
+    preselected_dataset_id = dataset if dataset in dataset_by_digest else None
+
     rows.sort(key=lambda r: r["timestamp"], reverse=True)
 
     return templates.TemplateResponse(
@@ -680,6 +727,8 @@ def runs_list(request: Request):
             **_common_context(app),
             "runs": rows,
             "model_name": settings.mlflow_model_name,
+            "available_datasets": available_datasets,
+            "preselected_dataset_id": preselected_dataset_id,
         },
     )
 

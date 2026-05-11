@@ -7,8 +7,11 @@ on the prediction form read as a plausible credit-scoring scenario rather
 than flower measurements.
 """
 
+import json as _json
 import logging
 import os
+from types import SimpleNamespace
+from urllib.parse import urlparse, parse_qs
 
 import mlflow
 import mlflow.data
@@ -39,6 +42,52 @@ FEATURE_NAMES = [
 ]
 
 CLASS_NAMES = ["deny", "approve"]
+
+# Pre-seeded synthetic dataset variants. Used by the lifespan handler and
+# /demo/reset to anchor a Datasets list at boot before any training run.
+# DEFAULT_DATASET_NAME picks the one auto-train falls back to.
+# ASCII hyphen (not em-dash) so MLflow tag-key validation accepts the
+# `ario.dataset_anchor_tx.<name>` tag the plugin's training-mode anchor
+# writes.
+DEFAULT_DATASETS: list[dict] = [
+    {"name": "Credit scoring - small",   "n_samples": 300,  "seed": 0},
+    {"name": "Credit scoring - default", "n_samples": 800,  "seed": 42},
+    {"name": "Credit scoring - large",   "n_samples": 2000, "seed": 7},
+]
+DEFAULT_DATASET_NAME = "Credit scoring - default"
+
+
+def _synthetic_source(n_samples: int, seed: int) -> str:
+    # MLflow resolves plain strings (no scheme) as LocalArtifactDatasetSource.
+    # The query-style suffix is informational + parseable by
+    # _parse_synthetic_source so /api/train can regenerate the same train
+    # subset from a stored dataset's source string.
+    return f"credit_scorer_demo_synthetic.csv?n_samples={n_samples}&seed={seed}"
+
+
+def _parse_synthetic_source(source: str) -> tuple[int, int] | None:
+    if not source:
+        return None
+    # MLflow's LocalArtifactDatasetSource wraps the plain string the
+    # caller passed to ``from_pandas`` as JSON: ``{"uri": "<original>"}``.
+    # Unwrap before parsing the query.
+    raw = source.strip()
+    if raw.startswith("{"):
+        try:
+            wrapped = _json.loads(raw)
+            if isinstance(wrapped, dict) and "uri" in wrapped:
+                raw = wrapped["uri"]
+        except (ValueError, TypeError):
+            pass
+    parsed = urlparse(raw)
+    qs = parse_qs(parsed.query)
+    n, s = qs.get("n_samples"), qs.get("seed")
+    if not n or not s:
+        return None
+    try:
+        return int(n[0]), int(s[0])
+    except ValueError:
+        return None
 
 
 def _generate_credit_data(n_samples: int = 800, random_state: int = 42):
@@ -72,6 +121,120 @@ def _generate_credit_data(n_samples: int = 800, random_state: int = 42):
     return features, labels
 
 
+def _materialize_training_dataset(name: str, n_samples: int, seed: int):
+    """Generate the deterministic train subset and wrap it as an MLflow
+    Dataset. Shared by ``anchor_synthetic_dataset`` (which only needs the
+    Dataset to anchor) and ``train_and_register_with_params`` (which
+    needs all four arrays to fit a classifier).
+
+    Returns ``(training_dataset, X_train, X_test, y_train, y_test)``.
+    The dataset's digest depends only on ``(n_samples, seed)`` since
+    ``train_test_split`` is also seeded from ``seed`` — so seeding a
+    dataset standalone and later training against it produces matching
+    digests.
+    """
+    X, y = _generate_credit_data(n_samples=n_samples, random_state=seed)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=seed,
+    )
+    train_df = pd.DataFrame(X_train, columns=FEATURE_NAMES)
+    train_df["approved"] = y_train
+    training_dataset = mlflow.data.from_pandas(
+        train_df,
+        source=_synthetic_source(n_samples, seed),
+        name=name,
+    )
+    return training_dataset, X_train, X_test, y_train, y_test
+
+
+def _dataset_view_for_plugin(dataset):
+    """Demo-side workaround for an upstream plugin bug.
+
+    ``ario_mlflow/anchoring.py::_anchor_dataset_event`` reads
+    ``dataset.source``, ``dataset.source_type``, and ``dataset.schema``
+    as **strings** — the shape MLflow's storage round-trip produces via
+    ``dataset.to_dict()``. On the training-mode auto-anchor path that's
+    what the plugin sees, because ``run.inputs.dataset_inputs[i].dataset``
+    is reconstructed from the stored dict.
+
+    On the standalone path the plugin gets the freshly-built
+    ``PandasDataset`` directly, which has no ``source_type`` attribute
+    at all, exposes ``schema`` as a ``mlflow.types.Schema`` object, and
+    returns the source as a wrapped object instead of a string. The
+    plugin crashes with ``AttributeError`` on ``source_type`` and
+    ``Schema``.
+
+    Wrap the dataset in a ``SimpleNamespace`` built from
+    ``dataset.to_dict()`` — that dict already has the exact string
+    shape the plugin's training-mode path consumes, so the resulting
+    digest + schema_hash match what auto-anchor would produce for the
+    same dataset.
+
+    Tracked: ``docs/known-issues.md`` and upstream at
+    https://github.com/ar-io/ar-io-mlflow. Remove this helper and pass
+    ``dataset`` directly once the upstream fix lands.
+    """
+    d = dataset.to_dict()
+    return SimpleNamespace(
+        name=d.get("name"),
+        digest=d.get("digest"),
+        source=d.get("source"),
+        source_type=d.get("source_type"),
+        schema=d.get("schema", "") or "",
+    )
+
+
+def anchor_synthetic_dataset(
+    name: str,
+    n_samples: int,
+    seed: int,
+    *,
+    proof_engine: ProofEngine,
+    arweave: ArweaveAnchor,
+) -> dict:
+    """Anchor a single synthetic dataset standalone — no MLflow run.
+
+    Returns the same dict shape ``ario_mlflow.anchor(dataset=ds)``
+    returns (``envelope``, ``payload``, ``payload_bytes``,
+    ``payload_hash``, ``anchor_result``) plus a ``dataset_name`` key so
+    callers building lifecycle_store entries don't need to peek into
+    ``payload["name"]``.
+    """
+    training_dataset, *_ = _materialize_training_dataset(name, n_samples, seed)
+    view = _dataset_view_for_plugin(training_dataset)
+    result = ario_mlflow.anchor(
+        proof_engine=proof_engine,
+        arweave=arweave,
+        dataset=view,
+    )
+    result["dataset_name"] = name
+    return result
+
+
+def seed_default_datasets(
+    *, proof_engine: ProofEngine, arweave: ArweaveAnchor,
+) -> list[dict]:
+    """Anchor every entry in ``DEFAULT_DATASETS`` standalone.
+
+    Returns the list of anchor results in DEFAULT_DATASETS order.
+    Best-effort per dataset: a failure on one is logged and skipped, the
+    rest continue. Caller wraps each result into a lifecycle_store
+    envelope.
+    """
+    out = []
+    for spec in DEFAULT_DATASETS:
+        try:
+            out.append(anchor_synthetic_dataset(
+                spec["name"], spec["n_samples"], spec["seed"],
+                proof_engine=proof_engine, arweave=arweave,
+            ))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"seed_default_datasets: failed to anchor {spec['name']!r}: {e}"
+            )
+    return out
+
+
 def train_and_register(
     tracking_uri: str,
     model_name: str,
@@ -93,6 +256,7 @@ def train_and_register_with_params(
     arweave: ArweaveAnchor | None = None,
     max_iter: int = 200,
     random_state: int = 42,
+    dataset_spec: dict | None = None,
 ) -> dict:
     """Train the credit classifier and register it via the plugin's headline API.
 
@@ -117,20 +281,26 @@ def train_and_register_with_params(
             ``ArioMlflowClient`` create their own.
         arweave: Optional override. Same semantics.
         max_iter: Logistic regression max iterations.
-        random_state: Seed for data + classifier.
-
-    Returns:
-        Dict with ``run_id``, ``model_name``, ``model_version``,
-        ``artifact_uri``, ``accuracy``, plus the new
-        ``training_envelope``, ``training_payload_hash``,
-        ``training_anchor_result`` from the plugin's anchor() so the
-        caller can hydrate UI state.
+        random_state: Classifier random_state — controls fitting, not
+            the dataset's identity. The dataset's content (and digest)
+            is governed solely by ``dataset_spec["seed"]``.
+        dataset_spec: ``{"name", "n_samples", "seed"}`` describing the
+            dataset to train on. When ``None``, falls back to the
+            ``DEFAULT_DATASET_NAME`` entry from ``DEFAULT_DATASETS``
+            (used by load_model's auto-train fallback on first boot).
     """
     mlflow.set_tracking_uri(tracking_uri)
 
-    X, y = _generate_credit_data(n_samples=800, random_state=random_state)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=random_state,
+    if dataset_spec is None:
+        dataset_spec = next(
+            d for d in DEFAULT_DATASETS if d["name"] == DEFAULT_DATASET_NAME
+        )
+    ds_name = dataset_spec["name"]
+    n_samples = int(dataset_spec["n_samples"])
+    data_seed = int(dataset_spec["seed"])
+
+    training_dataset, X_train, X_test, y_train, y_test = _materialize_training_dataset(
+        ds_name, n_samples, data_seed,
     )
 
     # StandardScaler is essential here because features span three orders of
@@ -144,29 +314,16 @@ def train_and_register_with_params(
     pipeline.fit(X_train, y_train)
     accuracy = pipeline.score(X_test, y_test)
 
-    # Wrap the training data as a labelled MLflow Dataset so the run
-    # carries a structured dataset reference. The plugin's anchor() reads
-    # run.inputs.dataset_inputs and folds the dataset's digest, source,
-    # name, and JCS-canonicalized schema fingerprint into the signed
-    # canonical payload — closing the input-side honesty gap.
-    train_df = pd.DataFrame(X_train, columns=FEATURE_NAMES)
-    train_df["approved"] = y_train
-    training_dataset = mlflow.data.from_pandas(
-        train_df,
-        # Plain identifier (no scheme) so MLflow's source registry
-        # resolves it as a LocalArtifactDatasetSource. The data is
-        # synthetic and generated in-process; the source string is
-        # informational, not a real fetch URI.
-        source="credit_scorer_demo_synthetic.csv",
-        name="credit_scorer_demo_training_data",
-    )
-
     with mlflow.start_run() as run:
         mlflow.log_param("model_type", "LogisticRegression+StandardScaler")
         mlflow.log_param("max_iter", max_iter)
         mlflow.log_param("random_state", random_state)
         mlflow.log_param("n_training_samples", len(X_train))
         mlflow.log_param("feature_names", ",".join(FEATURE_NAMES))
+        mlflow.log_param("dataset_name", ds_name)
+        mlflow.log_param("dataset_n_samples", n_samples)
+        mlflow.log_param("dataset_seed", data_seed)
+        mlflow.log_param("dataset_digest", training_dataset.digest)
         mlflow.log_metric("accuracy", accuracy)
         mlflow.log_input(training_dataset, context="training")
 

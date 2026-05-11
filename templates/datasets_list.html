@@ -28,6 +28,109 @@
         .col-anchor { width: 130px; }
         .col-status { width: 170px; }
         .col-actions { width: 150px; }
+
+        /* ── Create hero ── mirrors the train-hero pattern on
+              templates/runs_list.html so the two "create the next link
+              in the chain" actions read as a pair. Restated here
+              instead of lifted to base.html until a third use shows up.
+        */
+        .create-hero {
+            padding: 1.5rem;
+            background: var(--lavender);
+            border: 1px solid var(--primary);
+            border-radius: 8px;
+            margin-bottom: 2rem;
+        }
+        .create-hero-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+        }
+        .create-hero-text h2 {
+            font-family: 'Besley', serif;
+            font-weight: 800;
+            font-size: 1.1rem;
+            color: var(--black);
+            margin-bottom: 0.25rem;
+        }
+        .create-hero-text p {
+            font-size: 0.85rem;
+            color: var(--primary);
+        }
+        .btn-create {
+            padding: 0.65rem 1.5rem;
+            font-size: 0.9rem;
+            white-space: nowrap;
+        }
+        .create-panel {
+            margin-top: 1.25rem;
+            padding-top: 1.25rem;
+            border-top: 1px solid var(--primary);
+            display: none;
+        }
+        .create-panel.open { display: block; }
+        .create-form {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            align-items: flex-end;
+        }
+        .create-form .form-group { display: flex; flex-direction: column; gap: 0.25rem; }
+        .create-form label {
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: var(--primary);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .create-form input {
+            background: var(--white);
+            border: 1px solid var(--primary);
+            color: var(--black);
+            padding: 0.5rem 0.6rem;
+            border-radius: 6px;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-size: 0.85rem;
+        }
+        .create-form .form-group-name input { width: 280px; }
+        .create-form .form-group-number input { width: 120px; }
+        .create-form input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px rgba(84, 39, 200, 0.2); }
+        .create-progress {
+            margin-top: 1.25rem;
+            display: none;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+            color: var(--black);
+        }
+        .create-progress.active { display: flex; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .create-spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid var(--border);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        .create-result {
+            margin-top: 1rem;
+            padding: 0.75rem 1rem;
+            background: var(--green-bg);
+            border: 1px solid var(--green);
+            border-radius: 6px;
+            font-size: 0.85rem;
+            color: var(--green);
+            display: none;
+        }
+        .create-result.show { display: block; }
+
+        @media (max-width: 768px) {
+            .create-hero-top { flex-direction: column; align-items: flex-start; }
+            .create-form { flex-direction: column; }
+            .create-form input { width: 100% !important; }
+        }
 {% endblock %}
 
 {% block content %}
@@ -46,6 +149,42 @@
                     <span class="editorial-stat-label">Anchored</span>
                     <span class="editorial-stat-value tabular">{{ datasets|length }}</span>
                 </div>
+            </div>
+        </div>
+
+        <!-- Create hero — mirrors the train-hero on /ui/runs -->
+        <div id="create" class="create-hero">
+            <div class="create-hero-top">
+                <div class="create-hero-text">
+                    <h2>Create a new dataset</h2>
+                    <p>Generate a synthetic credit-scoring variant, then sign and anchor it to ar.io</p>
+                </div>
+                <button class="btn btn-primary btn-create" onclick="document.getElementById('create-panel').classList.toggle('open')">Create dataset</button>
+            </div>
+
+            <div class="create-panel" id="create-panel">
+                <div class="create-form" id="create-form">
+                    <div class="form-group form-group-name">
+                        <label>Name</label>
+                        <input type="text" id="ds-name" placeholder="Credit scoring - my variant" maxlength="80">
+                    </div>
+                    <div class="form-group form-group-number">
+                        <label>Sample count</label>
+                        <input type="number" id="ds-n-samples" value="1000" min="50" max="50000">
+                    </div>
+                    <div class="form-group form-group-number">
+                        <label>Random Seed</label>
+                        <input type="number" id="ds-seed" value="" placeholder="Random">
+                    </div>
+                    <button class="btn btn-primary" id="ds-create-btn" onclick="createDataset()">Generate &amp; Anchor</button>
+                </div>
+
+                <div class="create-progress" id="create-progress">
+                    <div class="create-spinner"></div>
+                    <span id="create-progress-text">Generating data and anchoring to ar.io...</span>
+                </div>
+
+                <div class="create-result" id="create-result"></div>
             </div>
         </div>
 
@@ -122,10 +261,79 @@
         <div class="empty-state">
             <div class="empty-state-title">No datasets anchored yet</div>
             <p class="empty-state-body">
-                Datasets appear here when a training run logs them as inputs.
-                Start a run on the <a href="/ui/runs">Training Runs</a> page
-                to populate the chain.
+                Use <strong>Create dataset</strong> above to generate and anchor
+                a synthetic variant. Once anchored, each dataset can be trained
+                against from <a href="/ui/runs">Training Runs</a>.
             </p>
         </div>
         {% endif %}
+{% endblock %}
+
+{% block scripts %}
+    <script>
+    function createDataset() {
+        const nameEl = document.getElementById('ds-name');
+        const nSamplesEl = document.getElementById('ds-n-samples');
+        const seedEl = document.getElementById('ds-seed');
+        const btn = document.getElementById('ds-create-btn');
+        const progress = document.getElementById('create-progress');
+        const result = document.getElementById('create-result');
+
+        const name = (nameEl.value || '').trim();
+        const nSamples = parseInt(nSamplesEl.value || '1000', 10);
+        const seed = seedEl.value ? parseInt(seedEl.value, 10) : Math.floor(Math.random() * 10000);
+
+        if (!name) {
+            showError(result, 'Pick a name for the dataset.');
+            nameEl.focus();
+            return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = 'Creating...';
+        btn.style.opacity = '0.6';
+        progress.classList.add('active');
+        result.classList.remove('show');
+        // Re-apply the success palette in case the previous attempt errored.
+        result.style.background = 'var(--green-bg)';
+        result.style.color = 'var(--green)';
+        result.style.borderColor = 'var(--green)';
+
+        fetch('/api/datasets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name, n_samples: nSamples, random_state: seed })
+        })
+        .then(r => {
+            if (!r.ok) {
+                return r.json().then(d => {
+                    throw new Error(d.error || ('HTTP ' + r.status));
+                });
+            }
+            return r.json();
+        })
+        .then(data => {
+            progress.classList.remove('active');
+            result.innerHTML = 'Dataset created (digest <span class="mono">' + data.dataset_id +
+                '</span>). Redirecting to detail page...';
+            result.classList.add('show');
+            setTimeout(() => { window.location.href = data.redirect_url; }, 1200);
+        })
+        .catch(err => {
+            progress.classList.remove('active');
+            showError(result, 'Create failed: ' + err.message);
+            btn.textContent = 'Generate & Anchor';
+            btn.disabled = false;
+            btn.style.opacity = '1';
+        });
+    }
+
+    function showError(el, msg) {
+        el.innerHTML = msg;
+        el.style.background = 'var(--red-bg)';
+        el.style.color = 'var(--red)';
+        el.style.borderColor = 'var(--red)';
+        el.classList.add('show');
+    }
+    </script>
 {% endblock %}

@@ -60,7 +60,8 @@
             text-transform: uppercase;
             letter-spacing: 0.04em;
         }
-        .train-form input {
+        .train-form input,
+        .train-form select {
             background: var(--white);
             border: 1px solid var(--primary);
             color: var(--black);
@@ -70,7 +71,20 @@
             font-family: 'Plus Jakarta Sans', sans-serif;
             font-size: 0.85rem;
         }
-        .train-form input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px rgba(84, 39, 200, 0.2); }
+        .train-form input:focus,
+        .train-form select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px rgba(84, 39, 200, 0.2); }
+        /* Dataset selector is wider — name + sample count hint reads
+           awkwardly truncated at the input's 120px default. */
+        .train-form .form-group-wide select { width: 280px; }
+        .train-form .form-group-wide { flex: 1 1 280px; }
+        /* Empty-state hint when no datasets exist (rare — lifespan seeds
+           defaults on first boot; only shows up if seeding fails). */
+        .train-hero-empty-datasets {
+            margin-top: 0.75rem;
+            font-size: 0.82rem;
+            color: var(--red);
+        }
+        .train-hero-empty-datasets a { color: var(--red); text-decoration: underline; }
 
         .train-progress { margin-top: 1.25rem; display: none; }
         .train-progress.active { display: block; }
@@ -163,7 +177,19 @@
             </div>
 
             <div class="train-panel" id="train-panel">
+                {% if available_datasets %}
                 <div class="train-form" id="train-form">
+                    <div class="form-group form-group-wide">
+                        <label>Dataset</label>
+                        <select id="train-dataset-id">
+                            {% for d in available_datasets %}
+                            <option value="{{ d.digest }}"
+                                {% if d.digest == preselected_dataset_id %}selected{% endif %}>
+                                {{ d.name }}{% if d.n_samples %} — {{ d.n_samples }} samples{% endif %}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
                     <div class="form-group">
                         <label>Max Iterations</label>
                         <input type="number" id="train-max-iter" value="200" min="50" max="1000">
@@ -174,6 +200,11 @@
                     </div>
                     <button class="btn btn-primary" id="train-btn" onclick="startTraining()">Start Training</button>
                 </div>
+                {% else %}
+                <div class="train-hero-empty-datasets">
+                    No datasets available. <a href="/ui/datasets">Create one on the Datasets page</a> before training.
+                </div>
+                {% endif %}
 
                 <div class="train-progress" id="train-progress">
                     <div class="train-step" id="step-train"><span class="step-icon"></span> Training model...</div>
@@ -266,11 +297,21 @@
 {% block scripts %}
     <script>
     function startTraining() {
+        const datasetEl = document.getElementById('train-dataset-id');
         const maxIter = document.getElementById('train-max-iter').value || 200;
         const randomState = document.getElementById('train-random-state').value;
         const btn = document.getElementById('train-btn');
         const progress = document.getElementById('train-progress');
         const result = document.getElementById('train-result');
+
+        if (!datasetEl || !datasetEl.value) {
+            result.innerHTML = 'Pick a dataset before training.';
+            result.style.background = 'var(--red-bg)';
+            result.style.color = 'var(--red)';
+            result.style.borderColor = 'var(--red)';
+            result.classList.add('show');
+            return;
+        }
 
         btn.disabled = true;
         btn.textContent = 'Training...';
@@ -280,7 +321,7 @@
 
         setStepActive('step-train');
 
-        const body = { max_iter: parseInt(maxIter) };
+        const body = { dataset_id: datasetEl.value, max_iter: parseInt(maxIter) };
         if (randomState) body.random_state = parseInt(randomState);
 
         fetch('/api/train', {
@@ -288,7 +329,16 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         })
-        .then(r => r.json())
+        .then(r => {
+            // Surface 400/404 with the server's error message instead of
+            // proceeding into the happy-path step-progress flow.
+            if (!r.ok) {
+                return r.json().then(d => {
+                    throw new Error(d.error || ('HTTP ' + r.status));
+                });
+            }
+            return r.json();
+        })
         .then(data => {
             setStepDone('step-train');
             setStepDone('step-register');
@@ -319,6 +369,18 @@
             btn.style.opacity = '1';
         });
     }
+
+    // Auto-open the train panel when arriving via ?dataset=<digest>#train
+    // (the "Train a model with this dataset" CTA on dataset detail pages
+    // links here). Without this the user lands on the page with the form
+    // collapsed and has to click again.
+    (function autoOpenPanelOnDeepLink() {
+        const params = new URLSearchParams(window.location.search);
+        if (params.has('dataset') || window.location.hash === '#train') {
+            const panel = document.getElementById('train-panel');
+            if (panel) panel.classList.add('open');
+        }
+    })();
 
     function setStepActive(id) {
         const el = document.getElementById(id);

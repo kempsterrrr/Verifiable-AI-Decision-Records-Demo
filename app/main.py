@@ -21,7 +21,17 @@ from app.lifecycle_store import LifecycleStore
 from ario_mlflow.proof import ProofEngine, canonical_json, hash_data
 from ario_mlflow.arweave import ArweaveAnchor
 from ario_mlflow.verify import ArioVerifyClient
-from app.model import load_model, predict, train_and_register_with_params, FEATURE_NAMES
+from app.model import (
+    load_model,
+    predict,
+    train_and_register_with_params,
+    anchor_synthetic_dataset,
+    seed_default_datasets,
+    _parse_synthetic_source,
+    DEFAULT_DATASETS,
+    DEFAULT_DATASET_NAME,
+    FEATURE_NAMES,
+)
 from app.ui import router as ui_router
 from app import tamper as tamper_mod
 from app.reset import reset_demo_state
@@ -114,6 +124,81 @@ def _build_training_cache_record(model_info: dict) -> dict:
         # anchored under the legacy escape hatch.
         "dataset_inputs": enriched_dataset_inputs,
     }
+
+
+def _build_standalone_dataset_envelope(anchor_result: dict) -> dict:
+    """Wrap a standalone ``ario_mlflow.anchor(dataset=ds)`` result as a
+    lifecycle_store envelope.
+
+    Same shape as the per-training-run dataset_anchored envelopes built
+    by ``_build_dataset_anchored_records``, except ``source_run_id`` is
+    ``None`` (no associated training run) and ``n_samples`` / ``seed``
+    are surfaced from the synthetic-source query string so the UI and
+    /api/train can recover the generator params without re-parsing the
+    canonical payload's source field.
+    """
+    payload = anchor_result.get("payload") or {}
+    ar = anchor_result.get("anchor_result") or {}
+    parsed = _parse_synthetic_source(payload.get("source") or "")
+    n_samples, seed = (parsed if parsed else (None, None))
+    record = {
+        "event_id": str(uuid.uuid4()),
+        "event_type": "dataset_anchored",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "name":        payload.get("name"),
+        "source":      payload.get("source"),
+        "source_type": payload.get("source_type"),
+        "digest":      payload.get("digest"),
+        "schema_hash": payload.get("schema_hash"),
+        # No run yet — this dataset was seeded or created standalone.
+        # The "Used by" table on the dataset detail page picks up
+        # training runs by digest, not by source_run_id, so this stays
+        # accurate after a training run consumes the dataset.
+        "source_run_id": None,
+        "payload_hash": anchor_result.get("payload_hash"),
+        # Synthetic generator params, surfaced so /api/train can
+        # regenerate the same train subset deterministically.
+        "n_samples": n_samples,
+        "seed": seed,
+    }
+    canonical_bytes_json, signed_commitment_json = _proof_display_json(
+        anchor_result.get("payload"),
+        anchor_result.get("envelope"),
+    )
+    return {
+        "record": record,
+        "arweave_tx_id": ar.get("tx_id"),
+        "arweave_url": ar.get("url"),
+        "turbo_receipt": ar.get("receipt"),
+        "canonical_bytes_json": canonical_bytes_json,
+        "signed_commitment_json": signed_commitment_json,
+    }
+
+
+def _find_dataset_spec_by_digest(lifecycle_store, digest: str) -> dict | None:
+    """Look up a dataset_anchored event by digest and return the
+    ``{"name", "n_samples", "seed"}`` spec needed by
+    ``train_and_register_with_params``. Returns ``None`` if no event
+    matches or its source string doesn't carry synthetic params.
+    """
+    for env in lifecycle_store.list_all():
+        rec = env.get("record") or {}
+        if rec.get("event_type") != "dataset_anchored":
+            continue
+        if rec.get("digest") != digest:
+            continue
+        # Prefer the explicit n_samples/seed columns when the standalone
+        # envelope wrote them; fall back to re-parsing source for older
+        # per-run dataset_anchored entries.
+        n = rec.get("n_samples")
+        s = rec.get("seed")
+        if n is None or s is None:
+            parsed = _parse_synthetic_source(rec.get("source") or "")
+            if not parsed:
+                return None
+            n, s = parsed
+        return {"name": rec.get("name"), "n_samples": int(n), "seed": int(s)}
+    return None
 
 
 def _build_dataset_anchored_records(model_info: dict) -> list[dict]:
@@ -282,6 +367,32 @@ def _startup_anchor_lifecycle(settings, model_info, lifecycle_store):
             ).start()
 
 
+def _ensure_default_datasets_seeded(lifecycle_store, proof_engine, arweave) -> int:
+    """Idempotently anchor DEFAULT_DATASETS standalone into the
+    lifecycle_store.
+
+    Skipped when any DEFAULT_DATASETS name already has a dataset_anchored
+    entry — defaults seed as a unit, so a partial pre-existing set
+    (e.g. one was deleted) won't trigger a re-seed. Returns the number
+    of new entries written.
+    """
+    existing_names = {
+        (env.get("record") or {}).get("name")
+        for env in lifecycle_store.list_all()
+        if (env.get("record") or {}).get("event_type") == "dataset_anchored"
+    }
+    if any(spec["name"] in existing_names for spec in DEFAULT_DATASETS):
+        return 0
+    results = seed_default_datasets(proof_engine=proof_engine, arweave=arweave)
+    for result in results:
+        lifecycle_store.append(_build_standalone_dataset_envelope(result))
+    if results:
+        logger.info(
+            f"Seeded {len(results)} default datasets into lifecycle_store."
+        )
+    return len(results)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -304,6 +415,16 @@ async def lifespan(app: FastAPI):
     # signing key + wallet are threaded through to VerifiedModel and
     # any auto-train fallback path. (Phase 2.B)
     app.state.anchor = ArweaveAnchor(settings.arweave_wallet_path, settings.ario_gateway_host)
+
+    # Seed default datasets standalone before load_model. On first boot
+    # this populates the Datasets list before any training run exists;
+    # idempotent on subsequent boots. Each default gets its own
+    # signed proof + Arweave TX with no associated source_run_id.
+    _ensure_default_datasets_seeded(
+        app.state.lifecycle_store,
+        app.state.proof_engine,
+        app.state.anchor,
+    )
 
     # MLflow model — load_model now returns a VerifiedModel alongside
     # the raw sklearn estimator. The sklearn one is used for the UI's
@@ -581,17 +702,84 @@ def form_predict(
     return RedirectResponse(f"/ui/decisions/{decision_id}", status_code=303)
 
 
+@app.post("/api/datasets")
+def api_create_dataset(request: Request, body: dict):
+    """Create + anchor a new synthetic dataset standalone (no training run).
+
+    Accepts ``{name, n_samples, random_state}``. Generates the
+    deterministic train subset, wraps it as an MLflow Dataset, anchors
+    it via ``ario_mlflow.anchor(dataset=ds)``, and writes a
+    ``dataset_anchored`` lifecycle_store envelope. Returns the dataset's
+    digest plus its detail-page URL so the UI can redirect.
+    """
+    name = (body.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    try:
+        n_samples = int(body.get("n_samples"))
+        seed = int(body.get("random_state"))
+    except (TypeError, ValueError):
+        return JSONResponse(
+            {"error": "n_samples and random_state must be integers"},
+            status_code=400,
+        )
+    if n_samples < 50 or n_samples > 50000:
+        return JSONResponse(
+            {"error": "n_samples must be between 50 and 50000"},
+            status_code=400,
+        )
+
+    anchor_result = anchor_synthetic_dataset(
+        name, n_samples, seed,
+        proof_engine=request.app.state.proof_engine,
+        arweave=request.app.state.anchor,
+    )
+    envelope = _build_standalone_dataset_envelope(anchor_result)
+    request.app.state.lifecycle_store.append(envelope)
+    digest = envelope["record"]["digest"]
+    return {
+        "dataset_id": digest,
+        "name": name,
+        "n_samples": n_samples,
+        "random_state": seed,
+        "arweave_tx_id": envelope.get("arweave_tx_id"),
+        "redirect_url": f"/ui/datasets/{digest}",
+    }
+
+
 @app.post("/api/train")
 def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
-    """Train a new model version. Phase 2.A: anchoring is handled by
-    the plugin's headline API (anchor() + ArioMlflowClient) — no longer
-    by the demo's hand-rolled proof + background-upload pipeline.
+    """Train a new model version against a chosen dataset.
 
-    The lifecycle_store is still populated for UI display compatibility;
-    Phase 2.D refactors it into a UI-only cache populated from MLflow tags.
+    Phase 2.A: anchoring is handled by the plugin's headline API
+    (anchor() + ArioMlflowClient) — no longer by the demo's hand-rolled
+    proof + background-upload pipeline.
+
+    Now requires ``dataset_id`` (a dataset's content digest) in the
+    body. The dataset must already exist in the lifecycle_store —
+    either seeded at boot, created via ``POST /api/datasets``, or
+    auto-anchored by a previous training run. The route looks up the
+    dataset's synthetic-generator params from the store and threads
+    them through ``train_and_register_with_params`` as a
+    ``dataset_spec``, so the training run's regenerated train subset
+    has the same digest as the one anchored on Arweave.
     """
     import random
     settings = request.app.state.settings
+
+    dataset_id = (body.get("dataset_id") or "").strip()
+    if not dataset_id:
+        return JSONResponse(
+            {"error": "dataset_id is required"}, status_code=400,
+        )
+    dataset_spec = _find_dataset_spec_by_digest(
+        request.app.state.lifecycle_store, dataset_id,
+    )
+    if dataset_spec is None:
+        return JSONResponse(
+            {"error": f"unknown dataset_id {dataset_id!r}"}, status_code=404,
+        )
+
     max_iter = int(body.get("max_iter", 200))
     random_state = int(body.get("random_state", random.randint(1, 10000)))
 
@@ -606,6 +794,7 @@ def api_train(request: Request, body: dict, background_tasks: BackgroundTasks):
         arweave=request.app.state.anchor,
         max_iter=max_iter,
         random_state=random_state,
+        dataset_spec=dataset_spec,
     )
 
     # Populate lifecycle_store cache entries from the plugin's anchor

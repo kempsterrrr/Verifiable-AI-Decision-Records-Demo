@@ -195,9 +195,9 @@ Sales / pre-sales workflow: pre-seed the demo with example data before a custome
 |---|---|---|
 | Decisions (landing) | `/` | Decision records, stats, prediction form, status filter chips (`/ui/predictions` 301-redirects here for bookmarks) |
 | Decision detail | `/ui/decisions/{id}` | Full decision record with three-row verify card and anchored-proof viewer |
-| Datasets | `/ui/datasets` | Anchored dataset records, one row per `digest`, with verify status |
-| Dataset detail | `/ui/datasets/{digest}` | Dataset record, ar.io anchor, used-by runs, verify card |
-| Training Runs | `/ui/runs` | Run list + expandable Train & Anchor form |
+| Datasets | `/ui/datasets` | Anchored dataset records (one row per `digest`) + "Create dataset" form for new synthetic variants |
+| Dataset detail | `/ui/datasets/{digest}` | Dataset record, ar.io anchor, used-by runs, verify card, "Train a model with this dataset" CTA |
+| Training Runs | `/ui/runs` | Run list + Train & Anchor form (dataset selector + max-iter + random-state) |
 | Training run detail | `/ui/runs/{run_id}` | Params, metrics, artifact hashes, datasets used, verify card |
 | Models | `/ui/models` | Registered model versions (one row per version), active flag, verify status |
 | Model detail | `/ui/models/{name}/{version}` | Identity, training/registration anchors, activate, verify card |
@@ -215,8 +215,9 @@ Sales / pre-sales workflow: pre-seed the demo with example data before a custome
 | `/decisions/{id}` | GET | Get a single decision record |
 | `/verify/{id}` | POST | Verify a decision (Proof Found + Decision Record Matches + Signature Confirmed + ar.io attestation) |
 | `/api/activate/{name}/{version}` | POST | Switch the active model to a specific version |
-| `/api/train` | POST | Train a new model version |
-| `/lifecycle` | GET | List all lifecycle records (training, registration) |
+| `/api/datasets` | POST | Create + anchor a new synthetic dataset standalone (body: `{name, n_samples, random_state}`) |
+| `/api/train` | POST | Train a new model version against a chosen dataset (body: `{dataset_id, max_iter, random_state}` — `dataset_id` required) |
+| `/lifecycle` | GET | List all lifecycle records (datasets, training, registration) |
 | `/lifecycle/{event_id}` | GET | Get a single lifecycle record |
 
 ### Example: Make a Prediction
@@ -232,6 +233,25 @@ curl -X POST http://localhost:8000/predict \
 ```bash
 curl -X POST http://localhost:8000/verify/<decision_id>
 ```
+
+### Example: Create a Dataset, then Train Against It
+
+```bash
+# 1. Create a synthetic dataset (returns the new dataset's digest)
+DIGEST=$(curl -s -X POST http://localhost:8000/api/datasets \
+  -H "Content-Type: application/json" \
+  -d '{"name":"My variant","n_samples":1000,"random_state":42}' \
+  | python -c "import sys,json; print(json.load(sys.stdin)['dataset_id'])")
+
+# 2. Train a model against it
+curl -X POST http://localhost:8000/api/train \
+  -H "Content-Type: application/json" \
+  -d "{\"dataset_id\":\"$DIGEST\",\"max_iter\":200}"
+```
+
+The demo seeds three default datasets on first boot (Credit scoring -
+small / default / large) so a training run can pick from a populated
+list without creating one first.
 
 ## Configuration
 

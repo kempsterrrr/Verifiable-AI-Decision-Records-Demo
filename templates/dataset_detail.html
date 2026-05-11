@@ -31,6 +31,11 @@
             </div>
             <div class="editorial-header-meta">
                 {{ status_badge(dataset.status) }}
+                {# Primary CTA — the dataset-first flow's headline action.
+                   Deep-links into the train hero with this dataset
+                   preselected; the hero auto-expands when ?dataset= is
+                   present. #}
+                <a href="/ui/runs?dataset={{ dataset.digest }}#train" class="btn btn-primary">Train a model with this dataset</a>
                 {# Pre-select the chain for the most recent run that
                    used this dataset. Used by N runs is sorted recent-
                    first by the handler, so the first entry's model

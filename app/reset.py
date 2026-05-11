@@ -90,6 +90,17 @@ def reset_demo_state(app) -> str:
     # 4. Re-load (auto-trains v1 because mlruns/ is empty). Threads
     #    through the same proof_engine + arweave anchor the lifespan
     #    handler used so signing key + wallet stay consistent.
+    #
+    #    Order matters: load_model must run *before* any standalone
+    #    dataset seeding. On a second consecutive /demo/reset (with
+    #    MLflow state already loaded in this process), calling
+    #    ``mlflow.data.from_pandas`` ahead of the first ``start_run``
+    #    caches a FileStore reference that bypasses the experiment-0
+    #    seeding the FileStore would otherwise do against the just-
+    #    wiped mlruns/. Result: ``start_run`` later raises ``Could not
+    #    find experiment with ID 0``. Auto-training first lets MLflow's
+    #    FileStore seed experiment 0 cleanly; the standalone seeding
+    #    in step 6 below then runs against an already-warm store.
     logger.info("Reset: re-loading MLflow model (will auto-train v1)...")
     new_model_info = load_model(
         settings.mlflow_tracking_uri,
@@ -104,6 +115,41 @@ def reset_demo_state(app) -> str:
     #    the homepage renders the new v1 immediately on redirect.
     from app.main import _startup_anchor_lifecycle
     _startup_anchor_lifecycle(settings, new_model_info, new_lifecycle_store)
+
+    # 6. Re-seed default datasets standalone. Calls ``seed_default_datasets``
+    #    directly (not the ``_ensure_default_datasets_seeded`` idempotency
+    #    wrapper) — the lifecycle store at this point already has the
+    #    auto-anchored dataset_anchored event the training run produced
+    #    for the default variant, which would trip the wrapper's
+    #    "any-default-name-present → skip" guard. Skip the variants
+    #    that are already covered by a standalone-shaped (source_run_id=None)
+    #    entry so re-reset doesn't pile up duplicates beyond the
+    #    documented "one standalone + one auto-anchored per trained
+    #    digest" caveat.
+    from app.main import _build_standalone_dataset_envelope
+    from app.model import seed_default_datasets, DEFAULT_DATASETS
+    standalone_names_present = {
+        (env.get("record") or {}).get("name")
+        for env in new_lifecycle_store.list_all()
+        if (env.get("record") or {}).get("event_type") == "dataset_anchored"
+        and (env.get("record") or {}).get("source_run_id") is None
+    }
+    if not standalone_names_present.issuperset(d["name"] for d in DEFAULT_DATASETS):
+        anchor_results = seed_default_datasets(
+            proof_engine=app.state.proof_engine,
+            arweave=app.state.anchor,
+        )
+        appended = 0
+        for result in anchor_results:
+            env = _build_standalone_dataset_envelope(result)
+            name = (env.get("record") or {}).get("name")
+            if name in standalone_names_present:
+                continue
+            new_lifecycle_store.append(env)
+            appended += 1
+        logger.info(
+            f"Reset: re-seeded {appended} standalone dataset entries."
+        )
 
     app.state.store = new_store
     app.state.lifecycle_store = new_lifecycle_store

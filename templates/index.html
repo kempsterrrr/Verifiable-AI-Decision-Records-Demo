@@ -217,7 +217,7 @@
 {% block content %}
         <div class="editorial-header">
             <div class="editorial-header-text">
-                <span class="eyebrow">Step 4 · Inference</span>
+                <span class="eyebrow">Lifecycle · Decisions</span>
                 <h1 class="editorial-title">Decisions</h1>
                 <p class="editorial-lede">
                     Generate a decision and anchor it as a signed, verifiable
@@ -299,7 +299,7 @@
                 <label>Credit Score (300–850)</label>
                 <input type="number" name="credit_score" value="745" step="1" min="300" max="850" required>
             </div>
-            <button type="submit" class="btn btn-primary" data-loading-text="Predicting...">Make a decision</button>
+            <button type="submit" class="btn btn-primary" data-loading-text="Deciding...">Make a decision</button>
         </form>
 
         {% if records %}
@@ -391,7 +391,7 @@
         {% else %}
         <div class="empty-state">
             <div class="empty-title">Model v{{ model_info.model_version }} is active</div>
-            <p>Submit a prediction above to create your first verifiable record.</p>
+            <p>Submit a decision above to create your first verifiable record.</p>
         </div>
         {% endif %}
 {% endblock %}

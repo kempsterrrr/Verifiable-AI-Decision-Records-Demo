@@ -109,8 +109,8 @@
                 <div class="detail-card">
                     <div class="detail-card-title">Activate</div>
                     <p style="font-size: 0.85rem; color: var(--muted); margin-bottom: 0.85rem; line-height: 1.5;">
-                        Switch the demo's live prediction endpoint to this version. The active version's anchor stays
-                        the canonical proof for new decisions.
+                        Make this version the active model for new decisions. The active version's anchor stays
+                        the canonical proof.
                     </p>
                     <form action="/api/activate/{{ model_name }}/{{ version }}" method="POST">
                         <button type="submit" class="btn btn-primary" data-loading-text="Activating...">Activate this version</button>
